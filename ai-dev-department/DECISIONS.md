@@ -161,3 +161,34 @@
 - **D-058. Tests Phase 3.** `tests/test_projects.py`: CRUD + изоляция, 409 при редактировании running,
   валидация start (нет назначений/оркестратора не активен → 400/409), WS snapshot + чужой токен отклонён,
   unit-тесты парсера плана. Rate-limit сбрасывается между тестами (`conftest.py`, autouse). Всего 17 тестов.
+
+- **D-059. Реальный адаптер внешнего ИИ-сервиса (`app/adapters/generic/adapter.py`).**
+  Заменён stub (NotImplementedError) на рабочий селекторный адаптер протокола
+  `ServiceAdapter`: `open_chat`, `send_message`, `wait_response`, `get_state`,
+  `is_alive`. Все селекторы ввода/отправки/сообщений/статуса/логина настраиваются
+  через настройки (`ADAPTER_*`), конкретный сервис не зашит — только `SERVICE_URL`.
+  Адаптер принимает опциональный `settings`-объект (для тестов) или `get_settings()`.
+- **D-060. Подключение аккаунта к сервису.** Аккаунт логинится вручную через VNC
+  (Фаза 2), `storage_state` (cookies + localStorage + IndexedDB) сохраняется
+  Fernet-шифрованным на `Account.storage_state_encrypted`. `BrowserManager.launch`
+  перезапускает Camoufox с этим состоянием, поэтому адаптер работает в контексте
+  именно этого аккаунта — сервис видит его сессию, сервер пароля не знает.
+- **D-061. Устойчивость оркестратора.** `_ask` повторяет `open_chat` +
+  `send_message` с экспоненциальным бэкоффом (`ADAPTER_MAX_RETRIES`,
+  `ADAPTER_RETRY_BACKOFF_SECONDS`) на временные ошибки браузера/сети.
+  `wait_response` не повторяется (избежать дублирования запроса), но падает
+  быстро на `error` / `login_required` / `TimeoutError`.
+- **D-062. Состояния адаптера.** `get_state` возвращает `idle` / `generating` /
+  `error` / `login_required` по атрибутам состояния DOM (`data-state`, `aria-busy`
+  и т.п.) и селектору логина-формы. `wait_response` ориентируется на `get_state`
+  и возвращает текст последнего нового сообщения после перехода в `idle`.
+- **D-063. Config Phase 4.** Добавлено: `ADAPTER_INPUT_SELECTOR`,
+  `ADAPTER_SEND_SELECTOR`, `ADAPTER_MESSAGE_SELECTOR`, `ADAPTER_STATE_SELECTOR`,
+  `ADAPTER_LOGIN_SELECTOR`, `ADAPTER_READY_SELECTOR`,
+  `ADAPTER_POLL_INTERVAL_SECONDS` (2.0), `ADAPTER_NAVIGATE_TIMEOUT_SECONDS` (30),
+  `ADAPTER_MAX_RETRIES` (3), `ADAPTER_RETRY_BACKOFF_SECONDS` (2.0).
+- **D-064. Tests Phase 4.** `tests/test_adapter.py` — 15 тестов адаптера с
+  изолированными настройками и фейковой DOM-страницей (без Camoufox и без
+  реального сервиса): навигация в чат, заполнение/отправка, fallback на Enter,
+  ошибка логина, возврат ответа ассистента, состояния error/login_required/idle/
+  generating, таймаут, `is_alive` при обрыве сети. Всего 31 тест.

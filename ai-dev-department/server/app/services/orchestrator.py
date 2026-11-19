@@ -177,12 +177,61 @@ async def _ensure_context(account: Account, *, session_factory, browser_manager)
         return None
 
 
+async def _retryable_sleep(attempt: int, settings) -> None:
+    """Exponential backoff before a retry: backoff * 2^(attempt-1)."""
+    delay = settings.ADAPTER_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
+    logger.warning("Adapter transient error, retrying in %.1fs (attempt %s)", delay, attempt)
+    await asyncio.sleep(delay)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Errors that are safe to retry (open_chat / send_message failures only)."""
+    from app.services.browser_manager import BrowserUnavailableError
+
+    return isinstance(
+        exc,
+        (BrowserUnavailableError, OSError, TimeoutError),
+    )
+
+
 async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int) -> str:
-    """One adapter round-trip: open chat, send prompt, wait for the reply."""
-    page = await adapter.open_chat(context, chat_ref)
-    await adapter.send_message(page, prompt)
-    # Belt-and-braces: never let a hung adapter hang the worker forever.
-    return await asyncio.wait_for(adapter.wait_response(page, timeout=timeout), timeout=timeout + 60)
+    """One adapter round-trip: open chat, send prompt, wait for the reply.
+
+    open_chat + send_message are retried with exponential backoff
+    (ADAPTER_MAX_RETRIES) on transient errors; wait_response is NOT retried
+    to avoid sending the same prompt twice if the service already received it.
+    """
+    settings = get_settings()
+    last_exc: BaseException | None = None
+
+    for attempt in range(1, settings.ADAPTER_MAX_RETRIES + 1):
+        try:
+            page = await adapter.open_chat(context, chat_ref)
+            await adapter.send_message(page, prompt)
+            # Belt-and-braces: never let a hung adapter hang the worker forever.
+            return await asyncio.wait_for(
+                adapter.wait_response(page, timeout=timeout), timeout=timeout + 60
+            )
+        except TimeoutError as exc:
+            # wait_response timeout: message may already be with the service -
+            # retrying could duplicate it, so fail fast.
+            raise
+        except RuntimeError as exc:
+            # login_required / service error: retrying won't help without
+            # re-login, so fail fast.
+            msg = str(exc)
+            if "login" in msg.lower() or "requires login" in msg.lower():
+                raise
+            last_exc = exc
+        except Exception as exc:  # noqa: BLE001 - transient browser/network error
+            last_exc = exc
+
+        if attempt < settings.ADAPTER_MAX_RETRIES:
+            await _retryable_sleep(attempt, settings)
+
+    raise RuntimeError(
+        f"Adapter failed after {settings.ADAPTER_MAX_RETRIES} attempts: {last_exc}"
+    ) from last_exc
 
 
 async def _fail_project(session_factory, project_id: int, reason: str, *, ws_manager) -> str:

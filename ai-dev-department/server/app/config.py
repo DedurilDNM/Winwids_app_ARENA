@@ -139,6 +139,25 @@ class Settings(BaseSettings):
     # Test/CI only: skip Xvfb/x11vnc/noVNC, launch Camoufox headless.
     VNC_HEADLESS: bool = False
 
+    # --- External AI service adapter (Phase 4) ---
+    # CSS / Playwright selectors for interacting with the chat UI of the
+    # external AI service. Adjust these to match your service's DOM. The
+    # adapter never hard-codes a service name - everything is driven by
+    # SERVICE_URL + these selectors.
+    ADAPTER_INPUT_SELECTOR: str = "textarea, [contenteditable='true'], input[type='text']"
+    ADAPTER_SEND_SELECTOR: str = "button[type='submit'], [aria-label*='send' i]"
+    ADAPTER_MESSAGE_SELECTOR: str = "[role='article'], .message, .chat-message"
+    ADAPTER_STATE_SELECTOR: str = "[aria-busy='true'], .generating, .loading, .error"
+    ADAPTER_LOGIN_SELECTOR: str = "input[type='password'], [aria-label*='login' i]"
+    # Extra selector that must appear before the chat is considered ready
+    # (empty = skip this check).
+    ADAPTER_READY_SELECTOR: str = ""
+    # Timing / resilience
+    ADAPTER_POLL_INTERVAL_SECONDS: float = 2.0
+    ADAPTER_NAVIGATE_TIMEOUT_SECONDS: float = 30.0
+    ADAPTER_MAX_RETRIES: int = 3
+    ADAPTER_RETRY_BACKOFF_SECONDS: float = 2.0
+
     # --- Tokens ---
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
