@@ -37,7 +37,8 @@ Create single-use invite codes with `python -m app.admin create-invite`.
 ## Phases
 
 - Phase 1 — skeleton: config, DB, models, auth (JWT + invite-only registration), health ✅
-- Phase 2 — accounts API + VNC manual-login flow (Camoufox / xvfb / x11vnc / noVNC)
+- Phase 2 — accounts API + VNC manual-login flow (Camoufox / xvfb / x11vnc / noVNC) ✅
+  (см. [README_phase2.md](README_phase2.md); графическая приёмка — на Debian через deploy/install.sh)
 - Phase 3 — projects API + orchestrator + github watcher + WebSocket statuses
 - Phase 4 — PySide6 Windows client + PyInstaller build
 - Phase 5 — systemd deployment + Cloudflare Tunnel on clean Debian 13

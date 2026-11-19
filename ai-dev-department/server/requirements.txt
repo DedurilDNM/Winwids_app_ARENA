@@ -18,3 +18,5 @@ redis>=5.0.0
 # the server OS per the deployment spec; keeping it here makes a fresh
 # install reproducible.
 camoufox>=0.4.0
+# websockify serves noVNC and routes VNC tokens to x11vnc backends
+websockify>=0.13.0

@@ -22,12 +22,16 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app import __version__
+from app.api import accounts as accounts_api
 from app.api import auth as auth_api
+from app.api import vnc as vnc_api
 from app.config import get_settings
 from app.db import SessionLocal, init_db
 from app.deps import limiter
 from app.models import User
 from app.security import hash_password
+from app.services.browser_manager import browser_manager
+from app.services.vnc_manager import vnc_manager
 from sqlalchemy import func, select
 
 logger = logging.getLogger("ai_dev_department")
@@ -98,8 +102,31 @@ async def seed_admin() -> None:
 async def lifespan(app: FastAPI):
     await init_db()
     await seed_admin()
+
+    # Phase 2: relaunch browsers for all active accounts so they open logged-in
+    # sessions without a fresh VNC login. Failures never block startup.
+    try:
+        display = await vnc_manager.ensure_shared_display()
+    except Exception as exc:
+        logger.warning("Shared Xvfb display unavailable: %s", exc)
+        display = None
+    try:
+        await browser_manager.restore_active_accounts(SessionLocal, display=display)
+    except Exception as exc:
+        logger.warning("Active account restore failed: %s", exc)
+
     logger.info("AI Dev Department API started (env=%s, service=%s)", settings.ENVIRONMENT, settings.SERVICE_DISPLAY_NAME)
     yield
+
+    # Shutdown: stop browsers, Xvfb displays and websockify.
+    try:
+        await vnc_manager.stop_all()
+    except Exception as exc:
+        logger.warning("VNC shutdown failed: %s", exc)
+    try:
+        await browser_manager.shutdown()
+    except Exception as exc:
+        logger.warning("Browser shutdown failed: %s", exc)
 
 
 app = FastAPI(
@@ -123,6 +150,8 @@ app.add_middleware(
 )
 
 app.include_router(auth_api.router)
+app.include_router(accounts_api.router)
+app.include_router(vnc_api.router)
 
 
 @app.get("/health", tags=["meta"])

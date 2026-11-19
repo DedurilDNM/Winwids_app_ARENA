@@ -121,6 +121,31 @@ class AccountOut(BaseModel):
     created_at: datetime
 
 
+class AccountCreateResponse(AccountOut):
+    """Returned by POST /api/accounts.
+
+    `vnc_url` is present when a VNC session was started successfully.
+    `vnc_error` explains why the VNC stack was unavailable (account still
+    created, VNC can be retried via POST /api/accounts/{id}/vnc/start).
+    """
+
+    vnc_url: str | None = None
+    headless: bool | None = None
+    vnc_error: str | None = None
+
+
+class VncStartResponse(BaseModel):
+    live: bool = True
+    headless: bool
+    vnc_url: str | None = None
+
+
+class VncInfoResponse(BaseModel):
+    live: bool
+    headless: bool = False
+    vnc_url: str | None = None
+
+
 # --- Projects ---
 
 class ProjectAssignmentIn(BaseModel):

@@ -31,6 +31,27 @@ On startup the app:
 3. Seeds `admin@local` if the users table is empty. Password comes from
    `ADMIN_PASSWORD`, or a random one-time password printed to stdout **once**.
 
+## Phase 2 — accounts & VNC login
+
+See [../README_phase2.md](../README_phase2.md) for the full guide. Quick reference:
+
+```
+POST   /api/accounts                       # create (pending_login) + start VNC session
+POST   /api/accounts/{id}/vnc/start        # (re)start VNC session -> vnc_url
+POST   /api/accounts/{id}/vnc/stop         # close noVNC path, browser stays alive
+POST   /api/accounts/{id}/confirm-login    # "Готово" -> encrypted storage_state, status active
+GET    /api/accounts                       # list (max 10 per user)
+PATCH  /api/accounts/{id}                  # edit name/role/repos/status(disabled)
+DELETE /api/accounts/{id}                  # stop session + browser, 204
+```
+
+System deps for the VNC stack are installed by `deploy/install.sh`
+(xvfb, x11vnc, novnc, websockify, redis-server). Without them the API still works;
+VNC endpoints degrade to explicit 503/`vnc_error` responses.
+
+Tests: `pip install -r requirements-dev.txt && ./.venv/bin/python -m pytest tests/ -v`
+(9 tests, fake Camoufox, no display needed).
+
 ## Acceptance checks
 
 ```bash

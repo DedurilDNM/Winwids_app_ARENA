@@ -1,0 +1,266 @@
+"""Phase 2 acceptance tests: accounts CRUD, VNC flow, storage-state encryption,
+restore-after-restart, per-user isolation and the 10-account limit.
+
+Camoufox is replaced with an in-memory fake - these tests verify OUR logic
+(DB, encryption, state machine, API), not the browser itself.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sqlite3
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.services import browser_manager as bm_module
+
+TEST_DB = os.environ["TEST_DB_PATH"]
+
+
+# ---------------------------------------------------------------- fake browser
+
+class FakeResponse:
+    status = 200
+
+
+class FakePage:
+    def __init__(self) -> None:
+        self.url: str | None = None
+        self.closed = False
+
+    async def goto(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.url = url
+        return FakeResponse()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+DEFAULT_STATE = {
+    "cookies": [
+        {"name": "session", "value": "session-cookie-value", "domain": "example.com", "path": "/"}
+    ],
+    "origins": [
+        {"origin": "https://example.com",
+         "localStorage": [{"name": "auth", "value": "local-storage-value"}]}
+    ],
+    "indexedDB": [{"name": "idb", "version": 1}],
+}
+
+
+class FakeContext:
+    def __init__(self, storage_state: dict | None = None, **kwargs: Any) -> None:
+        self.storage = dict(storage_state) if storage_state else json.loads(json.dumps(DEFAULT_STATE))
+        self.closed = False
+        self.pages: list[FakePage] = []
+
+    async def new_page(self) -> FakePage:
+        page = FakePage()
+        self.pages.append(page)
+        return page
+
+    async def storage_state(self, indexed_db: bool | None = None, **kwargs: Any) -> dict:
+        return json.loads(json.dumps(self.storage))
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeBrowser:
+    def __init__(self) -> None:
+        self.contexts: list[FakeContext] = []
+
+    async def new_context(self, **kwargs: Any) -> FakeContext:
+        ctx = FakeContext(storage_state=kwargs.get("storage_state"))
+        self.contexts.append(ctx)
+        return ctx
+
+    async def close(self) -> None:
+        pass
+
+
+class FakeCamoufox:
+    """Drop-in replacement for AsyncCamoufox (headless test double)."""
+
+    instances: list["FakeCamoufox"] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.browser: FakeBrowser | None = None
+        FakeCamoufox.instances.append(self)
+
+    async def start(self) -> FakeBrowser:
+        self.browser = FakeBrowser()
+        return self.browser
+
+    async def stop(self) -> None:
+        pass
+
+
+@pytest.fixture()
+def api(monkeypatch):
+    FakeCamoufox.instances = []
+    monkeypatch.setattr(bm_module, "AsyncCamoufox", FakeCamoufox)
+    with TestClient(app) as client:
+        yield client
+
+
+def _login_admin(client: TestClient) -> str:
+    resp = client.post("/api/auth/login", json={"email": "admin@local", "password": "admin-test-pass"})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["access_token"]
+
+
+def _auth(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _create_account(client: TestClient, token: str, name: str = "agent-1") -> dict:
+    resp = client.post(
+        "/api/accounts",
+        json={"name": name, "default_role": "Coder", "github_repos": ["octo/repo"]},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+# --------------------------------------------------------------------- tests
+
+def test_health_and_auth_required(api):
+    assert api.get("/health").json() == {"status": "ok"}
+    resp = api.get("/api/accounts")
+    assert resp.status_code in (401, 403)
+
+
+def test_create_account_creates_pending_login_and_launches_browser(api):
+    token = _login_admin(api)
+    body = _create_account(api, token)
+    assert body["status"] == "pending_login"
+    assert body["headless"] is True  # VNC_HEADLESS=true in tests
+    assert body["vnc_url"] is None
+    # Browser was launched against SERVICE_URL
+    assert FakeCamoufox.instances, "expected a browser launch"
+
+
+def test_confirm_login_saves_encrypted_storage_state(api):
+    token = _login_admin(api)
+    account = _create_account(api, token)
+
+    resp = api.post(f"/api/accounts/{account['id']}/confirm-login", headers=_auth(token))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "active"
+
+    raw = sqlite3.connect(TEST_DB).execute(
+        "SELECT storage_state_encrypted FROM accounts WHERE id = ?", (account["id"],)
+    ).fetchone()[0]
+    assert raw, "storage_state_encrypted must not be empty"
+    assert b"session-cookie-value" not in raw  # encrypted at rest
+    assert b"local-storage-value" not in raw
+
+    from app.security import decrypt_bytes
+
+    state = json.loads(decrypt_bytes(raw))
+    assert state["cookies"][0]["value"] == "session-cookie-value"
+    assert state["origins"][0]["localStorage"][0]["value"] == "local-storage-value"
+
+
+def test_confirm_login_without_live_session_returns_409(api):
+    token = _login_admin(api)
+    account = _create_account(api, token)
+    asyncio.run(bm_module.browser_manager.stop(account["id"]))  # simulate browser crash
+
+    resp = api.post(f"/api/accounts/{account['id']}/confirm-login", headers=_auth(token))
+    assert resp.status_code == 409
+
+
+def test_restart_restores_active_accounts(api, monkeypatch):
+    token = _login_admin(api)
+    account = _create_account(api, token)
+    api.post(f"/api/accounts/{account['id']}/confirm-login", headers=_auth(token))
+
+    # Simulate a full server restart: all browsers die, then the lifespan relaunches them.
+    asyncio.run(bm_module.browser_manager.shutdown())
+    instances_before = len(FakeCamoufox.instances)
+    with TestClient(app) as second:
+        restored_context = bm_module.browser_manager.get_context(account["id"])
+        assert restored_context is not None, "active account must be restored on startup"
+        restored_state = restored_context.storage
+        assert restored_state["cookies"][0]["value"] == "session-cookie-value"
+    assert len(FakeCamoufox.instances) > instances_before
+
+
+def test_vnc_start_unavailable_returns_503(api, monkeypatch):
+    token = _login_admin(api)
+    account = _create_account(api, token)
+    # Simulate the live session being gone (e.g. after a crash).
+    from app.services import vnc_manager as vnc_module
+
+    asyncio.run(vnc_module.vnc_manager.stop_session(account["id"], keep_browser=False))
+    # Simulate missing Camoufox installation.
+    monkeypatch.setattr(bm_module, "AsyncCamoufox", None)
+    resp = api.post(f"/api/accounts/{account['id']}/vnc/start", headers=_auth(token))
+    assert resp.status_code == 503
+
+
+def test_accounts_are_isolated_per_user(api):
+    token = _login_admin(api)
+    account = _create_account(api, token)
+    token2 = _register_user(api, "user2@example.com", "invite-for-user2")
+
+    assert api.get(f"/api/accounts/{account['id']}", headers=_auth(token2)).status_code == 404
+    assert api.get("/api/accounts", headers=_auth(token2)).json() == []
+    assert api.delete(f"/api/accounts/{account['id']}", headers=_auth(token2)).status_code == 404
+
+
+def _register_user(api, email: str, invite_code: str) -> str:
+    from app.db import SessionLocal
+    from app.models import Invite
+
+    async def _insert_invite() -> None:
+        async with SessionLocal() as session:
+            session.add(Invite(code=invite_code))
+            await session.commit()
+
+    asyncio.run(_insert_invite())
+    resp = api.post(
+        "/api/auth/register",
+        json={"email": email, "password": "password-12345", "invite_code": invite_code},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["access_token"]
+
+
+def test_account_limit_is_10_per_user(api):
+    token = _register_user(api, "limit@example.com", "invite-limit-user")
+    for i in range(1, 11):
+        _create_account(api, token, f"agent-{i}")
+    resp = api.post(
+        "/api/accounts",
+        json={"name": "agent-11", "default_role": "Coder", "github_repos": []},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 403
+
+
+def test_update_and_delete_account(api):
+    token = _login_admin(api)
+    account = _create_account(api, token)
+
+    resp = api.patch(
+        f"/api/accounts/{account['id']}",
+        json={"default_role": "Reviewer", "github_repos": ["octo/a", "octo/b"]},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["default_role"] == "Reviewer"
+    assert resp.json()["github_repos"] == ["octo/a", "octo/b"]
+
+    resp = api.delete(f"/api/accounts/{account['id']}", headers=_auth(token))
+    assert resp.status_code == 204
+    assert api.get(f"/api/accounts/{account['id']}", headers=_auth(token)).status_code == 404

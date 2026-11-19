@@ -111,6 +111,22 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     GITHUB_API_URL: str = "https://api.github.com"
 
+    # --- VNC / noVNC (Phase 2) ---
+    # Base URL the client should open for a VNC session. In production the path
+    # /novnc is mapped by cloudflared/nginx to the local websockify instance.
+    NOVNC_PUBLIC_BASE_URL: str = "http://127.0.0.1:6080"
+    # Static files for the noVNC web client (Debian package `novnc`).
+    NOVNC_WEB_ROOT: str = "/usr/share/novnc"
+    WEBSOCKIFY_HOST: str = "127.0.0.1"
+    WEBSOCKIFY_PORT: int = 6080
+    XVFB_BASE_DISPLAY: int = 97          # per-account displays start here
+    VNC_SHARED_DISPLAY: int = 99         # shared display used for background account restore
+    VNC_BASE_RFB_PORT: int = 5901        # x11vnc ports start here
+    VNC_WIDTH: int = 1600
+    VNC_HEIGHT: int = 900
+    # Test/CI only: skip Xvfb/x11vnc/noVNC, launch Camoufox headless.
+    VNC_HEADLESS: bool = False
+
     # --- Tokens ---
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30

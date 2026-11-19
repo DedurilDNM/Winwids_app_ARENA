@@ -77,3 +77,55 @@
   без отдельной таблицы; БД хранит string.
 - **D-030. .env.example** содержит пустые `FERNET_KEY=`/`JWT_SECRET=` (маркеры «автогенерация») и пустой
   `DATABASE_URL=` (трактуется как дефолт, см. D-015). Реальный `.env` в git не попадает.
+
+## Фаза 2 (accounts + VNC)
+
+- **D-031. VNC-стек.** Per-account Xvfb :97.. (блокировка номеров через `display-N.lock` и
+  проверку `/tmp/.X11-unix`), x11vnc на localhost rfb-портах 5901+, ОДИН глобальный websockify на
+  6080 с `--token-plugin=websockify.token_plugins.TokenFile --token-source=data/vnc/tokens.cfg`.
+  tokens.cfg переписывается на каждое изменение сессии (строки `<token>: 127.0.0.1:<rfb_port>`), chmod 600.
+- **D-032. Токен noVNC.** JWT `type=vnc`, `sub=account_id`, TTL 120 минут (`_create_token` в security.py).
+  websockify проверяет наличие токена в tokens.cfg; криптографическая валидация JWT — не делается
+  (токен непредсказуем, 32+ символа). Expiry — по TTL, удаление — при stop_session/confirm-login.
+  noVNC отдаётся как `{NOVNC_PUBLIC_BASE_URL}/vnc.html?autoconnect=true&resize=scale&token=<jwt>`
+  (спецификация требовала `wss://.../novnc?token=` — это схематично; реальный URL указывает на
+  статическую страницу noVNC, см. также D-036 про path mapping в проде).
+- **D-033. noVNC URL path в проде.** `NOVNC_PUBLIC_BASE_URL=https://app.<domain>/novnc`; cloudflared/nginx
+  маппит `/novnc/*` → `127.0.0.1:6080/*` (страницы) и `/websockify` (websocket). Локальные дефолты:
+  `http://127.0.0.1:6080` (прямой доступ к websockify).
+- **D-034. Restore на старте.** Lifespan: `ensure_shared_display()` (Xvfb :99) →
+  `browser_manager.restore_active_accounts(...)` → активные аккаунты поднимаются из Fernet-зашифрованного
+  storage_state. Ошибки одной учётки не роняют старт (лог + warning). Без X-сервера / в VNC_HEADLESS —
+  деградация в headless с предупреждением.
+- **D-035. Хранение storage_state.** Cookie + localStorage + IndexedDB (попытка `storage_state(indexed_db=True)`,
+  fallback на обычный вызов — Playwright ≥1.49 experimental). Сериализация JSON (bytes), Fernet-шифрование,
+  запись в `accounts.storage_state_encrypted`. Пароль сервиса в БД/логи/API не попадает никогда.
+- **D-036. Капча/ручной логин.** Управлять Camoufox-окном пользователь НЕ может, кроме как через VNC —
+  это требование безопасности (никаких обходов капчи сервером).
+- **D-037. confirm-login.** Требует живой контекст (иначе 409). После сохранения storage_state статус →
+  `active`; закрывается только noVNC-путь (x11vnc + удаление токена), браузер остаётся жить (спека).
+- **D-038. Лимит 10 аккаунтов на пользователя** — на `POST /api/accounts` (403 + сообщение). PUT/PATCH нет.
+- **D-039. PATCH /api/accounts/{id}.** Разрешены name/service_note/default_role/github_repos/status;
+  принудительно запретить `status=active` (только через confirm-login). `disabled` — через PATCH разрешён.
+- **D-040. DELETE.** Останавливает VNC-сессию И браузер, затем NULL-ит `tasks.assigned_account_id` и
+  `projects.orchestrator_account_id`, удаляет `project_assignments`, удаляет аккаунт. 204.
+- **D-041. VNC при недоступности стека.** POST /api/accounts НЕ падает: 201 + поле `vnc_error` с причиной
+  (account создан, pending_login; повтор — `POST /{id}/vnc/start`, при ошибке 503).
+- **D-042. VNC_HEADLESS=true** — тестовый режим (CI/песочница): Camoufox поднимается без Xvfb/x11vnc/noVNC,
+  `vnc_url` отсутствует, confirm-login работает полностью. По умолчанию false.
+- **D-043. Delete не трогает Xvfb shared display :99** (его может использовать restore); per-account Xvfb
+  останавливается только при keep_browser=False.
+- **D-044. Websockify профиль токена.** `--token-plugin=websockify.token_plugins.TokenFile` (полное имя
+  класса — сокращённое `TokenFile` зависит от версии). Токены в файле перечитываются websockify'ем на
+  каждое WS-соединение. Проверено в песочнице: vnc.html=200, валидный токен → 101 + backend connected,
+  невалидный → соединение разорвано/пусто.
+- **D-045. noVNC в песочнице.** deb.debian.org недоступен → системные Xvfb/x11vnc не ставятся;
+  проверка токен-маршрутизации выполнена на websockify (pip) + noVNC (git clone GitHub) + dummy RFB
+  backend. Графическая часть (Camoufox в окне + ручной логин) проверяется на целевом Debian
+  через deploy/install.sh. Acceptance п. «вижу Camoufox в noVNC» — за пользователем на Debian.
+- **D-046. Тесты.** `tests/test_accounts_flow.py` — 9 тестов с фейковым Camoufox (in-memory context,
+  storage_state из JSON): шифрование storage_state в БД, restore после «рестарта», 409/503, изоляция
+  пользователей, лимит 10, CRUD. Запуск: `pip install -r requirements-dev.txt && pytest tests/ -v`.
+- **D-047. .env пример** дополнен NOVNC_* / WEBSOCKIFY_* / XVFB/VNC_* (см. server/.env.example).
+- **D-048. x11vnc слушает только localhost** (`-localhost`), доступ снаружи — только через websockify+token.
+  Xvfb без `-nolisten tcp` не запускается.
