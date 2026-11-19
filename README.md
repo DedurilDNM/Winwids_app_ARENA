@@ -7,5 +7,5 @@ Windows-клиент + сервер (Debian) «AI Dev Department» — упра�
 - Фаза 2 (VNC-логин, аккаунты) — готова: см. [ai-dev-department/README_phase2.md](ai-dev-department/README_phase2.md)
 - Фаза 3 (Projects API + оркестратор + github_watcher + WebSocket) — готова: см. [ai-dev-department/README_phase3.md](ai-dev-department/README_phase3.md)
 - Фаза 4 (реальный адаптер ИИ-сервиса + подключение аккаунтов) — готова: см. [ai-dev-department/README_phase4.md](ai-dev-department/README_phase4.md)
-- Фаза 5 (PySide6-клиент, финальный deploy) — см. [ai-dev-department/README.md](ai-dev-department/README.md)
+- Фаза 5 (PySide6-клиент, вариант «Ядро») — готова: см. [ai-dev-department/README_phase5.md](ai-dev-department/README_phase5.md)
 - Решения по умолчанию: [ai-dev-department/DECISIONS.md](ai-dev-department/DECISIONS.md)
