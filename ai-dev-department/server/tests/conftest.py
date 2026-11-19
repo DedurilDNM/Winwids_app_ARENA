@@ -27,3 +27,15 @@ os.environ["PROXY_URL"] = "http://user:pass@1.2.3.4:8080"  # parsed, never diale
 os.environ["NOVNC_PUBLIC_BASE_URL"] = "http://127.0.0.1:6080"
 
 os.environ["TEST_DB_PATH"] = str(_TMP / "test.db")
+
+
+# Reset the in-memory rate limiter before every test so login/register rate
+# limits don't accumulate across test files in one pytest session.
+import pytest as _pytest  # noqa: E402
+
+
+@_pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    from app.deps import limiter
+
+    limiter._storage.reset()

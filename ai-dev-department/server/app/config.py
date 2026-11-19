@@ -111,6 +111,18 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     GITHUB_API_URL: str = "https://api.github.com"
 
+    # --- GitHub watcher / orchestration (Phase 3) ---
+    # Optional server-side token for polling /status/*.md (public repos work
+    # without one, rate-limited). A per-user ConnectorCredential overrides it.
+    GITHUB_TOKEN: str = ""
+    # GitHub API is not service traffic; proxy only if your network needs it.
+    GITHUB_PROXY_URL: str = ""
+    GITHUB_POLL_INTERVAL_SECONDS: int = 15
+    TASK_TIMEOUT_SECONDS: int = 3600          # max wait for one agent task
+    ORCHESTRATOR_TIMEOUT_SECONDS: int = 600   # wait_response timeout for orchestrator
+    AGENT_TIMEOUT_SECONDS: int = 600          # wait_response timeout for agents
+    # Session health cron runs every 5 minutes (arq cron in workers/settings.py).
+
     # --- VNC / noVNC (Phase 2) ---
     # Base URL the client should open for a VNC session. In production the path
     # /novnc is mapped by cloudflared/nginx to the local websockify instance.

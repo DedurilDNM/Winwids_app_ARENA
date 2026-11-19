@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import SessionLocal
 from app.deps import get_current_user, get_db
 from app.models import Account, Project, ProjectAssignment, Task, User
 from app.schemas import AccountCreate, AccountCreateResponse, AccountOut, AccountUpdate
@@ -181,6 +182,7 @@ async def confirm_login(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     blob = json.dumps(storage_state, default=str).encode("utf-8")
+    was_relogin = account.status == "relogin_needed"
     account.storage_state_encrypted = encrypt_bytes(blob)
     account.status = "active"
     await db.commit()
@@ -188,5 +190,20 @@ async def confirm_login(
 
     # Close only the noVNC path; the browser stays alive in the background (spec).
     await vnc_manager.stop_session(account.id, keep_browser=True)
+
+    if was_relogin:
+        # The user re-logged in after a session loss: tell affected projects.
+        from app.services.orchestrator import _affected_project_ids, _event
+        from app.ws_manager import manager as ws_manager
+
+        for pid in await _affected_project_ids(SessionLocal, account.id):
+            await ws_manager.send_to_project(
+                pid,
+                _event(
+                    "session_relogged", pid, account_id=account.id,
+                    status="active",
+                    message=f"Account {account.id} session recovered",
+                ),
+            )
 
     return AccountOut.model_validate(account)

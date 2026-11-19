@@ -129,3 +129,35 @@
 - **D-047. .env пример** дополнен NOVNC_* / WEBSOCKIFY_* / XVFB/VNC_* (см. server/.env.example).
 - **D-048. x11vnc слушает только localhost** (`-localhost`), доступ снаружи — только через websockify+token.
   Xvfb без `-nolisten tcp` не запускается.
+
+- **D-049. Projects API.** `POST/GET/PATCH/DELETE /api/projects/{id}` + `POST /{id}/start` / `/stop`.
+  Владение пользователем: чужие проекты невидимы (404). Редактирование/удаление запрещены, пока проект
+  `running` (409). Схема: `ProjectCreate/Out/Update/DetailOut`, `TaskOut`, `ProjectAssignmentIn`.
+- **D-050. WebSocket.** `WS /ws/projects/{id}?token=<access_jwt>`. При подключении отсылается `snapshot`
+  (проект + задачи), затем события `task_started`, `task_status_changed`, `project_started`,
+  `project_completed`, `project_failed`, `session_lost`, `session_relogged`. Чужие пользователи и невалидный
+  токен — закрытие 4401.
+- **D-051. Оркестратор (`services/orchestrator.py`).** Поток: промпт оркестратора → JSON-план
+  [{role,task,assign_to_account_id}] → Task-rows → каждая задача последовательно: агент работает в репозитории
+  через свой GitHub-коннектор → github_watcher опрашивает `status/task-<id>.md` (DONE/BLOCKED/timeout) → итоговый
+  промпт оркестратора → `project_completed`. Парсер терпит markdown-окношки, валидирует роли, fallback на
+  оркестратора/первое назначение. browser_manager/adapter/watcher инжектируемы (тесты без браузера/Redis).
+- **D-052. github_watcher.** Polling `status/task-<id>.md` на ветке задачи через `Connector` (GitHub raw REST
+  через httpx, токен из зашифрованного `ConnectorCredential` пользователя или `GITHUB_TOKEN`). Первая непустая
+  строка файла: DONE→done, BLOCKED→blocked, иначе None (ещё не завершено).
+- **D-053. Connectors.** `app/connectors/base.py` протокол `Connector` (read_file/list_dir); `connectors/github.py`
+  — реализация через GitHub REST API (base64-контент). Не именует внешний ИИ-сервис.
+- **D-054. Воркеры arq.** `workers/settings.py` (WorkerSettings: `run_project` + cron `session_health_check`
+  каждые 5 мин), `workers/run_project.py` (задача `run_project`), `workers/session_check.py` (проверка сессий).
+  Если Redis недоступен — `run_project` выполняется inline в API-процессе с логом предупреждения (песочница/Dev).
+  `job_timeout=6h`, `max_tries=1` (оркестратор сам ставит failed), не повторяем тихо.
+- **D-055. Проверка сессий (cron).** Каждые 5 мин `check_all_sessions`: `adapter.is_alive` для активных аккаунтов.
+  active→mёртв: `relogin_needed` + `session_lost` в пострадавшие проекты; `relogin_needed`→жив: `active` +
+  `session_relogged`. WS события рассылаются менеджером соединений.
+- **D-056. Перелогин аккаунта.** POST /api/accounts/{id}/confirm-login: при смене статуса с `relogin_needed` на
+  `active` шлёт `session_relogged` во все пострадавшие проекты (аккаунт снова пригоден для оркестрации).
+- **D-057. Config Phase 3.** Добавлено: `GITHUB_TOKEN`, `GITHUB_PROXY_URL`, `GITHUB_POLL_INTERVAL_SECONDS`
+  (15), `TASK_TIMEOUT_SECONDS` (3600), `ORCHESTRATOR_TIMEOUT_SECONDS` (600), `AGENT_TIMEOUT_SECONDS` (600).
+- **D-058. Tests Phase 3.** `tests/test_projects.py`: CRUD + изоляция, 409 при редактировании running,
+  валидация start (нет назначений/оркестратора не активен → 400/409), WS snapshot + чужой токен отклонён,
+  unit-тесты парсера плана. Rate-limit сбрасывается между тестами (`conftest.py`, autouse). Всего 17 тестов.

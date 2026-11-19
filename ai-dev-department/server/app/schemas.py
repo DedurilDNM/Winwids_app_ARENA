@@ -187,6 +187,37 @@ class ProjectOut(BaseModel):
     assignments: list[ProjectAssignmentIn] = Field(default_factory=list)
 
 
+class ProjectUpdate(BaseModel):
+    """PATCH body. Only editable while the project is not running.
+
+    `orchestrator_account_id` / `assignments` use model_fields_set to tell
+    "not provided" apart from "explicitly set to null/empty".
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    task: str | None = Field(default=None, min_length=1, max_length=20_000)
+    github_repo: str | None = Field(default=None, min_length=3, max_length=300)
+    orchestrator_account_id: int | None = None
+    assignments: list[ProjectAssignmentIn] | None = Field(default=None, max_length=50)
+
+    @field_validator("github_repo")
+    @classmethod
+    def _validate_repo(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        value = value.strip()
+        if "/" not in value:
+            raise ValueError("github_repo must look like 'owner/name'")
+        return value
+
+
+class ProjectDetailOut(ProjectOut):
+    """Project + its tasks (timeline source for the client)."""
+
+    tasks: list[TaskOut] = Field(default_factory=list)
+
+
 class TaskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
