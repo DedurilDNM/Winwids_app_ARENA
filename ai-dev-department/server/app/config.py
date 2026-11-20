@@ -168,6 +168,9 @@ class Settings(BaseSettings):
 
     ENVIRONMENT: str = "development"
 
+    # --- Web client (served by this API at /app/) ---
+    WEB_ROOT: Path = SERVER_ROOT.parent / "web"
+
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def _default_database_url(cls, value: object) -> object:

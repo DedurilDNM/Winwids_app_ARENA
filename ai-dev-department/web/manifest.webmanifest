@@ -1,0 +1,15 @@
+{
+  "name": "AI Dev Department",
+  "short_name": "AI Dept",
+  "description": "Рабочая среда для команды ИИ-агентов",
+  "start_url": "./#/accounts",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#111318",
+  "theme_color": "#111318",
+  "lang": "ru",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

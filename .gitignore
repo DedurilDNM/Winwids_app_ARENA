@@ -34,3 +34,4 @@ Thumbs.db
 # Arena artifacts
 .arena/
 Unselected files/
+node_modules/

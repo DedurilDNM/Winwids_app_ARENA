@@ -16,7 +16,9 @@ from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from urllib.parse import urlsplit
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -68,6 +70,37 @@ class MaskSensitiveDataMiddleware(BaseHTTPMiddleware):
         path = request.url.path + (f"?{masked_query}" if masked_query else "")
         logger.info("%s %s", request.method, path)
         return await call_next(request)
+
+
+def _novnc_origin() -> str:
+    parts = urlsplit(get_settings().NOVNC_PUBLIC_BASE_URL)
+    return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else ""
+
+
+class WebSecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Security headers for the web client (/app/*).
+
+    - CSP: only same-origin scripts/styles (no inline code), API/WebSocket on
+      the same origin, and the noVNC origin allowed as an iframe source.
+    - Referrer-Policy no-referrer: the noVNC iframe URL carries a VNC token.
+    """
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        response = await call_next(request)
+        if request.url.path.startswith("/app"):
+            frame_src = " ".join(x for x in ("'self'", _novnc_origin()) if x)
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' data:; connect-src 'self' ws: wss:; "
+                f"frame-src {frame_src}; frame-ancestors 'self'; base-uri 'self'; "
+                "form-action 'self'; object-src 'none'"
+            )
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+            if request.url.path.endswith(("sw.js", "index.html")) or request.url.path in ("/app", "/app/"):
+                response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 async def seed_admin() -> None:
@@ -143,6 +176,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(MaskSensitiveDataMiddleware)
+app.add_middleware(WebSecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -163,8 +197,23 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/", tags=["meta"])
-async def root() -> dict[str, str]:
+@app.get("/app", include_in_schema=False)
+async def app_no_slash() -> RedirectResponse:
+    # Relative asset URLs in index.html need the trailing slash.
+    return RedirectResponse("/app/", status_code=307)
+
+
+if settings.WEB_ROOT.is_dir():
+    app.mount("/app", StaticFiles(directory=settings.WEB_ROOT, html=True), name="web")
+else:  # pragma: no cover - server-only deployments
+    logger.warning("Web client not found at %s; /app is disabled", settings.WEB_ROOT)
+
+
+@app.get("/", tags=["meta"], response_model=None)
+async def root(request: Request):
+    # Browsers opening the bare domain land in the web app; API clients get JSON.
+    if "text/html" in request.headers.get("accept", "") and settings.WEB_ROOT.is_dir():
+        return RedirectResponse("/app/", status_code=307)
     return {
         "service": "AI Dev Department API",
         "version": __version__,
