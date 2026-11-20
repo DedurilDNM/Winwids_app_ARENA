@@ -231,8 +231,8 @@ async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int) ->
             # login_required / service error: retrying won't help without
             # re-login, so fail fast.
             msg = str(exc)
-            if "login" in msg.lower() or "requires login" in msg.lower():
-                raise
+            if "login" in msg.lower() or "captcha" in msg.lower():
+                raise  # retrying cannot help and could duplicate the message
             last_exc = exc
         except Exception as exc:  # noqa: BLE001 - transient browser/network error
             last_exc = exc
@@ -243,6 +243,17 @@ async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int) ->
     raise RuntimeError(
         f"Adapter failed after {settings.ADAPTER_MAX_RETRIES} attempts: {last_exc}"
     ) from last_exc
+
+
+def _explain(exc: BaseException, who: str) -> str:
+    """User-facing reason for an adapter failure."""
+    msg = str(exc)
+    if "captcha" in msg.lower():
+        return (f"{who}: the service is asking for a captcha. Open «Смотреть агента», "
+                "solve it in the browser and start the project again.")
+    if "login" in msg.lower():
+        return f"{who}: the account is logged out. Log in again (Аккаунты → «Перелогиниться») and restart."
+    return f"{who} did not respond: {type(exc).__name__}: {msg}"
 
 
 async def _fail_project(session_factory, project_id: int, reason: str, *, ws_manager) -> str:
@@ -424,7 +435,7 @@ async def run_project_logic(
     except Exception as exc:
         return await _fail_project(
             session_factory, project_id,
-            f"Orchestrator did not respond: {type(exc).__name__}: {exc}",
+            _explain(exc, "Orchestrator"),
             ws_manager=ws,
         )
 
@@ -544,7 +555,7 @@ async def run_project_logic(
                 await _set_task_status(session_factory, task_id, "failed", ws_manager=ws, project_id=project_id)
                 return await _fail_project(
                     session_factory, project_id,
-                    f"Agent for task {task_id} did not respond: {type(exc).__name__}: {exc}",
+                    _explain(exc, f"Agent for task {task_id} ({agent.name})"),
                     ws_manager=ws,
                 )
             try:

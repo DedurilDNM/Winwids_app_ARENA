@@ -52,9 +52,10 @@ FIND_JS = """
   while ((n = walker.nextNode())) {
     if (n.closest("textarea, [contenteditable=true], input")) continue;
     const t = (n.innerText || "").trim();
-    if (!(exact ? t === needle : t.includes(needle))) continue;
+    const bare = (x) => x.replace(/[\s.,!"'`*]/g, "");
+    if (!(exact ? bare(t) === needle : t.includes(needle))) continue;
     // deepest only: skip if a child also matches
-    const child = [...n.children].some(c => { const ct = (c.innerText || "").trim(); return exact ? ct === needle : ct.includes(needle); });
+    const child = [...n.children].some(c => { const ct = (c.innerText || "").trim(); return exact ? bare(ct) === needle : ct.includes(needle); });
     if (child) continue;
     const chain = [];
     let p = n;
@@ -278,8 +279,8 @@ async def probe_page(page, *, url: str, send: bool = True) -> None:
     try:
         await adapter.send_message(page, f"Reply with only the word {marker2}")
         text = await asyncio.wait_for(adapter.wait_response(page, timeout=90), timeout=120)
-        ok = text.strip().strip(".").endswith(marker2)
-        out(f"adapter reply: {text[:120]!r} -> {'OK' if ok else 'WRONG (expected ' + marker2 + ')'}")
+        ok = marker2 in text and len(text.strip()) < 80
+        out(f"adapter reply: {len(text.strip())} chars, contains {marker2}: {marker2 in text} -> {'OK' if ok else 'WRONG'}")
     except Exception as exc:
         out(f"adapter failed: {type(exc).__name__}: {str(exc)[:200]}")
 

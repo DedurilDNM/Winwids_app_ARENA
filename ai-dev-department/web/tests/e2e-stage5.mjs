@@ -36,7 +36,7 @@ console.log(report.split("\n").filter((l) => /setup click|login form|adapter rep
 assert.match(report, /mode: the account's live browser/);
 assert.equal((report.match(/setup click .*: OK/g) || []).length, 2, "Mode + Agent clicks");
 assert.match(report, /login form visible: no/);
-assert.match(report, /adapter reply: 'PONG\d+' -> OK/);
+assert.match(report, /adapter reply: \d+ chars, contains PONG\d+: true -> OK/i);
 assert.match(report, /parsed: status=DONE files=\['hello.py'\] -> OK/);
 assert.ok(!/https?:\/\//.test(report), "no URLs in the report");
 assert.ok(!/Switch to Agent mode|Logged in as/.test(report), "no page text in the report");

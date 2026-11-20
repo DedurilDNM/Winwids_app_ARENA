@@ -347,3 +347,39 @@ def test_is_echo():
     assert _is_echo("You are the Coder on the software", "You are the Coder on the software project X\nmore")
     assert not _is_echo("PONG1", "Reply with only the word PONG1")
     assert not _is_echo("ok", "")
+
+
+def test_captcha_after_send_waits_then_fails_without_resending():
+    captcha = {"on": True}
+
+    async def evaluate(script, *args):
+        return captcha["on"]
+
+    page = StubPage()
+    page.evaluate = evaluate
+    a = _adapter(ADAPTER_CAPTCHA_WAIT_SECONDS=2.5)
+    with pytest.raises(RuntimeError, match="captcha"):
+        asyncio.run(_run(a.send_message(page, "hello")))
+    assert page.filled == {DEFAULT_INPUT: "hello"}  # typed once, never resent
+
+
+def test_captcha_that_clears_by_itself_is_fine():
+    captcha = {"on": True}
+
+    async def evaluate(script, *args):
+        return captcha["on"]
+
+    page = StubPage()
+    page.evaluate = evaluate
+    a = _adapter(ADAPTER_CAPTCHA_WAIT_SECONDS=30)
+
+    async def flow():
+        async def clear_later():
+            await asyncio.sleep(2.5)
+            captcha["on"] = False
+
+        task = asyncio.create_task(clear_later())
+        await a.send_message(page, "hello")
+        await task
+
+    asyncio.run(_run(flow()))

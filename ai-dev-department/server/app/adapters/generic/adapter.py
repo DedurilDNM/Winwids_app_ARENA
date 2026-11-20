@@ -39,6 +39,13 @@ State = Literal["idle", "generating", "error", "login_required"]
 _MONOTONIC = time.monotonic
 
 
+_CAPTCHA_JS = """
+() => [...document.querySelectorAll("iframe")].some((f) => {
+  const r = f.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 && /captcha|challenge|turnstile/i.test(f.src || "");
+})
+"""
+
 _PASTE_JS = """
 (el, text) => {
   el.focus();
@@ -68,6 +75,7 @@ class Adapter:
     def __init__(self, settings=None) -> None:
         self.settings = settings or get_settings()
         self._last_sent: dict[int, str] = {}  # id(page) -> last prompt (echo filter)
+        self._before: dict[int, tuple[int, str]] = {}  # id(page) -> chat snapshot taken before sending
 
     # ------------------------------------------------------------------ config
 
@@ -218,6 +226,8 @@ class Adapter:
         input_sel = self._selectors["input"]
         send_sel = self._selectors["send"]
 
+        # Snapshot BEFORE sending: a fast reply must not end up in "before".
+        self._before[id(page)] = (await self._message_count(page), await self._last_message_text(page))
         try:
             await self._write_input(page, text)
         except RuntimeError:
@@ -240,7 +250,32 @@ class Adapter:
                     f"Could not send message (no working send selector: {send_sel})"
                 ) from exc
         await self._accept_dialog_and_resend(page)
+        await self._wait_captcha(page)
         logger.debug("Message sent to service (len=%d)", len(text))
+
+    async def _captcha_visible(self, page) -> bool:
+        try:
+            return bool(await page.evaluate(_CAPTCHA_JS))
+        except Exception:
+            return False
+
+    async def _wait_captcha(self, page) -> None:
+        """If the service shows a captcha after sending, wait for it to clear.
+
+        Never resends (that would duplicate the task). Raises a RuntimeError
+        containing "captcha" when it does not clear in time."""
+        await asyncio.sleep(1.0)
+        if not await self._captcha_visible(page):
+            return
+        limit = float(getattr(self.settings, "ADAPTER_CAPTCHA_WAIT_SECONDS", 300.0))
+        logger.warning("Captcha shown after sending; waiting up to %.0fs for it to clear", limit)
+        deadline = _MONOTONIC() + limit
+        while _MONOTONIC() < deadline:
+            await asyncio.sleep(2.0)
+            if not await self._captcha_visible(page):
+                logger.info("Captcha cleared")
+                return
+        raise RuntimeError("Service is showing a captcha that did not clear by itself")
 
     async def _write_input(self, page, text: str) -> None:
         """Put `text` into the first VISIBLE chat input (a selector may also
@@ -317,8 +352,10 @@ class Adapter:
 
         # Snapshot of the conversation before we wait, so we can detect a
         # genuinely new assistant message (not an echo of what we sent).
-        before_count = await self._message_count(page)
-        before_text = await self._last_message_text(page)
+        snapshot = self._before.pop(id(page), None)
+        if snapshot is None:  # wait_response without send_message (tests / reuse)
+            snapshot = (await self._message_count(page), await self._last_message_text(page))
+        before_count, before_text = snapshot
         candidate, candidate_since = "", 0.0
 
         while True:

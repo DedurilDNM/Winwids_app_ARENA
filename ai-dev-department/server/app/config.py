@@ -167,6 +167,10 @@ class Settings(BaseSettings):
     ADAPTER_SETUP_CLICKS: str = ""
     # URL that opens a NEW chat. Empty = SERVICE_URL. Placeholders: {base}, {chat_ref}.
     ADAPTER_NEW_CHAT_URL: str = ""
+    # A captcha frame visible after sending: wait this long for it to clear
+    # (invisible checks usually pass by themselves; a human can solve a visible
+    # one through «Смотреть агента»). Then the task stops with a clear message.
+    ADAPTER_CAPTCHA_WAIT_SECONDS: float = 300.0
     # Timing / resilience
     ADAPTER_POLL_INTERVAL_SECONDS: float = 2.0
     ADAPTER_NAVIGATE_TIMEOUT_SECONDS: float = 30.0
