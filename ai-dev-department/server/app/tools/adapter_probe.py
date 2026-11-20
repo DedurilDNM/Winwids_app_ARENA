@@ -11,7 +11,8 @@ session - the account's live browser in the API process is not touched):
    90 s and reports which elements hold the user message and the reply, and
    what changes while the answer is generated (stop button, aria-busy...);
 4. runs the CURRENT adapter configuration end-to-end and shows its result.
-Screenshots go to data/probe/. Nothing secret is printed (no cookies/tokens).
+Screenshots go to data/probe/. Nothing secret is printed (no cookies/tokens),
+and no page URL, title or page text either - only element structure.
 """
 
 from __future__ import annotations
@@ -77,10 +78,11 @@ OVERLAYS_JS = """
   const d = eval(describe);
   const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== "hidden"; };
   const dialogs = [...document.querySelectorAll("[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open], [role=alert]")]
-    .filter(vis).map((e) => d(e) + " :: " + (e.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 220));
+    .filter(vis).map((e) => d(e) + " :: " + ((e.innerText || "").trim().length) + " chars of text");
   const frames = [...document.querySelectorAll("iframe")].filter(vis)
-    .map((f) => { try { return new URL(f.src).host + new URL(f.src).pathname.slice(0, 40); } catch { return "(no src)"; } })
-    .filter((s) => /captcha|challenge|turnstile|recaptcha|hcaptcha|cloudflare/i.test(s));
+    .map((f) => f.src || "")
+    .filter((s) => /captcha|challenge|turnstile|recaptcha|hcaptcha|cloudflare/i.test(s))
+    .map((s) => (s.match(/captcha|challenge|turnstile|recaptcha|hcaptcha|cloudflare/i) || ["?"])[0].toLowerCase());
   return { dialogs: [...new Set(dialogs)].slice(0, 5), captcha: frames.slice(0, 3) };
 }
 """
@@ -155,7 +157,7 @@ async def main(args) -> int:
         await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         await asyncio.sleep(6)
         await page.screenshot(path=str(shots / "1-opened.png"))
-        out(f"page: {page.url}  title={await page.title()!r}")
+        out("page opened")  # URL, title and page text are intentionally never printed
         login = await visible(page, settings.ADAPTER_LOGIN_SELECTOR or "input[type=password]", 3)
         out(f"login form visible: {'YES -> session not logged in: ' + '; '.join(login) if login else 'no'}")
         await overlays(page, "on open")
@@ -226,11 +228,9 @@ async def main(args) -> int:
             if reply_at is not None and not st["stop"] and not st["busy"] and time.monotonic() - t0 > reply_at + 3:
                 break
         await page.screenshot(path=str(shots / "2-after-reply.png"))
-        out(f"reply with {marker}: {'after %.0fs' % reply_at if reply_at else 'NOT FOUND within 90s'}  (url now {page.url})")
+        out(f"reply with {marker}: {'after %.0fs' % reply_at if reply_at else 'NOT FOUND within 90s'}  (url changed: {page.url != url_before})")
         if not reply_at:
             await overlays(page, "after waiting")
-            body = await page.evaluate("() => document.body.innerText.replace(/\\s+/g, ' ').slice(0, 400)")
-            out(f"page text: {body}")
         out("while generating, stop buttons: " + ("; ".join(sorted(seen_stop)) or "none seen"))
         out("while generating, busy markers: " + ("; ".join(sorted(seen_busy)) or "none seen"))
         out("\n-- USER message element (innermost -> outer) --")
@@ -277,7 +277,6 @@ async def main(args) -> int:
                 out(f"  | {line[:100]}")
         except Exception as exc:
             out(f"contract check failed: {type(exc).__name__}: {str(exc)[:200]}")
-        out(f"page url now: {page.url}")
         out("=== END (screenshots: server/data/probe/) ===")
         return 0
     finally:
