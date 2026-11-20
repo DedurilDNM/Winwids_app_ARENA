@@ -27,6 +27,7 @@ from app import __version__
 from app.api import accounts as accounts_api
 from app.api import auth as auth_api
 from app.api import github as github_api
+from app.api import probe as probe_api
 from app.api import projects as projects_api
 from app.api import vnc as vnc_api
 from app.api import ws as ws_api
@@ -218,6 +219,7 @@ app.include_router(accounts_api.router)
 app.include_router(vnc_api.router)
 app.include_router(projects_api.router)
 app.include_router(github_api.router)
+app.include_router(probe_api.router)
 app.include_router(ws_api.router)
 
 

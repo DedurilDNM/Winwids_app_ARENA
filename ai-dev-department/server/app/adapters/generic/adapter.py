@@ -150,29 +150,42 @@ class Adapter:
     async def open_chat(self, context, chat_ref: str):
         """Open the service chat in a new page and wait until ready."""
         page = await context.new_page()
+        # Most chat services start a new conversation on their home page.
+        # ADAPTER_NEW_CHAT_URL may override it ({base} and {chat_ref} placeholders).
+        template = getattr(self.settings, "ADAPTER_NEW_CHAT_URL", "") or ""
         base = self.settings.SERVICE_URL.rstrip("/")
-        url = f"{base}/chat?ref={chat_ref}"
-        try:
-            await page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS),
-            )
-        except Exception:
-            # Fall back to the base URL if /chat does not exist on this service.
-            logger.debug("open_chat: /chat route unavailable, falling back to base URL")
-            await page.goto(
-                self.settings.SERVICE_URL,
-                wait_until="domcontentloaded",
-                timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS),
-            )
+        url = template.format(base=base, chat_ref=chat_ref) if template else self.settings.SERVICE_URL
+        await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS),
+        )
         ready_sel = self._selectors["ready"]
         wait_sel = ready_sel or self._selectors["input"]
         if wait_sel:
             await page.wait_for_selector(
                 wait_sel, timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS)
             )
+        await self.prepare_page(page)
         return page
+
+    async def prepare_page(self, page) -> list[tuple[str, bool]]:
+        """Run ADAPTER_SETUP_CLICKS (e.g. switch the chat to a specific mode).
+
+        Returns [(selector, clicked)]. A click that fails is logged and skipped:
+        the chat may already be in the wanted state.
+        """
+        raw = getattr(self.settings, "ADAPTER_SETUP_CLICKS", "") or ""
+        results: list[tuple[str, bool]] = []
+        for selector in [part.strip() for part in raw.split("||") if part.strip()]:
+            try:
+                await page.click(selector, timeout=5_000)
+                results.append((selector, True))
+                await asyncio.sleep(0.5)
+            except Exception:
+                logger.warning("Setup click not possible: %s", selector)
+                results.append((selector, False))
+        return results
 
     async def send_message(self, page, text: str) -> None:
         """Type `text` into the chat input and send it."""

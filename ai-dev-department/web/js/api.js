@@ -174,6 +174,8 @@ export const api = {
   vncStart: (id) => request("POST", `/api/accounts/${id}/vnc/start`),
   vncStop: (id) => request("POST", `/api/accounts/${id}/vnc/stop`),
   vncInfo: (id) => request("GET", `/api/accounts/${id}/vnc`),
+  probeStart: (id) => request("POST", `/api/accounts/${id}/probe`),
+  probeStatus: (id) => request("GET", `/api/accounts/${id}/probe`),
 
   githubStatus: () => request("GET", "/api/github"),
   githubConnect: (token) => request("PUT", "/api/github", { token }),

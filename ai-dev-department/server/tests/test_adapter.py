@@ -162,14 +162,35 @@ def test_adapter_uses_configured_selectors():
     assert a._selectors["send"] == "#my-send"
 
 
-def test_open_chat_navigates_to_chat_url_and_waits_for_input():
+def test_open_chat_navigates_to_new_chat_url_and_waits_for_input():
     page = StubPage()
-    ctx = FakeContext(page)
     a = _adapter()
-    result = asyncio.run(_run(a.open_chat(ctx, "project-42")))
+    result = asyncio.run(_run(a.open_chat(FakeContext(page), "project-42")))
     assert result is page
-    assert page.url == "https://service.example.com/chat?ref=project-42"
+    assert page.url == "https://service.example.com"  # default: SERVICE_URL is a new chat
     assert DEFAULT_INPUT in page.wait_calls
+
+    page2 = StubPage()
+    a2 = _adapter(ADAPTER_NEW_CHAT_URL="{base}/new?ref={chat_ref}")
+    asyncio.run(_run(a2.open_chat(FakeContext(page2), "project-42")))
+    assert page2.url == "https://service.example.com/new?ref=project-42"
+
+
+def test_setup_clicks_run_in_order_and_failures_are_skipped():
+    class ClickPage:
+        def __init__(self):
+            self.clicked = []
+
+        async def click(self, selector, timeout=None):
+            if "missing" in selector:
+                raise TimeoutError("not found")
+            self.clicked.append(selector)
+
+    page = ClickPage()
+    a = _adapter(ADAPTER_SETUP_CLICKS='button[aria-label="Mode"] || .missing || [role="option"]:has-text("Agent")')
+    result = asyncio.run(_run(a.prepare_page(page)))
+    assert page.clicked == ['button[aria-label="Mode"]', '[role="option"]:has-text("Agent")']
+    assert [ok for _, ok in result] == [True, False, True]
 
 
 def test_send_message_fills_input_and_clicks_send():

@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import random
+import re
 import sys
 import time
 import warnings
@@ -98,8 +99,14 @@ OVERLAYS_JS = """
 INPUT_TEXT_JS = "(el) => (el.value !== undefined ? el.value : el.innerText) || ''"
 
 
+_sinks: list = []  # report collectors (in-app probe); empty -> stdout
+
+
 def out(line: str = "") -> None:
-    print(line, flush=True)
+    if _sinks:
+        _sinks[-1](line)
+    else:
+        print(line, flush=True)
 
 
 async def visible(page, selector: str, limit: int = 12) -> list[str]:
@@ -138,175 +145,216 @@ async def overlays(page, label: str) -> None:
         out(f"    dialog control {c}")
 
 
-async def main(args) -> int:
+def _shape(line: str) -> str:
+    """Show our own contract markers, hide any other text (privacy rule)."""
+    stripped = line.strip()
+    if re.match(r"^(#{1,6}\s*)?(\*\*)?(FILE|STATUS|SUMMARY):", stripped) or re.match(r"^(`{3,}|~{3,})", stripped):
+        return stripped[:80]
+    return f"<text, {len(stripped)} chars>" if stripped else ""
+
+
+async def probe_page(page, *, url: str, send: bool = True) -> None:
+    """The probe itself, on an already open page of a logged-in context."""
     from app.adapters.generic.adapter import Adapter
+
+    settings = get_settings()
+    shots = DATA_DIR / "probe"
+    shots.mkdir(parents=True, exist_ok=True)
+    await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    await asyncio.sleep(6)
+    await page.screenshot(path=str(shots / "1-opened.png"))
+    out("page opened")  # URL, title and page text are intentionally never printed
+    if settings.ADAPTER_SETUP_CLICKS:
+        for selector, ok in await Adapter().prepare_page(page):
+            out(f"setup click {selector!r}: {'OK' if ok else 'NOT FOUND'}")
+    login = await visible(page, settings.ADAPTER_LOGIN_SELECTOR or "input[type=password]", 3)
+    out(f"login form visible: {'YES -> session not logged in: ' + '; '.join(login) if login else 'no'}")
+    await overlays(page, "on open")
+
+    out("\n-- inputs (visible) --")
+    inputs = await visible(page, "textarea, [contenteditable=true], [role=textbox], input[type=text], input:not([type])")
+    for d in inputs:
+        out(f"  {d}")
+    out(f"  current ADAPTER_INPUT_SELECTOR matches: {await visible(page, settings.ADAPTER_INPUT_SELECTOR, 3)}")
+
+    out("\n-- buttons (visible, first 20) --")
+    for d in await visible(page, "button, [role=button], input[type=submit]", 20):
+        out(f"  {d}")
+    out(f"  current ADAPTER_SEND_SELECTOR matches: {await visible(page, settings.ADAPTER_SEND_SELECTOR, 3)}")
+
+    if not send:
+        return
+
+    marker = f"PONG{random.randint(1000, 9999)}"
+    prompt = f"Reply with only the word {marker}"
+    box = None
+    for sel in (settings.ADAPTER_INPUT_SELECTOR, "textarea", "[contenteditable=true]", "[role=textbox]"):
+        for el in await page.query_selector_all(sel):
+            if await el.is_visible():
+                box = el
+                break
+        if box:
+            break
+    if box is None:
+        out("\n!! No visible input to type into. Send the screenshot data/probe/1-opened.png.")
+        return
+    out(f"\n-- test message: typing into {await box.evaluate(DESCRIBE_JS)} and pressing Enter --")
+    url_before = page.url
+    await box.click()
+    await page.keyboard.type(prompt, delay=15)
+    out(f"input text before Enter: {len(await box.evaluate(INPUT_TEXT_JS))} chars")
+    await page.keyboard.press("Enter")
+    await asyncio.sleep(3)
+    left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
+    out(f"after Enter: input has {left} chars left, url changed: {page.url != url_before}")
+    await overlays(page, "after Enter")
+    if left and page.url == url_before and settings.ADAPTER_DIALOG_ACCEPT_SELECTOR:
+        accept = None
+        for el in await page.query_selector_all(settings.ADAPTER_DIALOG_ACCEPT_SELECTOR):
+            if await el.is_visible():
+                accept = el
+                break
+        out(f"ADAPTER_DIALOG_ACCEPT_SELECTOR visible: {accept is not None}")
+        if accept is not None:
+            await accept.click()
+            await asyncio.sleep(1.5)
+            left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
+            if left:
+                await page.keyboard.press("Enter")
+                await asyncio.sleep(3)
+                left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
+            out(f"after accepting the pop-up: input has {left} chars left, url changed: {page.url != url_before}")
+    if left and page.url == url_before:
+        send = None
+        for el in await page.query_selector_all(settings.ADAPTER_SEND_SELECTOR):
+            if await el.is_visible():
+                send = el
+                break
+        if send is not None:
+            out(f"Enter did not send -> clicking {await send.evaluate(DESCRIBE_JS)} (disabled={await send.is_disabled()})")
+            try:
+                await send.click(timeout=10_000)
+            except Exception as exc:
+                out(f"click failed: {type(exc).__name__}: {str(exc).splitlines()[0][:150]}")
+            await asyncio.sleep(3)
+            left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
+            out(f"after click: input has {left} chars left, url changed: {page.url != url_before}")
+            await overlays(page, "after click")
+    not_sent = bool(left) and page.url == url_before
+    if not_sent:
+        out("message was NOT sent (text still in the input) -> skipping the reply wait")
+    t0 = time.monotonic()
+    seen_busy, seen_stop, reply_at = set(), set(), None
+    while not not_sent and time.monotonic() - t0 < 90:
+        await asyncio.sleep(1)
+        st = await page.evaluate(STATE_JS, [DESCRIBE_JS])
+        seen_busy.update(st["busy"])
+        seen_stop.update(st["stop"])
+        found = await page.evaluate(FIND_JS, [marker, True, DESCRIBE_JS])
+        if found and reply_at is None:
+            reply_at = time.monotonic() - t0
+        if reply_at is not None and not st["stop"] and not st["busy"] and time.monotonic() - t0 > reply_at + 3:
+            break
+    await page.screenshot(path=str(shots / "2-after-reply.png"))
+    out(f"reply with {marker}: {'after %.0fs' % reply_at if reply_at else 'NOT FOUND within 90s'}  (url changed: {page.url != url_before})")
+    if not reply_at:
+        await overlays(page, "after waiting")
+    out("while generating, stop buttons: " + ("; ".join(sorted(seen_stop)) or "none seen"))
+    out("while generating, busy markers: " + ("; ".join(sorted(seen_busy)) or "none seen"))
+    out("\n-- USER message element (innermost -> outer) --")
+    for chain in (await page.evaluate(FIND_JS, ["Reply with only the word", False, DESCRIBE_JS]))[:1]:
+        for i, d in enumerate(chain):
+            out(f"  {'  ' * i}{d}")
+    out("-- REPLY element (innermost -> outer) --")
+    for chain in (await page.evaluate(FIND_JS, [marker, True, DESCRIBE_JS]))[:2]:
+        for i, d in enumerate(chain):
+            out(f"  {'  ' * i}{d}")
+        out("  --")
+    out(f"current ADAPTER_MESSAGE_SELECTOR count: {len(await page.query_selector_all(settings.ADAPTER_MESSAGE_SELECTOR))}")
+
+    out("\n-- current adapter config, end to end --")
+    adapter = Adapter()
+    marker2 = f"PONG{random.randint(1000, 9999)}"
+    try:
+        await adapter.send_message(page, f"Reply with only the word {marker2}")
+        text = await asyncio.wait_for(adapter.wait_response(page, timeout=90), timeout=120)
+        ok = text.strip().strip(".").endswith(marker2)
+        out(f"adapter reply: {text[:120]!r} -> {'OK' if ok else 'WRONG (expected ' + marker2 + ')'}")
+    except Exception as exc:
+        out(f"adapter failed: {type(exc).__name__}: {str(exc)[:200]}")
+
+    out("\n-- output contract round trip (what agents must do) --")
+    contract_prompt = (
+        "Reply strictly in this format and nothing else:\n\n"
+        "FILE: hello.py\n```python\nprint(\"hello\")\n```\n\n"
+        "STATUS: DONE\nSUMMARY: probe"
+    )
+    try:
+        from app.services.agent_output import AgentOutputError, parse_agent_output
+
+        await adapter.send_message(page, contract_prompt)
+        text = await asyncio.wait_for(adapter.wait_response(page, timeout=120), timeout=150)
+        try:
+            parsed = parse_agent_output(text)
+            good = parsed.files.get("hello.py", "").strip() == 'print("hello")'
+            out(f"parsed: status={parsed.status} files={list(parsed.files)} -> {'OK' if good else 'CONTENT MANGLED: ' + repr(parsed.files)[:200]}")
+        except AgentOutputError as exc:
+            out(f"NOT PARSED: {exc}")
+        out("reply shape (contract markers only, other text hidden):")
+        for line in text.splitlines()[:14]:
+            out(f"  | {_shape(line)}")
+    except Exception as exc:
+        out(f"contract check failed: {type(exc).__name__}: {str(exc)[:200]}")
+    out("=== END (screenshots: server/data/probe/) ===")
+    out("=== END ===")
+
+
+async def run_probe_in_context(context, account) -> str:
+    """Run the probe in an existing browser context (the account's LIVE browser
+    in the API process) and return the report text."""
+    lines: list[str] = []
+    _sinks.append(lines.append)
+    page = None
+    try:
+        settings = get_settings()
+        out("=== ADAPTER PROBE REPORT ===")
+        out(f"account: #{account.id} ({account.default_role}), proxy: {'yes' if settings.PROXY_URL else 'no'}, "
+            "mode: the account's live browser (the one agents use)")
+        page = await context.new_page()
+        await probe_page(page, url=settings.SERVICE_URL)
+    except Exception as exc:  # report, never raise into the API
+        out(f"probe failed: {type(exc).__name__}: {str(exc).splitlines()[0][:200] if str(exc) else ''}")
+    finally:
+        _sinks.pop()
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+    return "\n".join(lines)
+
+
+async def main(args) -> int:
     from app.security import decrypt_bytes
     from app.services.browser_manager import BrowserManager
+    from app.services.vnc_manager import VncManager
 
     settings = get_settings()
     account = await pick_account(args.account)
     if account is None:
         out("!! No account with a saved session. Log into one in the app first («Готово, я вошёл»).")
         return 1
-    url = args.url or settings.SERVICE_URL
-    shots = DATA_DIR / "probe"
-    shots.mkdir(parents=True, exist_ok=True)
-
     out("=== ADAPTER PROBE REPORT ===")
     display = f":{settings.VNC_SHARED_DISPLAY}"
-    from app.services.vnc_manager import VncManager
-
     headed = not args.headless and VncManager.x_display_alive(settings.VNC_SHARED_DISPLAY)
     out(f"account: #{account.id} ({account.default_role}), proxy: {'yes' if settings.PROXY_URL else 'no'}, "
-        f"mode: {'headed on ' + display + ' (like the real agent browsers)' if headed else 'headless'}")
+        f"mode: {'headed on ' + display if headed else 'headless'}, from the SAVED session")
     bm = BrowserManager()
     try:
         context = await bm.launch(account.id, storage_state=json.loads(decrypt_bytes(account.storage_state_encrypted)),
                                   headless=not headed, display=display if headed else None, open_url=False)
         page = await context.new_page()
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        await asyncio.sleep(6)
-        await page.screenshot(path=str(shots / "1-opened.png"))
-        out("page opened")  # URL, title and page text are intentionally never printed
-        login = await visible(page, settings.ADAPTER_LOGIN_SELECTOR or "input[type=password]", 3)
-        out(f"login form visible: {'YES -> session not logged in: ' + '; '.join(login) if login else 'no'}")
-        await overlays(page, "on open")
-
-        out("\n-- inputs (visible) --")
-        inputs = await visible(page, "textarea, [contenteditable=true], [role=textbox], input[type=text], input:not([type])")
-        for d in inputs:
-            out(f"  {d}")
-        out(f"  current ADAPTER_INPUT_SELECTOR matches: {await visible(page, settings.ADAPTER_INPUT_SELECTOR, 3)}")
-
-        out("\n-- buttons (visible, first 20) --")
-        for d in await visible(page, "button, [role=button], input[type=submit]", 20):
-            out(f"  {d}")
-        out(f"  current ADAPTER_SEND_SELECTOR matches: {await visible(page, settings.ADAPTER_SEND_SELECTOR, 3)}")
-
-        if args.no_send:
-            return 0
-
-        marker = f"PONG{random.randint(1000, 9999)}"
-        prompt = f"Reply with only the word {marker}"
-        box = None
-        for sel in (settings.ADAPTER_INPUT_SELECTOR, "textarea", "[contenteditable=true]", "[role=textbox]"):
-            for el in await page.query_selector_all(sel):
-                if await el.is_visible():
-                    box = el
-                    break
-            if box:
-                break
-        if box is None:
-            out("\n!! No visible input to type into. Send the screenshot data/probe/1-opened.png.")
-            return 2
-        out(f"\n-- test message: typing into {await box.evaluate(DESCRIBE_JS)} and pressing Enter --")
-        url_before = page.url
-        await box.click()
-        await page.keyboard.type(prompt, delay=15)
-        out(f"input text before Enter: {len(await box.evaluate(INPUT_TEXT_JS))} chars")
-        await page.keyboard.press("Enter")
-        await asyncio.sleep(3)
-        left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
-        out(f"after Enter: input has {left} chars left, url changed: {page.url != url_before}")
-        await overlays(page, "after Enter")
-        if left and page.url == url_before and settings.ADAPTER_DIALOG_ACCEPT_SELECTOR:
-            accept = None
-            for el in await page.query_selector_all(settings.ADAPTER_DIALOG_ACCEPT_SELECTOR):
-                if await el.is_visible():
-                    accept = el
-                    break
-            out(f"ADAPTER_DIALOG_ACCEPT_SELECTOR visible: {accept is not None}")
-            if accept is not None:
-                await accept.click()
-                await asyncio.sleep(1.5)
-                left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
-                if left:
-                    await page.keyboard.press("Enter")
-                    await asyncio.sleep(3)
-                    left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
-                out(f"after accepting the pop-up: input has {left} chars left, url changed: {page.url != url_before}")
-        if left and page.url == url_before:
-            send = None
-            for el in await page.query_selector_all(settings.ADAPTER_SEND_SELECTOR):
-                if await el.is_visible():
-                    send = el
-                    break
-            if send is not None:
-                out(f"Enter did not send -> clicking {await send.evaluate(DESCRIBE_JS)} (disabled={await send.is_disabled()})")
-                try:
-                    await send.click(timeout=10_000)
-                except Exception as exc:
-                    out(f"click failed: {type(exc).__name__}: {str(exc).splitlines()[0][:150]}")
-                await asyncio.sleep(3)
-                left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
-                out(f"after click: input has {left} chars left, url changed: {page.url != url_before}")
-                await overlays(page, "after click")
-        not_sent = bool(left) and page.url == url_before
-        if not_sent:
-            out("message was NOT sent (text still in the input) -> skipping the reply wait")
-        t0 = time.monotonic()
-        seen_busy, seen_stop, reply_at = set(), set(), None
-        while not not_sent and time.monotonic() - t0 < 90:
-            await asyncio.sleep(1)
-            st = await page.evaluate(STATE_JS, [DESCRIBE_JS])
-            seen_busy.update(st["busy"])
-            seen_stop.update(st["stop"])
-            found = await page.evaluate(FIND_JS, [marker, True, DESCRIBE_JS])
-            if found and reply_at is None:
-                reply_at = time.monotonic() - t0
-            if reply_at is not None and not st["stop"] and not st["busy"] and time.monotonic() - t0 > reply_at + 3:
-                break
-        await page.screenshot(path=str(shots / "2-after-reply.png"))
-        out(f"reply with {marker}: {'after %.0fs' % reply_at if reply_at else 'NOT FOUND within 90s'}  (url changed: {page.url != url_before})")
-        if not reply_at:
-            await overlays(page, "after waiting")
-        out("while generating, stop buttons: " + ("; ".join(sorted(seen_stop)) or "none seen"))
-        out("while generating, busy markers: " + ("; ".join(sorted(seen_busy)) or "none seen"))
-        out("\n-- USER message element (innermost -> outer) --")
-        for chain in (await page.evaluate(FIND_JS, ["Reply with only the word", False, DESCRIBE_JS]))[:1]:
-            for i, d in enumerate(chain):
-                out(f"  {'  ' * i}{d}")
-        out("-- REPLY element (innermost -> outer) --")
-        for chain in (await page.evaluate(FIND_JS, [marker, True, DESCRIBE_JS]))[:2]:
-            for i, d in enumerate(chain):
-                out(f"  {'  ' * i}{d}")
-            out("  --")
-        out(f"current ADAPTER_MESSAGE_SELECTOR count: {len(await page.query_selector_all(settings.ADAPTER_MESSAGE_SELECTOR))}")
-
-        out("\n-- current adapter config, end to end --")
-        adapter = Adapter()
-        marker2 = f"PONG{random.randint(1000, 9999)}"
-        try:
-            await adapter.send_message(page, f"Reply with only the word {marker2}")
-            text = await asyncio.wait_for(adapter.wait_response(page, timeout=90), timeout=120)
-            ok = text.strip().strip(".").endswith(marker2)
-            out(f"adapter reply: {text[:120]!r} -> {'OK' if ok else 'WRONG (expected ' + marker2 + ')'}")
-        except Exception as exc:
-            out(f"adapter failed: {type(exc).__name__}: {str(exc)[:200]}")
-
-        out("\n-- output contract round trip (what agents must do) --")
-        contract_prompt = (
-            "Reply strictly in this format and nothing else:\n\n"
-            "FILE: hello.py\n```python\nprint(\"hello\")\n```\n\n"
-            "STATUS: DONE\nSUMMARY: probe"
-        )
-        try:
-            from app.services.agent_output import AgentOutputError, parse_agent_output
-
-            await adapter.send_message(page, contract_prompt)
-            text = await asyncio.wait_for(adapter.wait_response(page, timeout=120), timeout=150)
-            try:
-                parsed = parse_agent_output(text)
-                good = parsed.files.get("hello.py", "").strip() == 'print("hello")'
-                out(f"parsed: status={parsed.status} files={list(parsed.files)} -> {'OK' if good else 'CONTENT MANGLED: ' + repr(parsed.files)[:200]}")
-            except AgentOutputError as exc:
-                out(f"NOT PARSED: {exc}")
-            out("raw reply as the adapter sees it:")
-            for line in text.splitlines()[:14]:
-                out(f"  | {line[:100]}")
-        except Exception as exc:
-            out(f"contract check failed: {type(exc).__name__}: {str(exc)[:200]}")
-        out("=== END (screenshots: server/data/probe/) ===")
+        await probe_page(page, url=args.url or settings.SERVICE_URL, send=not args.no_send)
         return 0
     finally:
         await bm.shutdown()

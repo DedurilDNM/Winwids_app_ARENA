@@ -161,6 +161,12 @@ class Settings(BaseSettings):
     # agreement). If it is visible after sending, the adapter clicks it and
     # sends again. Find it with `python -m app.tools.adapter_probe`.
     ADAPTER_DIALOG_ACCEPT_SELECTOR: str = ""
+    # Optional clicks done in every new chat before the first message, in order,
+    # separated by "||" - e.g. open a mode menu, then pick an option:
+    # button[aria-label="Mode"] || [role="option"]:has-text("Agent")
+    ADAPTER_SETUP_CLICKS: str = ""
+    # URL that opens a NEW chat. Empty = SERVICE_URL. Placeholders: {base}, {chat_ref}.
+    ADAPTER_NEW_CHAT_URL: str = ""
     # Timing / resilience
     ADAPTER_POLL_INTERVAL_SECONDS: float = 2.0
     ADAPTER_NAVIGATE_TIMEOUT_SECONDS: float = 30.0

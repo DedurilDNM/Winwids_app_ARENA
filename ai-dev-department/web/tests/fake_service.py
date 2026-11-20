@@ -13,12 +13,23 @@ CHAT = """
 <div id=messages></div>
 <textarea id=box aria-label="Message" placeholder="Ask anything"></textarea>
 <button id=send aria-label="Send message">Send</button>
+<button id=mode role=combobox aria-label="Mode">Chat</button>
 <script>
 const box = document.getElementById("box"), send = document.getElementById("send"), messages = document.getElementById("messages");
 function add(role, text) {
   const d = document.createElement("div"); d.className = "msg msg-" + role; d.dataset.role = role;
   const p = document.createElement("p"); p.textContent = text; d.append(p); messages.append(d);
 }
+const mode = document.getElementById("mode");
+mode.addEventListener("click", () => {
+  const list = document.createElement("div"); list.setAttribute("role", "listbox");
+  for (const name of ["Chat", "Agent"]) {
+    const o = document.createElement("div"); o.setAttribute("role", "option"); o.textContent = name;
+    o.addEventListener("click", () => { mode.textContent = name; list.remove(); });
+    list.append(o);
+  }
+  document.body.append(list);
+});
 box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send.click(); } });
 send.addEventListener("click", () => {
   // ?terms=1: a one-time agreement pop-up on the first send (blocks the page)
@@ -39,7 +50,9 @@ send.addEventListener("click", () => {
   setTimeout(() => {
     const w = t.match(/only the word (\\S+)/);
     const f = t.match(/(FILE: [\\s\\S]*SUMMARY: \\w+)/);
-    add("assistant", w ? w[1] : f ? f[1] : "ok"); messages.setAttribute("aria-busy", "false"); stop.remove();
+    // ?agent=1: answers only in Agent mode (like a service with a mode switch)
+    const needAgent = location.search.includes("agent=1") && mode.textContent !== "Agent";
+    add("assistant", needAgent ? "Switch to Agent mode" : w ? w[1] : f ? f[1] : "ok"); messages.setAttribute("aria-busy", "false"); stop.remove();
   }, 2000);
 });
 </script>
@@ -55,7 +68,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return None
 
     def do_GET(self):
-        user = self._user()
+        from urllib.parse import parse_qs as _pq, urlparse as _up
+
+        auto = _pq(_up(self.path).query).get("as", [None])[0]  # ?as=<user>: log in on first visit
+        user = self._user() or auto
         with open(LOG, "a") as f:
             f.write(f"VISIT user={user}\n")
         body = (
@@ -64,6 +80,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "<input name=user autofocus style='font-size:40px'></form>"
         )
         self.send_response(200)
+        if auto and not self._user():
+            self.send_header("Set-Cookie", f"fake_session={auto}; Max-Age=86400; Path=/")
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(f"<!doctype html><title>Fake service</title>{body}".encode())

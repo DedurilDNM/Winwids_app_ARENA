@@ -107,6 +107,7 @@ export async function render(main) {
       h("div", { class: "actions" },
         primary,
         h("button", { onclick: () => edit(acc) }, "Изменить"),
+        h("button", { onclick: () => diagnose(acc), disabled, title: "Проверить, что адаптер умеет отправлять сообщения и читать ответы" }, "Диагностика"),
         h("button", { onclick: () => toggle(acc) }, disabled ? "Включить" : "Отключить"),
         h("button", { class: "danger", onclick: () => remove(acc) }, "Удалить")));
   }
@@ -158,6 +159,68 @@ export async function render(main) {
     } catch (err) {
       toast(`Не удалось сохранить: ${errorText(err)}`, { error: true });
     }
+  }
+
+  async function diagnose(acc) {
+    await modal(`Диагностика: ${acc.name}`, (close) => {
+      let stopped = false;
+      const status = h("p", { class: "small muted" },
+        "Откроет новый чат в браузере этого аккаунта и отправит 3 коротких тестовых сообщения. "
+        + "В отчёт попадает только устройство страницы — без адресов и без текста страницы.");
+      const report = h("pre", { class: "report", hidden: true, "data-testid": "probe-report" });
+      const copyBtn = h("button", { hidden: true }, "Копировать");
+      const runBtn = h("button", { class: "primary" }, "Запустить");
+      const closeBtn = h("button", { onclick: () => { stopped = true; close(); } }, "Закрыть");
+
+      copyBtn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(report.textContent);
+          toast("Отчёт скопирован");
+        } catch {
+          const range = document.createRange();
+          range.selectNodeContents(report);
+          getSelection().removeAllRanges();
+          getSelection().addRange(range);
+          toast("Выделено — скопируйте вручную");
+        }
+      });
+
+      async function poll() {
+        while (!stopped) {
+          await new Promise((r) => setTimeout(r, 2000));
+          if (stopped) return;
+          try {
+            const st = await api.probeStatus(acc.id);
+            if (!st.running) return show(st.report || "Нет отчёта");
+          } catch (err) {
+            return show(`Ошибка: ${errorText(err)}`);
+          }
+        }
+      }
+      function show(text) {
+        runBtn.disabled = false;
+        runBtn.textContent = "Запустить ещё раз";
+        status.textContent = "Готово. Скопируйте отчёт и отправьте разработчику.";
+        report.textContent = text;
+        report.hidden = false;
+        copyBtn.hidden = false;
+      }
+      runBtn.addEventListener("click", async () => {
+        runBtn.disabled = true;
+        report.hidden = true;
+        copyBtn.hidden = true;
+        status.textContent = "Идёт проверка… обычно 1–4 минуты. Окно можно не закрывать.";
+        try {
+          const st = await api.probeStart(acc.id);
+          if (!st.running) return show(st.report || "");
+          poll();
+        } catch (err) {
+          runBtn.disabled = false;
+          status.textContent = `Не удалось запустить: ${errorText(err)}`;
+        }
+      });
+      return h("div", {}, status, report, h("div", { class: "modal-actions" }, copyBtn, closeBtn, runBtn));
+    });
   }
 
   async function toggle(acc) {
