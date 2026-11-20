@@ -160,9 +160,9 @@ cd ai-dev-department/server
 
 ### Клиент (Windows, или Linux с X-сервером)
 ```bash
-cd ai-dev-deployment/client
+cd ai-dev-department/client
 ../server/.venv/bin/pip install -r requirements-client.txt
-API_BASE_URL=http://127.0.0.1:8123 ../server/.venv/bin/python -m app.main
+API_BASE_URL=http://127.0.0.1:8000 ../server/.venv/bin/python -m app.main
 ```
 
 ### Сборка .exe (Windows)
@@ -181,15 +181,14 @@ cd server && ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## Ограничения / что можно доработать
 
-1. В клиенте пока нет окон «Аккаунты» и «VNC-просмотр» (вариант «Ядро»).
-   Можно добавить по аналогии с существующими окнами.
-2. `app/api/auth/refresh` эндпоинт на сервере не реализован — авто-refresh в
-   клиенте пока заглушка. При добавлении эндпоинта — реализовать в
-   `auth_store.refresh()`.
+1. ~~Нет окон «Аккаунты» и «VNC-просмотр»~~ — добавлены (`accounts_tab.py`,
+   `vnc_view.py`), вкладка «Аккаунты» в главном окне.
+2. ~~Авто-refresh — заглушка~~ — `ApiClient` обновляет токен через
+   `POST /api/auth/refresh` (эндпоинт на сервере был).
 3. Полноценный запуск GUI клиента требует Windows или Linux с X-сервером +
-   libGL (в песочнице без X — только `py_compile`).
-4. systemd-юниты и cloudflared для продакшена — `deploy/install.sh` печатает
-   hints, сами юниты не созданы.
+   libGL (в CI — `QT_QPA_PLATFORM=offscreen`).
+4. ~~Нет systemd-юнитов~~ — `deploy/systemd/` (api, worker, cloudflared),
+   установка в `deploy/README.md`.
 
 ---
 

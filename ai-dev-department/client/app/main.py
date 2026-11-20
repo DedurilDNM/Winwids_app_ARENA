@@ -17,7 +17,7 @@ from app.auth_store import AuthStore
 from app.windows.login import LoginWindow
 from app.windows.main import MainWindow
 
-DEFAULT_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8123")
+DEFAULT_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
 
 
 def main() -> int:
@@ -25,8 +25,10 @@ def main() -> int:
     app.setApplicationName("AI Dev Department")
     app.setApplicationDisplayName("AI Dev Department Client")
 
-    api = ApiClient(DEFAULT_BASE_URL, AuthStore())
+    # One shared AuthStore: ApiClient writes tokens into it on login, and
+    # MainWindow clears the very same instance on logout.
     auth = AuthStore()
+    api = ApiClient(DEFAULT_BASE_URL, auth)
 
     login = LoginWindow(api, auth)
     if login.exec() != LoginWindow.DialogCode.Accepted:

@@ -18,6 +18,10 @@ class AuthStore:
         return self._access_token
 
     @property
+    def refresh_token(self) -> str | None:
+        return self._refresh_token
+
+    @property
     def is_authenticated(self) -> bool:
         return bool(self._access_token)
 
@@ -30,10 +34,7 @@ class AuthStore:
         self._refresh_token = None
 
     def refresh(self) -> bool:
-        """Placeholder: a real refresh would call POST /api/auth/refresh.
-
-        The server currently issues access + refresh tokens on login/register
-        but does not expose a refresh endpoint in Phase 1-4. When it is added,
-        implement it here using self._refresh_token.
-        """
+        """Kept for backwards compatibility: the actual HTTP refresh
+        (POST /api/auth/refresh) lives in ApiClient._try_refresh(), because
+        AuthStore has no HTTP client. Returns whether a refresh is possible."""
         return bool(self._refresh_token)

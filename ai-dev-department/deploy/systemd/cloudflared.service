@@ -1,0 +1,48 @@
+# Cloudflare Tunnel for AI Dev Department (token-based, remotely-managed tunnel).
+#
+# 1. Zero Trust dashboard -> Networks -> Tunnels -> Create tunnel (cloudflared),
+#    copy the tunnel token.
+# 2. Public hostnames of the tunnel (configured in the dashboard):
+#      app.<YOUR_DOMAIN>          -> http://127.0.0.1:8000   (API + WebSocket)
+#      app.<YOUR_DOMAIN>/novnc/*  -> http://127.0.0.1:6080   (noVNC/websockify)
+#    and set NOVNC_PUBLIC_BASE_URL=https://app.<YOUR_DOMAIN>/novnc in server/.env
+# 3. Put the token into /etc/cloudflared/ai-dept.env (chmod 600, root:root):
+#      TUNNEL_TOKEN=<PASTE_TUNNEL_TOKEN_HERE>
+#    Never commit the token and never paste it into this unit file.
+# 4. sudo cp deploy/systemd/cloudflared.service /etc/systemd/system/
+#    sudo systemctl daemon-reload && sudo systemctl enable --now cloudflared
+#
+# cloudflared binary: https://pkg.cloudflare.com (apt repo) -> /usr/bin/cloudflared
+
+[Unit]
+Description=Cloudflare Tunnel (AI Dev Department)
+After=network-online.target ai-dept-api.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+DynamicUser=yes
+# TUNNEL_TOKEN is read by `cloudflared tunnel run` from the environment, so it
+# never appears in the process list (unlike `--token <value>`).
+EnvironmentFile=/etc/cloudflared/ai-dept.env
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --metrics 127.0.0.1:20241 run
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=0
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

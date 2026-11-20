@@ -71,7 +71,7 @@ class LoginWindow(QDialog):
         except ApiError as exc:
             QMessageBox.critical(
                 self, "Ошибка входа",
-                f"Не удалось войти: {exc.detail or exc.status_code}",
+                f"Не удалось войти: {exc.message}",
             )
         finally:
             self._set_busy(False)
@@ -97,7 +97,7 @@ class LoginWindow(QDialog):
         except ApiError as exc:
             QMessageBox.critical(
                 self, "Ошибка регистрации",
-                f"Не удалось зарегистрироваться: {exc.detail or exc.status_code}",
+                f"Не удалось зарегистрироваться: {exc.message}",
             )
         finally:
             self._set_busy(False)

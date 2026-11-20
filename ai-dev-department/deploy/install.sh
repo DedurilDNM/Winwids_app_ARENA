@@ -7,8 +7,8 @@
 # Usage (as root or via sudo):
 #   sudo bash deploy/install.sh
 #
-# Phase 2 scope: system + Python dependencies only. systemd units and the
-# Cloudflare Tunnel are handled in Phase 5 (this script prints hints).
+# Scope: system + Python dependencies only. systemd units and the Cloudflare
+# Tunnel are installed by hand, see deploy/README.md.
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -75,8 +75,6 @@ echo "  1) cd $SERVER_DIR && edit .env (SERVICE_URL, PROXY_URL, ADMIN_PASSWORD)"
 echo "  2) ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000"
 echo "  3) Verify: curl -s http://127.0.0.1:8000/health"
 echo
-echo "  Phase 5 will add systemd units (api, worker, cloudflared). For Cloudflare Tunnel:"
-echo "    - Install cloudflared from the Cloudflare dashboard (Zero Trust > Tunnels)"
-echo "    - Create a public hostname app.<domain> -> http://127.0.0.1:8000"
-echo "    - Route /novnc to http://127.0.0.1:6080 (or run behind nginx, see deploy/nginx.conf.example)"
+echo "  Production: systemd units (api, worker, cloudflared) are in deploy/systemd/."
+echo "  Follow deploy/README.md (service user, camoufox fetch as that user, tunnel token)."
 echo "    - Never expose Xvfb/x11vnc ports directly."

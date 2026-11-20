@@ -1,2 +1,4 @@
+# PySide6 (full) already bundles QtWebEngine, used by the embedded noVNC viewer
+# (app/windows/vnc_view.py). Do NOT replace it with PySide6-Essentials.
 PySide6>=6.5.0
 httpx>=0.27.0

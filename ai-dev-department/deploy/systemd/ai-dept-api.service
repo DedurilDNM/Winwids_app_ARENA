@@ -1,0 +1,65 @@
+# AI Dev Department — FastAPI (uvicorn).
+#
+# Install (see deploy/README.md):
+#   sudo cp deploy/systemd/ai-dept-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ai-dept-api
+#
+# Assumes the repo at /opt/ai-dev-department (server/.venv created by
+# deploy/install.sh) and a system user "aidept" owning server/data and
+# server/.env. Adjust paths/user via `systemctl edit ai-dept-api`.
+#
+# IMPORTANT: exactly ONE uvicorn worker. Browser contexts, Xvfb/x11vnc and
+# the websockify token file are in-process state of this service
+# (browser_manager / vnc_manager); several workers would split them.
+
+[Unit]
+Description=AI Dev Department API (FastAPI/uvicorn)
+Documentation=file:///opt/ai-dev-department/deploy/README.md
+After=network-online.target redis-server.service
+Wants=network-online.target redis-server.service
+# Give up after 10 crashes in 5 minutes (then: journalctl -u <unit>).
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=aidept
+Group=aidept
+WorkingDirectory=/opt/ai-dev-department/server
+# Camoufox keeps its browser build and profiles under $HOME; keep it inside
+# the service data dir (run `camoufox fetch` as this user, see README).
+Environment=HOME=/opt/ai-dev-department/server/data/home
+Environment=PYTHONUNBUFFERED=1
+Environment=ENVIRONMENT=production
+# App settings are read from server/.env by pydantic-settings; this file is
+# optional and only for overrides that must not live in .env.
+EnvironmentFile=-/etc/ai-dept/api.env
+ExecStartPre=/usr/bin/mkdir -p /opt/ai-dev-department/server/data/home
+ExecStart=/opt/ai-dev-department/server/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port 8000 \
+    --workers 1 \
+    --proxy-headers --forwarded-allow-ips 127.0.0.1 \
+    --no-server-header
+# Graceful shutdown: lifespan closes browsers, Xvfb, x11vnc, websockify.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# --- Hardening (compatible with Firefox/Camoufox: no MemoryDenyWriteExecute,
+# no namespace restrictions — the browser sandbox needs them).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

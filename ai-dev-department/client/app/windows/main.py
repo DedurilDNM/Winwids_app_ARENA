@@ -1,4 +1,4 @@
-"""Main window: list of projects + create project."""
+"""Main window: tabs «Проекты» (list/create/start projects) and «Аккаунты»."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.api_client import ApiClient, ApiError
 from app.auth_store import AuthStore
+from app.windows.accounts_tab import AccountsTab
 from app.windows.project_detail import ProjectDetailWindow
 
 
@@ -32,7 +34,7 @@ class LoadProjectsThread(QThread):
         try:
             self.finished.emit(self.api.list_projects())
         except ApiError as exc:
-            self.error.emit(str(exc.detail or exc.status_code))
+            self.error.emit(exc.message)
 
 
 class MainWindow(QWidget):
@@ -40,20 +42,28 @@ class MainWindow(QWidget):
         super().__init__(parent)
         self.api = api
         self.auth = auth
-        self.setWindowTitle("AI Dev Department — проекты")
-        self.resize(900, 560)
+        self.setWindowTitle("AI Dev Department")
+        self.resize(1000, 620)
 
-        layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        root.addWidget(self.tabs)
 
-        # Top bar: refresh + create + logout
+        # «Выйти» lives in the tab bar corner, visible on every tab.
+        self.logout_btn = QPushButton("Выйти")
+        self.tabs.setCornerWidget(self.logout_btn, Qt.Corner.TopRightCorner)
+
+        # ---- tab «Проекты»
+        projects_page = QWidget()
+        layout = QVBoxLayout(projects_page)
+
+        # Top bar: refresh + create
         top = QHBoxLayout()
         self.refresh_btn = QPushButton("Обновить")
         self.create_btn = QPushButton("Создать проект")
-        self.logout_btn = QPushButton("Выйти")
         top.addWidget(self.refresh_btn)
         top.addWidget(self.create_btn)
         top.addStretch(1)
-        top.addWidget(self.logout_btn)
         layout.addLayout(top)
 
         # Search
@@ -85,6 +95,13 @@ class MainWindow(QWidget):
         bottom.addStretch(1)
         layout.addLayout(bottom)
 
+        self.tabs.addTab(projects_page, "Проекты")
+
+        # ---- tab «Аккаунты»
+        self.accounts_tab = AccountsTab(self.api)
+        self.tabs.addTab(self.accounts_tab, "Аккаунты")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
         self.refresh_btn.clicked.connect(self.load_projects)
         self.create_btn.clicked.connect(self._create_project)
         self.open_btn.clicked.connect(self._open_selected)
@@ -100,6 +117,11 @@ class MainWindow(QWidget):
         self.load_projects()
 
     # ---------------------------------------------------------------- data
+
+    def _on_tab_changed(self, index: int) -> None:
+        # Account statuses change server-side (health check every 5 min).
+        if self.tabs.widget(index) is self.accounts_tab:
+            self.accounts_tab.load_accounts()
 
     def load_projects(self) -> None:
         self.refresh_btn.setEnabled(False)
@@ -158,7 +180,7 @@ class MainWindow(QWidget):
             project = self.api.get_project(pid)
         except ApiError as exc:
             QMessageBox.critical(
-                self, "Ошибка", f"Не удалось загрузить проект: {exc.detail or exc.status_code}"
+                self, "Ошибка", f"Не удалось загрузить проект: {exc.message}"
             )
             return
         self._detail_window = ProjectDetailWindow(self.api, project, self)
@@ -203,7 +225,7 @@ class MainWindow(QWidget):
             except ApiError as exc:
                 QMessageBox.critical(
                     dlg, "Ошибка",
-                    f"Не удалось создать проект: {exc.detail or exc.status_code}",
+                    f"Не удалось создать проект: {exc.message}",
                 )
 
         buttons.accepted.connect(do_create)
@@ -223,7 +245,7 @@ class MainWindow(QWidget):
             self.load_projects()
         except ApiError as exc:
             QMessageBox.critical(
-                self, "Ошибка", f"Не удалось {action}ить проект: {exc.detail or exc.status_code}"
+                self, "Ошибка", f"Не удалось {'запустить' if action == 'start' else 'остановить'} проект: {exc.message}"
             )
 
     def _delete_selected(self) -> None:
@@ -243,7 +265,7 @@ class MainWindow(QWidget):
             self.load_projects()
         except ApiError as exc:
             QMessageBox.critical(
-                self, "Ошибка", f"Не удалось удалить проект: {exc.detail or exc.status_code}"
+                self, "Ошибка", f"Не удалось удалить проект: {exc.message}"
             )
 
     def _logout(self) -> None:

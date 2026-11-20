@@ -81,7 +81,7 @@ class ProjectDetailWindow(QWidget):
             self._populate_tasks(project.get("tasks", []))
         except ApiError as exc:
             QMessageBox.critical(
-                self, "Ошибка", f"Не удалось загрузить проект: {exc.detail or exc.status_code}"
+                self, "Ошибка", f"Не удалось загрузить проект: {exc.message}"
             )
         finally:
             self.refresh_btn.setEnabled(True)
@@ -114,5 +114,5 @@ class ProjectDetailWindow(QWidget):
             self.reload()
         except ApiError as exc:
             QMessageBox.critical(
-                self, "Ошибка", f"Не удалось {action}ить проект: {exc.detail or exc.status_code}"
+                self, "Ошибка", f"Не удалось {'запустить' if action == 'start' else 'остановить'} проект: {exc.message}"
             )
