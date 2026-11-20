@@ -57,6 +57,7 @@ class Adapter:
             "state": s.ADAPTER_STATE_SELECTOR,
             "login": s.ADAPTER_LOGIN_SELECTOR,
             "ready": s.ADAPTER_READY_SELECTOR,
+            "dialog_accept": getattr(s, "ADAPTER_DIALOG_ACCEPT_SELECTOR", ""),
         }
 
     def _timeout_ms(self, seconds: float) -> int:
@@ -198,7 +199,33 @@ class Adapter:
                 raise RuntimeError(
                     f"Could not send message (no working send selector: {send_sel})"
                 ) from exc
+        await self._accept_dialog_and_resend(page)
         logger.debug("Message sent to service (len=%d)", len(text))
+
+    async def _accept_dialog_and_resend(self, page) -> None:
+        """If a configured pop-up button appeared after sending, click it and send again."""
+        accept_sel = self._selectors["dialog_accept"]
+        if not accept_sel:
+            return
+        await asyncio.sleep(1.5)
+        button = await self._first_visible(page, accept_sel)
+        if button is None:
+            return
+        logger.info("Service pop-up detected after send: clicking the configured accept button")
+        await button.click()
+        await asyncio.sleep(1.0)
+        box = await self._first_visible(page, self._selectors["input"])
+        if box is None:
+            return
+        try:
+            pending = await box.evaluate("(el) => ((el.value !== undefined ? el.value : el.innerText) || '').trim()")
+        except Exception:
+            pending = ""
+        if pending:  # the message was not sent because of the pop-up
+            try:
+                await page.click(self._selectors["send"], timeout=10_000)
+            except Exception:
+                await page.press(self._selectors["input"], "Enter")
 
     async def wait_response(self, page, timeout: int = 600) -> str:
         """Wait for the assistant's response and return its text.

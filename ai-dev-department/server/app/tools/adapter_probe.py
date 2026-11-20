@@ -23,6 +23,10 @@ import json
 import random
 import sys
 import time
+import warnings
+
+# The browser's fingerprint notice is noise in this report.
+warnings.filterwarnings("ignore", message=".*Canvas and WebGL.*")
 
 from app.config import DATA_DIR, get_settings
 
@@ -83,7 +87,11 @@ OVERLAYS_JS = """
     .map((f) => f.src || "")
     .filter((s) => /captcha|challenge|turnstile|recaptcha|hcaptcha|cloudflare/i.test(s))
     .map((s) => (s.match(/captcha|challenge|turnstile|recaptcha|hcaptcha|cloudflare/i) || ["?"])[0].toLowerCase());
-  return { dialogs: [...new Set(dialogs)].slice(0, 5), captcha: frames.slice(0, 3) };
+  // Controls inside dialogs: attributes only, never their text (owner's privacy rule).
+  const controls = [...document.querySelectorAll("[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open]")]
+    .filter(vis).flatMap((dlg) => [...dlg.querySelectorAll("button, [role=button], input[type=checkbox]")].filter(vis))
+    .map((b, i) => `#${i + 1} ` + d(b));
+  return { dialogs: [...new Set(dialogs)].slice(0, 5), captcha: frames.slice(0, 3), controls: controls.slice(0, 10) };
 }
 """
 
@@ -126,6 +134,8 @@ async def pick_account(account_id: int | None):
 async def overlays(page, label: str) -> None:
     info = await page.evaluate(OVERLAYS_JS, [DESCRIBE_JS])
     out(f"{label}: dialogs={info['dialogs'] or 'none'} captcha_frames={info['captcha'] or 'none'}")
+    for c in info["controls"]:
+        out(f"    dialog control {c}")
 
 
 async def main(args) -> int:
@@ -199,6 +209,22 @@ async def main(args) -> int:
         left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
         out(f"after Enter: input has {left} chars left, url changed: {page.url != url_before}")
         await overlays(page, "after Enter")
+        if left and page.url == url_before and settings.ADAPTER_DIALOG_ACCEPT_SELECTOR:
+            accept = None
+            for el in await page.query_selector_all(settings.ADAPTER_DIALOG_ACCEPT_SELECTOR):
+                if await el.is_visible():
+                    accept = el
+                    break
+            out(f"ADAPTER_DIALOG_ACCEPT_SELECTOR visible: {accept is not None}")
+            if accept is not None:
+                await accept.click()
+                await asyncio.sleep(1.5)
+                left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
+                if left:
+                    await page.keyboard.press("Enter")
+                    await asyncio.sleep(3)
+                    left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
+                out(f"after accepting the pop-up: input has {left} chars left, url changed: {page.url != url_before}")
         if left and page.url == url_before:
             send = None
             for el in await page.query_selector_all(settings.ADAPTER_SEND_SELECTOR):
@@ -215,9 +241,12 @@ async def main(args) -> int:
                 left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
                 out(f"after click: input has {left} chars left, url changed: {page.url != url_before}")
                 await overlays(page, "after click")
+        not_sent = bool(left) and page.url == url_before
+        if not_sent:
+            out("message was NOT sent (text still in the input) -> skipping the reply wait")
         t0 = time.monotonic()
         seen_busy, seen_stop, reply_at = set(), set(), None
-        while time.monotonic() - t0 < 90:
+        while not not_sent and time.monotonic() - t0 < 90:
             await asyncio.sleep(1)
             st = await page.evaluate(STATE_JS, [DESCRIBE_JS])
             seen_busy.update(st["busy"])

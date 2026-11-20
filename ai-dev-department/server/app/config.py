@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     # Extra selector that must appear before the chat is considered ready
     # (empty = skip this check).
     ADAPTER_READY_SELECTOR: str = ""
+    # Optional: a button in a pop-up the service shows on send (e.g. a one-time
+    # agreement). If it is visible after sending, the adapter clicks it and
+    # sends again. Find it with `python -m app.tools.adapter_probe`.
+    ADAPTER_DIALOG_ACCEPT_SELECTOR: str = ""
     # Timing / resilience
     ADAPTER_POLL_INTERVAL_SECONDS: float = 2.0
     ADAPTER_NAVIGATE_TIMEOUT_SECONDS: float = 30.0

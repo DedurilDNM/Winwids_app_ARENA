@@ -21,6 +21,17 @@ function add(role, text) {
 }
 box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send.click(); } });
 send.addEventListener("click", () => {
+  // ?terms=1: a one-time agreement pop-up on the first send (blocks the page)
+  if (location.search.includes("terms=1") && !sessionStorage.getItem("terms_ok")) {
+    const dlg = document.createElement("div");
+    dlg.setAttribute("role", "dialog");
+    dlg.style.cssText = "position:fixed;inset:0;background:#fff;z-index:9";
+    const ok = document.createElement("button"); ok.dataset.testid = "accept-terms"; ok.textContent = "Agree";
+    const no = document.createElement("button"); no.textContent = "Cancel";
+    ok.onclick = () => { sessionStorage.setItem("terms_ok", "1"); dlg.remove(); };
+    dlg.append(ok, no); document.body.append(dlg);
+    return;
+  }
   const t = box.value.trim(); if (!t) return; box.value = "";
   add("user", t); messages.setAttribute("aria-busy", "true");
   const stop = document.createElement("button"); stop.setAttribute("aria-label", "Stop generating"); stop.textContent = "Stop";
