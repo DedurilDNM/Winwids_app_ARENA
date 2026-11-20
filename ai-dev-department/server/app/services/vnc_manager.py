@@ -127,6 +127,32 @@ class VncManager:
         raise VncUnavailableError(f"Xvfb :{display} did not create its socket in {timeout}s")
 
     @staticmethod
+    def x_display_alive(display: int) -> bool:
+        """True if an X server really answers on :display (not just a stale socket file)."""
+        import socket
+
+        path = f"/tmp/.X11-unix/X{display}"
+        if not Path(path).exists():
+            return False
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1.0)
+                sock.connect(path)
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _clear_stale_display(display: int) -> None:
+        """Remove the socket/lock files a crashed Xvfb left behind (they block a restart)."""
+        for path in (Path(f"/tmp/.X11-unix/X{display}"), Path(f"/tmp/.X{display}-lock")):
+            try:
+                path.unlink(missing_ok=True)
+                logger.warning("Removed stale X display file %s", path)
+            except OSError as exc:
+                logger.warning("Cannot remove stale X display file %s: %s", path, exc)
+
+    @staticmethod
     def _wait_tcp_port(host: str, port: int, timeout: float = 10.0) -> bool:
         """Block until something listens on host:port. Returns False on timeout."""
         import socket
@@ -235,8 +261,9 @@ class VncManager:
         if self._shared_xvfb is not None and self._shared_xvfb.poll() is None:
             return f":{settings.VNC_SHARED_DISPLAY}"
         display = settings.VNC_SHARED_DISPLAY
-        if Path(f"/tmp/.X11-unix/X{display}").exists():
-            return f":{display}"  # already running (e.g. left over)
+        if self.x_display_alive(display):
+            return f":{display}"  # already running (e.g. left over from a previous process)
+        self._clear_stale_display(display)
         self._shared_xvfb = subprocess.Popen(
             [xvfb, f":{display}", "-screen", "0", f"{settings.VNC_WIDTH}x{settings.VNC_HEIGHT}x24", "-nolisten", "tcp"],
             stdout=subprocess.DEVNULL,

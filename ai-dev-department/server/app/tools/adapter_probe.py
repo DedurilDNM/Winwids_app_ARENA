@@ -72,6 +72,22 @@ STATE_JS = """
 """
 
 
+OVERLAYS_JS = """
+([describe]) => {
+  const d = eval(describe);
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== "hidden"; };
+  const dialogs = [...document.querySelectorAll("[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open], [role=alert]")]
+    .filter(vis).map((e) => d(e) + " :: " + (e.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 220));
+  const frames = [...document.querySelectorAll("iframe")].filter(vis)
+    .map((f) => { try { return new URL(f.src).host + new URL(f.src).pathname.slice(0, 40); } catch { return "(no src)"; } })
+    .filter((s) => /captcha|challenge|turnstile|recaptcha|hcaptcha|cloudflare/i.test(s));
+  return { dialogs: [...new Set(dialogs)].slice(0, 5), captcha: frames.slice(0, 3) };
+}
+"""
+
+INPUT_TEXT_JS = "(el) => (el.value !== undefined ? el.value : el.innerText) || ''"
+
+
 def out(line: str = "") -> None:
     print(line, flush=True)
 
@@ -105,6 +121,11 @@ async def pick_account(account_id: int | None):
         return (await s.scalars(q)).first()
 
 
+async def overlays(page, label: str) -> None:
+    info = await page.evaluate(OVERLAYS_JS, [DESCRIBE_JS])
+    out(f"{label}: dialogs={info['dialogs'] or 'none'} captcha_frames={info['captcha'] or 'none'}")
+
+
 async def main(args) -> int:
     from app.adapters.generic.adapter import Adapter
     from app.security import decrypt_bytes
@@ -120,11 +141,16 @@ async def main(args) -> int:
     shots.mkdir(parents=True, exist_ok=True)
 
     out("=== ADAPTER PROBE REPORT ===")
-    out(f"account: #{account.id} ({account.default_role}), proxy: {'yes' if settings.PROXY_URL else 'no'}")
+    display = f":{settings.VNC_SHARED_DISPLAY}"
+    from app.services.vnc_manager import VncManager
+
+    headed = not args.headless and VncManager.x_display_alive(settings.VNC_SHARED_DISPLAY)
+    out(f"account: #{account.id} ({account.default_role}), proxy: {'yes' if settings.PROXY_URL else 'no'}, "
+        f"mode: {'headed on ' + display + ' (like the real agent browsers)' if headed else 'headless'}")
     bm = BrowserManager()
     try:
         context = await bm.launch(account.id, storage_state=json.loads(decrypt_bytes(account.storage_state_encrypted)),
-                                  headless=True, open_url=False)
+                                  headless=not headed, display=display if headed else None, open_url=False)
         page = await context.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         await asyncio.sleep(6)
@@ -132,6 +158,7 @@ async def main(args) -> int:
         out(f"page: {page.url}  title={await page.title()!r}")
         login = await visible(page, settings.ADAPTER_LOGIN_SELECTOR or "input[type=password]", 3)
         out(f"login form visible: {'YES -> session not logged in: ' + '; '.join(login) if login else 'no'}")
+        await overlays(page, "on open")
 
         out("\n-- inputs (visible) --")
         inputs = await visible(page, "textarea, [contenteditable=true], [role=textbox], input[type=text], input:not([type])")
@@ -161,9 +188,31 @@ async def main(args) -> int:
             out("\n!! No visible input to type into. Send the screenshot data/probe/1-opened.png.")
             return 2
         out(f"\n-- test message: typing into {await box.evaluate(DESCRIBE_JS)} and pressing Enter --")
+        url_before = page.url
         await box.click()
         await page.keyboard.type(prompt, delay=15)
+        out(f"input text before Enter: {len(await box.evaluate(INPUT_TEXT_JS))} chars")
         await page.keyboard.press("Enter")
+        await asyncio.sleep(3)
+        left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
+        out(f"after Enter: input has {left} chars left, url changed: {page.url != url_before}")
+        await overlays(page, "after Enter")
+        if left and page.url == url_before:
+            send = None
+            for el in await page.query_selector_all(settings.ADAPTER_SEND_SELECTOR):
+                if await el.is_visible():
+                    send = el
+                    break
+            if send is not None:
+                out(f"Enter did not send -> clicking {await send.evaluate(DESCRIBE_JS)} (disabled={await send.is_disabled()})")
+                try:
+                    await send.click(timeout=10_000)
+                except Exception as exc:
+                    out(f"click failed: {type(exc).__name__}: {str(exc).splitlines()[0][:150]}")
+                await asyncio.sleep(3)
+                left = len(await box.evaluate(INPUT_TEXT_JS)) if await box.is_visible() else 0
+                out(f"after click: input has {left} chars left, url changed: {page.url != url_before}")
+                await overlays(page, "after click")
         t0 = time.monotonic()
         seen_busy, seen_stop, reply_at = set(), set(), None
         while time.monotonic() - t0 < 90:
@@ -177,7 +226,11 @@ async def main(args) -> int:
             if reply_at is not None and not st["stop"] and not st["busy"] and time.monotonic() - t0 > reply_at + 3:
                 break
         await page.screenshot(path=str(shots / "2-after-reply.png"))
-        out(f"reply with {marker}: {'after %.0fs' % reply_at if reply_at else 'NOT FOUND within 90s'}")
+        out(f"reply with {marker}: {'after %.0fs' % reply_at if reply_at else 'NOT FOUND within 90s'}  (url now {page.url})")
+        if not reply_at:
+            await overlays(page, "after waiting")
+            body = await page.evaluate("() => document.body.innerText.replace(/\\s+/g, ' ').slice(0, 400)")
+            out(f"page text: {body}")
         out("while generating, stop buttons: " + ("; ".join(sorted(seen_stop)) or "none seen"))
         out("while generating, busy markers: " + ("; ".join(sorted(seen_busy)) or "none seen"))
         out("\n-- USER message element (innermost -> outer) --")
@@ -236,4 +289,5 @@ if __name__ == "__main__":
     parser.add_argument("--account", type=int, help="account id (default: first active)")
     parser.add_argument("--url", help="page to open (default: SERVICE_URL)")
     parser.add_argument("--no-send", action="store_true", help="only list inputs/buttons, do not send a message")
+    parser.add_argument("--headless", action="store_true", help="force headless (default: headed on the shared Xvfb display)")
     sys.exit(asyncio.run(main(parser.parse_args())))

@@ -11,5 +11,5 @@ from app.services import browser_manager as bm  # noqa: E402
 from app.tools import adapter_probe  # noqa: E402
 
 bm.AsyncCamoufox = ChromiumAsCamoufox
-parser_args = type("A", (), {"account": None, "url": None, "no_send": False})()
+parser_args = type("A", (), {"account": None, "url": None, "no_send": False, "headless": os.environ.get("PROBE_HEADLESS") == "1"})()
 sys.exit(asyncio.run(adapter_probe.main(parser_args)))

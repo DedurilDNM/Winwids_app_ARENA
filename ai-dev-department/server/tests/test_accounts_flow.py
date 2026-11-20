@@ -264,3 +264,30 @@ def test_update_and_delete_account(api):
     resp = api.delete(f"/api/accounts/{account['id']}", headers=_auth(token))
     assert resp.status_code == 204
     assert api.get(f"/api/accounts/{account['id']}", headers=_auth(token)).status_code == 404
+
+
+def test_stale_x_display_files_are_detected_and_cleared(tmp_path, monkeypatch):
+    """A socket file without a live X server must not count as a running display."""
+    import socket as _socket
+    from pathlib import Path as _Path
+
+    from app.services.vnc_manager import VncManager
+
+    display = 42999  # never used by a real server
+    sock_path = _Path(f"/tmp/.X11-unix/X{display}")
+    lock_path = _Path(f"/tmp/.X{display}-lock")
+    sock_path.parent.mkdir(exist_ok=True)
+    srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        srv.bind(str(sock_path))
+        srv.listen(1)
+        assert VncManager.x_display_alive(display) is True   # something answers
+        srv.close()                                           # server "crashed", file stays
+        assert sock_path.exists() and VncManager.x_display_alive(display) is False
+        lock_path.write_text("12345")
+        VncManager._clear_stale_display(display)
+        assert not sock_path.exists() and not lock_path.exists()
+    finally:
+        srv.close()
+        sock_path.unlink(missing_ok=True)
+        lock_path.unlink(missing_ok=True)
