@@ -169,6 +169,11 @@ export const api = {
   vncStop: (id) => request("POST", `/api/accounts/${id}/vnc/stop`),
   vncInfo: (id) => request("GET", `/api/accounts/${id}/vnc`),
 
+  githubStatus: () => request("GET", "/api/github"),
+  githubConnect: (token) => request("PUT", "/api/github", { token }),
+  githubDisconnect: () => request("DELETE", "/api/github"),
+  githubRepoCheck: (repo) => request("GET", `/api/github/repo-check?repo=${encodeURIComponent(repo)}`),
+
   listProjects: () => request("GET", "/api/projects"),
   getProject: (id) => request("GET", `/api/projects/${id}`),
   createProject: (data) => request("POST", "/api/projects", data),

@@ -40,6 +40,28 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_add_missing_nullable_columns)
+
+
+def _add_missing_nullable_columns(sync_conn) -> None:
+    """Minimal forward migration for existing databases.
+
+    create_all() never alters existing tables, so columns added to the models
+    later (all nullable) are appended here with ALTER TABLE ... ADD COLUMN.
+    Anything more complex belongs in an Alembic migration.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(sync_conn)
+    for table in Base.metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        existing = {c["name"] for c in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing or not column.nullable:
+                continue
+            col_type = column.type.compile(dialect=sync_conn.dialect)
+            sync_conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'))
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:

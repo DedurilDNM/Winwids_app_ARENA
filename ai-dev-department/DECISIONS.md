@@ -206,3 +206,29 @@
 - **D-067. Клиент не зависит от libGL в CI.** В песочнице без X-сервера/меса
   проверка ограничена py_compile (все файлы компилируются). Полноценный запуск
   GUI требует Windows с PySide6.
+
+## Web client instead of PySide6 (stage 1)
+The app must run on PC and phone. One web client (PWA, vanilla JS, no build
+step) is served by the API at `/app/`; it installs on phones and desktops.
+The PySide6 client is kept in `client/` but no longer developed.
+
+## Agents do not use GitHub; the server commits (stage 3)
+The external service requires selecting the repository in every new chat,
+and the orchestrator opens a new chat per task, so relying on the service's
+GitHub connector would mean automating that UI step for every task. Instead:
+- the server appends an OUTPUT CONTRACT to every agent prompt (`FILE: path`
+  + fenced full content, then `STATUS: DONE|BLOCKED` + `SUMMARY:`), so the
+  orchestrator never has to restate the format;
+- the reply is parsed (`services/agent_output.py`, tolerant to rendered
+  markdown, path traversal rejected); one "resend in format" retry;
+- the server commits the files + `status/task-<id>.md` to `ai/project-<id>`
+  with the user's fine-grained token (Contents + Pull requests: read/write,
+  stored Fernet-encrypted), and opens a PR to the default branch at the end;
+- each next agent gets the repo file list and the contents of files written
+  by earlier tasks (60 KB budget), so agents build on each other's work.
+Agents cannot run code in this mode; using the service connector can be
+added later as an option.
+
+## Schema changes without Alembic (stage 3)
+New columns are nullable and added on startup by `db._add_missing_nullable_columns`
+(`ALTER TABLE ... ADD COLUMN`), so existing SQLite databases keep working.

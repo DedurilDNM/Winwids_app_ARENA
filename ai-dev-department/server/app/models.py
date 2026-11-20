@@ -83,6 +83,8 @@ class Project(Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    work_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)  # server commits here
+    pr_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -111,6 +113,8 @@ class Task(Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)  # agent's SUMMARY line
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)  # server-made commit
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 

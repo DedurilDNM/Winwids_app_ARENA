@@ -25,6 +25,7 @@ os.environ["ADMIN_PASSWORD"] = "admin-test-pass"
 os.environ["SERVICE_URL"] = "https://example.com"
 os.environ["PROXY_URL"] = "http://user:pass@1.2.3.4:8080"  # parsed, never dialed (fake browser)
 os.environ["NOVNC_PUBLIC_BASE_URL"] = "http://127.0.0.1:6080"
+os.environ["GITHUB_TOKEN"] = ""  # never use a real token from the developer environment
 
 os.environ["TEST_DB_PATH"] = str(_TMP / "test.db")
 

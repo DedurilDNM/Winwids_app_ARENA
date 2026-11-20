@@ -38,6 +38,17 @@ class ChromiumAsCamoufox:
 
 bm.AsyncCamoufox = ChromiumAsCamoufox
 
+if os.environ.get("E2E_FAKE_GITHUB"):
+    # In-memory GitHub (same fake as the server unit tests).
+    from app.api import github as github_api
+    from app.connectors.github import GitHubConnector
+    from app.services import orchestrator
+    from tests.fake_github import FakeGitHub
+
+    fake_github = FakeGitHub()
+    github_api.connector_for = lambda token: GitHubConnector(token=token, transport=fake_github.transport())
+    orchestrator._default_github = github_api.connector_for
+
 import uvicorn  # noqa: E402
 
 uvicorn.run("app.main:app", host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))

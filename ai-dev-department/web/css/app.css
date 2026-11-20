@@ -243,3 +243,11 @@ body.no-scroll { overflow: hidden; }
 @media (max-width: 520px) and (orientation: portrait) {
   .rotate-hint { display: block; padding: 6px 12px; font-size: 12px; text-align: center; color: var(--muted); background: var(--surface-2); }
 }
+
+/* ---------- GitHub ---------- */
+.stack { display: grid; gap: 16px; }
+.steps { margin: 0 0 16px; padding-left: 20px; font-size: 14px; display: grid; gap: 6px; }
+.row { display: flex; gap: 8px; }
+.row input { flex: 1; min-width: 0; }
+.check-result { margin-top: 12px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }

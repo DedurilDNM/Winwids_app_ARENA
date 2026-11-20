@@ -181,6 +181,8 @@ class ProjectOut(BaseModel):
     orchestrator_account_id: int | None
     status: str
     result: str | None
+    work_branch: str | None = None
+    pr_url: str | None = None
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
@@ -228,6 +230,8 @@ class TaskOut(BaseModel):
     assigned_account_id: int | None
     status: str
     branch: str | None
+    summary: str | None = None
+    commit_sha: str | None = None
     created_at: datetime
     updated_at: datetime
 
