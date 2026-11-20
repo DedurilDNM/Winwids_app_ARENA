@@ -15,7 +15,24 @@ CHAT = """
 <button id=send aria-label="Send message">Send</button>
 <button id=mode role=combobox aria-label="Mode">Chat</button>
 <script>
-const box = document.getElementById("box"), send = document.getElementById("send"), messages = document.getElementById("messages");
+let box = document.getElementById("box");
+const send = document.getElementById("send"), messages = document.getElementById("messages");
+if (location.search.includes("editor=ce")) {
+  // ProseMirror-like rich editor: accepts text only through its paste/keyboard
+  // handlers; the old textarea stays in the DOM but hidden (selector trap).
+  const ce = document.createElement("div");
+  ce.className = "ProseMirror"; ce.contentEditable = "true";
+  ce.style.cssText = "min-height:40px;border:1px solid #999;white-space:pre-wrap";
+  ce.addEventListener("paste", (e) => {
+    e.preventDefault();
+    ce.innerText = (ce.innerText || "") + e.clipboardData.getData("text/plain");
+  });
+  box.style.display = "none";
+  box.after(ce);
+  box = ce;
+}
+const val = () => (box.value !== undefined ? box.value : box.innerText) || "";
+const clear = () => { if (box.value !== undefined) box.value = ""; else box.innerText = ""; };
 function add(role, text) {
   const d = document.createElement("div"); d.className = "msg msg-" + role; d.dataset.role = role;
   const p = document.createElement("p"); p.textContent = text; d.append(p); messages.append(d);
@@ -43,7 +60,7 @@ send.addEventListener("click", () => {
     dlg.append(ok, no); document.body.append(dlg);
     return;
   }
-  const t = box.value.trim(); if (!t) return; box.value = "";
+  const t = val().trim(); if (!t) return; clear();
   add("user", t); messages.setAttribute("aria-busy", "true");
   const stop = document.createElement("button"); stop.setAttribute("aria-label", "Stop generating"); stop.textContent = "Stop";
   document.body.append(stop);

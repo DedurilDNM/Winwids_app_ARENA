@@ -39,11 +39,35 @@ State = Literal["idle", "generating", "error", "login_required"]
 _MONOTONIC = time.monotonic
 
 
+_PASTE_JS = """
+(el, text) => {
+  el.focus();
+  const dt = new DataTransfer();
+  dt.setData("text/plain", text);
+  el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  return (el.innerText || "").replace(/\\s+/g, "").length;
+}
+"""
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _is_echo(candidate: str, sent: str) -> bool:
+    """True if `candidate` is (a prefix of) the prompt we sent, not a reply."""
+    c, s = _norm(candidate), _norm(sent)
+    if not c or not s:
+        return False
+    return c == s or (len(c) >= 20 and s.startswith(c))
+
+
 class Adapter:
     """Selector-driven adapter for a generic chat-based AI service."""
 
     def __init__(self, settings=None) -> None:
         self.settings = settings or get_settings()
+        self._last_sent: dict[int, str] = {}  # id(page) -> last prompt (echo filter)
 
     # ------------------------------------------------------------------ config
 
@@ -195,9 +219,12 @@ class Adapter:
         send_sel = self._selectors["send"]
 
         try:
-            await page.fill(input_sel, text)
+            await self._write_input(page, text)
+        except RuntimeError:
+            raise
         except Exception as exc:
             raise RuntimeError(f"Could not focus chat input ({input_sel}): {exc}") from exc
+        self._last_sent[id(page)] = text
 
         sent = False
         try:
@@ -214,6 +241,43 @@ class Adapter:
                 ) from exc
         await self._accept_dialog_and_resend(page)
         logger.debug("Message sent to service (len=%d)", len(text))
+
+    async def _write_input(self, page, text: str) -> None:
+        """Put `text` into the first VISIBLE chat input (a selector may also
+        match hidden elements). Rich editors (contenteditable, e.g. ProseMirror)
+        get a synthetic paste - it keeps line breaks and is fast for long
+        prompts; if the editor ignores it, lines are typed with Shift+Enter."""
+        input_sel = self._selectors["input"]
+        el = await self._first_visible(page, input_sel)
+        if el is None:
+            raise RuntimeError(f"Could not focus chat input ({input_sel}): no visible element")
+        try:
+            editable = bool(await el.evaluate("(e) => e.isContentEditable"))
+        except Exception:
+            editable = False
+        if not editable:
+            fill = getattr(el, "fill", None)
+            if fill is not None:
+                await fill(text)
+            else:  # minimal page objects (tests)
+                await page.fill(input_sel, text)
+            return
+
+        expected = len(re.sub(r"\s+", "", text))
+        await el.click()
+        await page.keyboard.press("Control+A")
+        await page.keyboard.press("Delete")
+        got = await el.evaluate(_PASTE_JS, text)
+        if got >= expected * 0.95:
+            return
+        logger.info("Editor ignored the synthetic paste (%d/%d chars); typing line by line", got, expected)
+        await page.keyboard.press("Control+A")
+        await page.keyboard.press("Delete")
+        for i, line in enumerate(text.split("\n")):
+            if i:
+                await page.keyboard.press("Shift+Enter")
+            if line:
+                await page.keyboard.insert_text(line)
 
     async def _accept_dialog_and_resend(self, page) -> None:
         """If a configured pop-up button appeared after sending, click it and send again."""
@@ -248,11 +312,14 @@ class Adapter:
         """
         deadline = _MONOTONIC() + timeout
         poll = self.settings.ADAPTER_POLL_INTERVAL_SECONDS
+        settle = float(getattr(self.settings, "ADAPTER_SETTLE_SECONDS", 3.0))
+        sent = self._last_sent.get(id(page), "")
 
         # Snapshot of the conversation before we wait, so we can detect a
         # genuinely new assistant message (not an echo of what we sent).
         before_count = await self._message_count(page)
         before_text = await self._last_message_text(page)
+        candidate, candidate_since = "", 0.0
 
         while True:
             state = await self.get_state(page)
@@ -262,14 +329,27 @@ class Adapter:
             if state == "login_required":
                 raise RuntimeError("Service requires login during task execution")
 
-            if state == "idle":
+            if state == "generating":
+                candidate = ""  # still working (agents work in several steps)
+            else:
                 after_count = await self._message_count(page)
                 after_text = await self._last_message_text(page)
-                if after_count > before_count and after_text and after_text != before_text:
-                    return after_text
-                # A new message may still be rendering; give it one poll cycle.
+                fresh = (
+                    after_count > before_count
+                    and after_text
+                    and after_text != before_text
+                    and not _is_echo(after_text, sent)
+                )
+                if fresh:
+                    now = _MONOTONIC()
+                    if after_text != candidate:
+                        candidate, candidate_since = after_text, now
+                    if now - candidate_since >= settle:
+                        return candidate
                 if _MONOTONIC() >= deadline:
-                    return after_text if after_text and after_text != before_text else ""
+                    if candidate:
+                        return candidate
+                    return after_text if fresh else ""
 
             if _MONOTONIC() >= deadline:
                 raise TimeoutError(f"No response from service within {timeout}s")

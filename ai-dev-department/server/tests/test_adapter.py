@@ -311,3 +311,39 @@ def test_visible_stop_button_means_generating():
     assert asyncio.run(a.get_state(Page([El({"aria-busy": "false"})]))) == "idle"
     assert asyncio.run(a.get_state(Page([El({"class": "toast error"})]))) == "error"
     assert asyncio.run(a.get_state(Page([]))) == "idle"
+
+
+def test_wait_response_ignores_echo_and_waits_for_text_to_settle():
+    """Hard case: no busy indicator at all; the service first shows OUR prompt,
+    then streams the reply in chunks. The adapter must return the full reply."""
+    page = StubPage()
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.01, ADAPTER_SETTLE_SECONDS=0.2)
+    prompt = "Please build the landing page with a hero section and a footer"
+
+    async def service():
+        await asyncio.sleep(0.02)
+        page.messages.append(_StubEl(text=prompt))  # echo of the user message
+        await asyncio.sleep(0.1)
+        reply = _StubEl(text="Working")
+        page.messages.append(reply)
+        for chunk in ("Working on it", "Working on it... done: FILE: a.py"):
+            await asyncio.sleep(0.1)
+            reply._text = chunk
+
+    async def flow():
+        await a.send_message(page, prompt)
+        task = asyncio.create_task(service())
+        text = await a.wait_response(page, timeout=10)
+        await task
+        return text
+
+    assert asyncio.run(flow()) == "Working on it... done: FILE: a.py"
+
+
+def test_is_echo():
+    from app.adapters.generic.adapter import _is_echo
+
+    assert _is_echo("Reply with only the word PONG1", "Reply with only the word PONG1")
+    assert _is_echo("You are the Coder on the software", "You are the Coder on the software project X\nmore")
+    assert not _is_echo("PONG1", "Reply with only the word PONG1")
+    assert not _is_echo("ok", "")
