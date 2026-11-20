@@ -26,6 +26,8 @@ const ICONS = {
   user: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2m8-10a4 4 0 1 0 0-8 4 4 0 0 0 0 8",
   plus: "M12 5v14M5 12h14",
   refresh: "M23 4v6h-6M1 20v-6h6m14.49-5A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15",
+  external: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6m4-3h6v6M10 14 21 3",
+  close: "M18 6 6 18M6 6l12 12",
 };
 
 export function icon(name) {

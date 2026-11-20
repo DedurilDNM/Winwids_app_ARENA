@@ -74,6 +74,14 @@ class BrowserManager:
     def live_account_ids(self) -> list[int]:
         return list(self._handles.keys())
 
+    def get_display(self, account_id: int) -> str | None:
+        """X display the account's browser runs on (None: none running / headless)."""
+        handle = self._handles.get(account_id)
+        return handle.display if handle else None
+
+    def is_running(self, account_id: int) -> bool:
+        return account_id in self._handles
+
     def get_context(self, account_id: int):
         handle = self._handles.get(account_id)
         return handle.context if handle else None

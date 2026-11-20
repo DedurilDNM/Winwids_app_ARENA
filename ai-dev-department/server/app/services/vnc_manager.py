@@ -59,6 +59,9 @@ class VncManager:
         self._lock = asyncio.Lock()
         self._websockify: subprocess.Popen | None = None
         self._shared_xvfb: subprocess.Popen | None = None
+        # Displays whose VNC was closed but whose browser keeps running there
+        # (after confirm-login / closing the viewer): account_id -> (display, Xvfb).
+        self._parked: dict[int, tuple[int, subprocess.Popen]] = {}
 
     # --------------------------------------------------------------- helpers
 
@@ -122,6 +125,20 @@ class VncManager:
                 return
             time.sleep(0.1)
         raise VncUnavailableError(f"Xvfb :{display} did not create its socket in {timeout}s")
+
+    @staticmethod
+    def _wait_tcp_port(host: str, port: int, timeout: float = 10.0) -> bool:
+        """Block until something listens on host:port. Returns False on timeout."""
+        import socket
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=0.5):
+                    return True
+            except OSError:
+                time.sleep(0.1)
+        return False
 
     # ------------------------------------------------------- token plumbing
 
@@ -263,44 +280,65 @@ class VncManager:
             x11vnc_bin = self._which_or_raise("x11vnc")
             self._novnc_web_root()  # validate early, before spawning anything
 
-            display = self._free_display()
             rfb_port = self._free_rfb_port()
+            parked = self._parked.pop(account.id, None)
+            running_on = browser_manager.get_display(account.id)
 
-            xvfb = subprocess.Popen(
-                [xvfb_bin, f":{display}", "-screen", "0", f"{settings.VNC_WIDTH}x{settings.VNC_HEIGHT}x24", "-nolisten", "tcp"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            try:
-                await asyncio.get_event_loop().run_in_executor(None, self._wait_x_socket, display, 10.0)
-            except Exception:
-                xvfb.terminate()
-                raise
+            if parked and parked[1].poll() is None and running_on == f":{parked[0]}":
+                # The browser is still alive on its own display: just re-attach
+                # VNC to it (keeps the live page and login, no relaunch).
+                display, xvfb = parked
+                lock_file = VNC_DIR / f"display-{display}.lock"
+            else:
+                if parked:
+                    self._terminate(parked[1])
+                    (VNC_DIR / f"display-{parked[0]}.lock").unlink(missing_ok=True)
 
-            lock_file = VNC_DIR / f"display-{display}.lock"
-            self._ensure_dirs()
-            lock_file.write_text(str(xvfb.pid), encoding="utf-8")
-
-            try:
                 storage_state = None
-                if account.storage_state_encrypted:
+                if browser_manager.is_running(account.id):
+                    # Running elsewhere (e.g. restored on the shared display, which
+                    # must not be streamed): carry the live session over, relaunch.
+                    try:
+                        storage_state = await browser_manager.export_storage_state(account.id)
+                    except Exception:
+                        logger.warning("Could not export live session of account %s", account.id, exc_info=True)
+                    await browser_manager.stop(account.id)
+                if storage_state is None and account.storage_state_encrypted:
                     import json
 
                     from app.security import decrypt_bytes
 
                     storage_state = json.loads(decrypt_bytes(account.storage_state_encrypted))
-                await browser_manager.launch(
-                    account.id,
-                    storage_state=storage_state,
-                    display=f":{display}",
-                    headless=False,
-                    open_url=open_url,
+
+                display = self._free_display()
+                xvfb = subprocess.Popen(
+                    [xvfb_bin, f":{display}", "-screen", "0", f"{settings.VNC_WIDTH}x{settings.VNC_HEIGHT}x24", "-nolisten", "tcp"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
                 )
-            except Exception:
-                xvfb.terminate()
-                lock_file.unlink(missing_ok=True)
-                raise
+                try:
+                    await asyncio.get_event_loop().run_in_executor(None, self._wait_x_socket, display, 10.0)
+                except Exception:
+                    xvfb.terminate()
+                    raise
+
+                lock_file = VNC_DIR / f"display-{display}.lock"
+                self._ensure_dirs()
+                lock_file.write_text(str(xvfb.pid), encoding="utf-8")
+
+                try:
+                    await browser_manager.launch(
+                        account.id,
+                        storage_state=storage_state,
+                        display=f":{display}",
+                        headless=False,
+                        open_url=open_url,
+                    )
+                except Exception:
+                    xvfb.terminate()
+                    lock_file.unlink(missing_ok=True)
+                    raise
 
             x11vnc = subprocess.Popen(
                 [
@@ -319,6 +357,17 @@ class VncManager:
             )
 
             self._ensure_websockify()
+
+            # The URL goes to the client right away: make sure both hops accept
+            # connections first, otherwise the very first page load after a
+            # server start hits a closed port.
+            loop = asyncio.get_event_loop()
+            if not await loop.run_in_executor(
+                None, self._wait_tcp_port, settings.WEBSOCKIFY_HOST, settings.WEBSOCKIFY_PORT, 10.0
+            ):
+                logger.warning("websockify is not accepting connections on port %s yet", settings.WEBSOCKIFY_PORT)
+            if not await loop.run_in_executor(None, self._wait_tcp_port, "127.0.0.1", rfb_port, 10.0):
+                logger.warning("x11vnc for account %s is not listening on %s yet", account.id, rfb_port)
 
             token = self._create_token(account.id)
             session = VncSession(
@@ -351,6 +400,14 @@ class VncManager:
         async with self._lock:
             session = self._sessions.pop(account_id, None)
             if session is None:
+                parked = self._parked.pop(account_id, None)
+                if not keep_browser:
+                    await browser_manager.stop(account_id)
+                    if parked:
+                        self._terminate(parked[1])
+                        (VNC_DIR / f"display-{parked[0]}.lock").unlink(missing_ok=True)
+                elif parked:
+                    self._parked[account_id] = parked
                 return
 
             if session.x11vnc is not None and session.x11vnc.poll() is None:
@@ -360,6 +417,8 @@ class VncManager:
                 except subprocess.TimeoutExpired:
                     session.x11vnc.kill()
 
+            if keep_browser and session.display is not None and session.xvfb is not None:
+                self._parked[account_id] = (session.display, session.xvfb)
             if not keep_browser:
                 await browser_manager.stop(account_id)
                 if session.xvfb is not None and session.xvfb.poll() is None:
@@ -376,8 +435,17 @@ class VncManager:
                 self._stop_websockify()
             logger.info("VNC session stopped for account %s (keep_browser=%s)", account_id, keep_browser)
 
+    @staticmethod
+    def _terminate(proc: subprocess.Popen) -> None:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
     async def stop_all(self) -> None:
-        for account_id in list(self._sessions):
+        for account_id in list(self._sessions) + list(self._parked):
             await self.stop_session(account_id, keep_browser=False)
         if self._shared_xvfb is not None and self._shared_xvfb.poll() is None:
             self._shared_xvfb.terminate()
