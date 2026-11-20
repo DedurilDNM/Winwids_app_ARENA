@@ -88,13 +88,17 @@ class Adapter:
             return False
 
     async def _detect_state(self, page) -> State:
-        """Inspect the page for a state indicator."""
+        """Inspect the page for a state indicator.
+
+        ADAPTER_STATE_SELECTOR = "what is visible only while the service is
+        busy" (a Stop button, a spinner, an [aria-busy=true] container...).
+        A visible match means "generating", unless its attributes say error.
+        """
         state_sel = self._selectors["state"]
         if state_sel:
             try:
                 el = await self._first_visible(page, state_sel)
                 if el is not None:
-                    # Prefer an explicit data-state / aria-busy attribute.
                     for attr in ("data-state", "aria-busy", "data-status", "class"):
                         try:
                             value = (await el.get_attribute(attr)) or ""
@@ -103,11 +107,11 @@ class Adapter:
                         vl = value.lower()
                         if "error" in vl or "failed" in vl:
                             return "error"
-                        if "generat" in vl or "loading" in vl or vl == "true":
-                            return "generating"
+                        if attr == "aria-busy" and vl == "false":
+                            return "idle"
+                    return "generating"
             except Exception:
                 pass
-        # Fallback: check URL / title for error markers is unreliable; default idle.
         return "idle"
 
     async def _last_message_text(self, page) -> str:

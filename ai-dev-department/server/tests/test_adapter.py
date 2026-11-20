@@ -263,3 +263,30 @@ def test_is_alive_returns_false_on_navigation_error():
 
 
 # ---------------------------------------------------------------- end
+
+
+def test_visible_stop_button_means_generating():
+    """A state selector that matches a plain Stop button (no busy attributes)."""
+
+    class El:
+        def __init__(self, attrs):
+            self.attrs = attrs
+
+        async def is_visible(self):
+            return True
+
+        async def get_attribute(self, name):
+            return self.attrs.get(name)
+
+    class Page:
+        def __init__(self, els):
+            self.els = els
+
+        async def query_selector_all(self, sel):
+            return self.els
+
+    a = _adapter(ADAPTER_LOGIN_SELECTOR="", ADAPTER_STATE_SELECTOR="button[aria-label*='Stop']")
+    assert asyncio.run(a.get_state(Page([El({"aria-label": "Stop generating"})]))) == "generating"
+    assert asyncio.run(a.get_state(Page([El({"aria-busy": "false"})]))) == "idle"
+    assert asyncio.run(a.get_state(Page([El({"class": "toast error"})]))) == "error"
+    assert asyncio.run(a.get_state(Page([]))) == "idle"
