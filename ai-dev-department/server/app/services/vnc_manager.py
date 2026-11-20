@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 from app.config import DATA_DIR, get_settings
 from app.security import _create_token  # reuse JWT signing with a different type
@@ -153,7 +154,17 @@ class VncManager:
     def vnc_url_for(self, session: VncSession) -> str:
         settings = get_settings()
         base = settings.NOVNC_PUBLIC_BASE_URL.rstrip("/")
-        return f"{base}/vnc.html?autoconnect=true&resize=scale&token={session.token}"
+        # noVNC < 1.5 (Debian's package) ignores a top-level `token` param, so
+        # the token must travel inside `path` (the websocket path, relative to
+        # the host root) for websockify's TokenFile plugin to route it.
+        # `token` is kept as well for newer noVNC builds.
+        prefix = urlsplit(base).path.strip("/")
+        ws_path = f"{prefix}/websockify" if prefix else "websockify"
+        path = quote(f"{ws_path}?token={session.token}", safe="")
+        return (
+            f"{base}/vnc.html?autoconnect=true&resize=scale"
+            f"&path={path}&token={session.token}"
+        )
 
     # ---------------------------------------------------------- websockify
 
