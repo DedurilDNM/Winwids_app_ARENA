@@ -127,6 +127,12 @@ export function refreshSession() {
   return refreshInFlight;
 }
 
+/** Current access token for the WebSocket auth message (refreshes if needed). */
+export async function accessTokenForWs({ forceRefresh = false } = {}) {
+  if (forceRefresh || !accessToken) await refreshSession();
+  return accessToken;
+}
+
 export async function request(method, path, body, { authRequired = true } = {}) {
   let res = await send(method, path, body, authRequired ? accessToken : null);
   if (authRequired && res.status === 401) {
@@ -177,6 +183,7 @@ export const api = {
   listProjects: () => request("GET", "/api/projects"),
   getProject: (id) => request("GET", `/api/projects/${id}`),
   createProject: (data) => request("POST", "/api/projects", data),
+  updateProject: (id, data) => request("PATCH", `/api/projects/${id}`, data),
   startProject: (id) => request("POST", `/api/projects/${id}/start`),
   stopProject: (id) => request("POST", `/api/projects/${id}/stop`),
   deleteProject: (id) => request("DELETE", `/api/projects/${id}`),

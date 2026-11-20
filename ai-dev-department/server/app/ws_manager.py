@@ -23,8 +23,9 @@ class WebSocketManager:
         self._channels: dict[int, set[WebSocket]] = {}
         self._lock = asyncio.Lock()
 
-    async def connect(self, project_id: int, websocket: WebSocket) -> None:
-        await websocket.accept()
+    async def connect(self, project_id: int, websocket: WebSocket, *, accept: bool = True) -> None:
+        if accept:
+            await websocket.accept()
         async with self._lock:
             self._channels.setdefault(project_id, set()).add(websocket)
 

@@ -109,6 +109,11 @@ class Settings(BaseSettings):
     # --- Infrastructure ---
     DATABASE_URL: str = f"sqlite+aiosqlite:///{DATA_DIR / 'app.db'}"
     REDIS_URL: str = "redis://localhost:6379/0"
+    # Where projects run. "api" (default): inside the API process, which owns
+    # the account browsers - live WebSocket events and the user can watch the
+    # agents work over VNC. "arq": a separate worker process (no live events,
+    # separate headless browsers) - only for multi-server setups.
+    PROJECT_RUNNER: str = "api"
     GITHUB_API_URL: str = "https://api.github.com"
 
     # --- GitHub watcher / orchestration (Phase 3) ---

@@ -95,3 +95,61 @@ export function emptyState(title, text, ...actions) {
   return h("div", { class: "empty" }, h("h2", {}, title), h("p", {}, text),
     actions.length ? h("div", { class: "actions" }, actions) : null);
 }
+
+/** Minimal, safe Markdown → DOM (headings, lists, code blocks, `code`, **bold**,
+ *  http(s) links). Built with DOM nodes only: no HTML from the text is parsed. */
+export function markdown(text) {
+  const root = h("div", { class: "md" });
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  let list = null;
+  let para = [];
+  const flushPara = () => {
+    if (para.length) root.append(h("p", {}, inline(para.join(" "))));
+    para = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      flushPara(); list = null;
+      const body = [];
+      for (i++; i < lines.length && !lines[i].trim().startsWith(fence[1]); i++) body.push(lines[i]);
+      root.append(h("pre", {}, h("code", {}, body.join("\n"))));
+      continue;
+    }
+    const heading = line.match(/^\s*(#{1,6})\s+(.*)$/);
+    const item = line.match(/^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/);
+    if (heading) {
+      flushPara(); list = null;
+      root.append(h(`h${Math.min(6, heading[1].length + 2)}`, {}, inline(heading[2])));
+    } else if (item) {
+      flushPara();
+      const tag = item[1] ? "ol" : "ul";
+      if (!list || list.tagName.toLowerCase() !== tag) root.append((list = h(tag, {})));
+      list.append(h("li", {}, inline(item[2])));
+    } else if (!line.trim()) {
+      flushPara(); list = null;
+    } else {
+      list = null;
+      para.push(line.trim());
+    }
+  }
+  flushPara();
+  return root;
+}
+
+function inline(text) {
+  const out = [];
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s)]+)/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1]) out.push(h("code", {}, m[1].slice(1, -1)));
+    else if (m[2]) out.push(h("strong", {}, m[2].slice(2, -2)));
+    else out.push(h("a", { href: m[4] || m[5], target: "_blank", rel: "noopener noreferrer" }, m[3] || m[5]));
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}

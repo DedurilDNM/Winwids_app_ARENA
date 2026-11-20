@@ -134,10 +134,37 @@ async def seed_admin() -> None:
             print("=" * 72, flush=True)
 
 
+async def fail_interrupted_projects() -> int:
+    """Projects left "running" by a previous process cannot continue (their
+    in-process runner died with it): mark them failed so they can be restarted."""
+    from datetime import datetime, timezone
+
+    from app.models import Project, Task
+
+    if settings.PROJECT_RUNNER == "arq":
+        return 0  # an external worker may still be running them
+    async with SessionLocal() as session:
+        rows = (await session.scalars(select(Project).where(Project.status == "running"))).all()
+        for project in rows:
+            project.status = "failed"
+            project.result = "Interrupted by a server restart. Start the project again."
+            project.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            await session.execute(
+                Task.__table__.update()
+                .where(Task.project_id == project.id, Task.status.in_(("pending", "running")))
+                .values(status="failed")
+            )
+        await session.commit()
+    if rows:
+        logger.warning("Marked %d interrupted project(s) as failed", len(rows))
+    return len(rows)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     await seed_admin()
+    await fail_interrupted_projects()
 
     # Phase 2: relaunch browsers for all active accounts so they open logged-in
     # sessions without a fresh VNC login. Failures never block startup.

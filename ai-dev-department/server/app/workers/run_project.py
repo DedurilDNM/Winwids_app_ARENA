@@ -31,9 +31,21 @@ async def run_project(ctx, project_id: int) -> str:
     return status
 
 
+_inline_tasks: set[asyncio.Task] = set()  # strong refs: unreferenced tasks can be GC'd
+
+
+def _run_inline(project_id: int) -> None:
+    task = asyncio.create_task(run_project({}, project_id))
+    _inline_tasks.add(task)
+    task.add_done_callback(_inline_tasks.discard)
+
+
 async def enqueue_run_project(project_id: int) -> str:
-    """Enqueue via arq; fall back to an inline asyncio task. Returns 'arq' or 'inline'."""
+    """Run in the API process (default) or enqueue via arq. Returns 'inline' or 'arq'."""
     settings = get_settings()
+    if settings.PROJECT_RUNNER != "arq":
+        _run_inline(project_id)
+        return "inline"
     try:
         from arq import create_pool
         from arq.connections import RedisSettings
@@ -49,5 +61,5 @@ async def enqueue_run_project(project_id: int) -> str:
             "Redis/arq unavailable (%s); running project %s inline in the API process",
             settings.REDIS_URL, project_id, exc_info=True,
         )
-        asyncio.create_task(run_project({}, project_id))
+        _run_inline(project_id)
         return "inline"

@@ -243,10 +243,13 @@ async def start_project(
                 detail=f"Assigned account {account.id} is not active (status={account.status}). Log in via VNC first.",
             )
 
+    # A re-run starts from a clean task list (history stays in git).
+    await db.execute(Task.__table__.delete().where(Task.project_id == project.id))
     project.status = "running"
     project.started_at = _utc_naive()
     project.completed_at = None
     project.result = None
+    project.pr_url = None
     await db.commit()
     await db.refresh(project)
 

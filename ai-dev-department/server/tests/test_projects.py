@@ -391,3 +391,42 @@ def test_parse_task_plan_role_fallback_to_orchestrator():
     )
     assert len(plan) == 1
     assert plan[0].assign_to_account_id == 10
+
+
+def test_ws_auth_by_first_message(api):  # noqa: F811
+    token = _fresh_user(api, "wsmsg")
+    pid = api.post("/api/projects", json=_project_payload(), headers=_auth(token)).json()["id"]
+    with api.websocket_connect(f"/ws/projects/{pid}") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        snap = ws.receive_json()
+        assert snap["type"] == "snapshot" and snap["project"]["id"] == pid
+        assert "pr_url" in snap["project"]
+    other = _fresh_user(api, "wsmsg2")
+    with api.websocket_connect(f"/ws/projects/{pid}") as ws:
+        ws.send_json({"type": "auth", "token": other})
+        try:
+            ws.receive_json()
+            raise AssertionError("foreign user must be rejected")
+        except Exception as exc:  # WebSocketDisconnect
+            assert getattr(exc, "code", 4401) == 4401
+
+
+def test_interrupted_projects_marked_failed_on_startup(api):  # noqa: F811
+    import asyncio as _asyncio
+
+    from app.db import SessionLocal
+    from app.main import fail_interrupted_projects
+    from app.models import Project
+
+    token = _fresh_user(api, "restart")
+    pid = api.post("/api/projects", json=_project_payload(), headers=_auth(token)).json()["id"]
+
+    async def mark_running():
+        async with SessionLocal() as s:
+            (await s.get(Project, pid)).status = "running"
+            await s.commit()
+
+    _asyncio.run(mark_running())
+    assert _asyncio.run(fail_interrupted_projects()) >= 1
+    body = api.get(f"/api/projects/{pid}", headers=_auth(token)).json()
+    assert body["status"] == "failed" and "restart" in body["result"]

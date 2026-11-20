@@ -400,8 +400,10 @@ async def run_project_logic(
             ws_manager=ws,
         )
 
+    # The role chosen for this project wins over the account's default role.
+    project_roles = {a.account_id: a.role for a in assignments}
     account_rows = [
-        {"id": a.id, "name": a.name, "default_role": a.default_role}
+        {"id": a.id, "name": a.name, "default_role": project_roles.get(a.id, a.default_role)}
         for a in assignment_accounts.values()
     ]
     split_prompt = prompts.build_split_prompt(
@@ -438,6 +440,9 @@ async def run_project_logic(
             f"Could not parse orchestrator plan: {exc}. Raw reply (truncated): {raw_plan[:500]}",
             ws_manager=ws,
         )
+    for item in plan:
+        if item.assign_to_account_id in project_roles and project_roles[item.assign_to_account_id] in AGENT_ROLES:
+            item.role = project_roles[item.assign_to_account_id]
     logger.info("Project %s: orchestrator produced %d subtasks", project_id, len(plan))
 
     # ---- create Task rows -------------------------------------------------

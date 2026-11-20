@@ -97,7 +97,7 @@ def _setup(github_repo: str = "octo/website", with_token: bool = True) -> dict:
             s.add(project)
             await s.flush()
             s.add_all([ProjectAssignment(project_id=project.id, account_id=coder.id, role="Coder"),
-                       ProjectAssignment(project_id=project.id, account_id=reviewer.id, role="Reviewer")])
+                       ProjectAssignment(project_id=project.id, account_id=reviewer.id, role="Tester")])
             if with_token:
                 s.add(ConnectorCredential(user_id=user.id, kind="github", label="octo",
                                           encrypted_payload=encrypt_bytes(json.dumps({"token": "ghp_test_token_1234567890"}).encode())))
@@ -173,6 +173,7 @@ def test_pipeline_commits_files_and_opens_pr() -> None:
         if page.startswith(f"project-{p}-task-"):
             prompt = adapter.prompts[-1][1]
             who = "coder" if "You are the Coder" in prompt else "reviewer"
+            assert "You are the Coder" in prompt or "You are the Tester" in prompt
             return replies[who].pop(0)
         return await original_wait(page, timeout)
 
@@ -188,7 +189,7 @@ def test_pipeline_commits_files_and_opens_pr() -> None:
     assert files[f"status/task-{_load(ids)[1][0].id}.md"].startswith("DONE")
     assert gh.files("main") == {"README.md": "# Website\n"}  # default branch never written
     log = gh.log(branch)
-    assert log[0].startswith(f"task-{_load(ids)[1][1].id} [Reviewer]") and log[1].startswith(f"task-{_load(ids)[1][0].id} [Coder]")
+    assert log[0].startswith(f"task-{_load(ids)[1][1].id} [Tester]") and log[1].startswith(f"task-{_load(ids)[1][0].id} [Coder]")
 
     project, tasks = _load(ids)
     assert project.status == "completed" and project.pr_url == f"https://github.com/octo/website/pull/1"
@@ -202,7 +203,9 @@ def test_pipeline_commits_files_and_opens_pr() -> None:
     assert "could not be processed" in agent_prompts[1] and "OUTPUT FORMAT" in agent_prompts[1]
     # the reviewer sees the coder's file content and summary
     assert "<h1>Hello</h1>" in agent_prompts[2] and "Added index.html" in agent_prompts[2]
-    assert "index.html" in adapter.prompts[0][1] or "README.md" in adapter.prompts[0][1]  # split prompt lists repo files
+    assert "README.md" in adapter.prompts[0][1]  # split prompt lists repo files
+    assert f"account_id={ids['reviewer']} name='rev' role=Tester" in adapter.prompts[0][1]  # project role, not default
+    assert [t.role for t in tasks] == ["Coder", "Tester"]
     types = [e["type"] for e in ws.events]
     assert "project_completed" in types and types.count("task_started") == 2
 

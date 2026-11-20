@@ -7,6 +7,13 @@ const BASE = process.env.BASE || "http://127.0.0.1:8000";
 const SHOTS = process.env.SHOTS || "";
 const TOKEN = "ghp_test_token_1234567890"; // accepted by tests/fake_github.py
 const problems = [];
+// Start from a disconnected state regardless of earlier test runs.
+const login = await (await fetch(`${BASE}/api/auth/login`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ email: "admin@local", password: process.env.ADMIN_PASSWORD }),
+})).json();
+await fetch(`${BASE}/api/github`, { method: "DELETE", headers: { authorization: `Bearer ${login.access_token}` } });
+
 const browser = await chromium.launch();
 
 for (const [label, opts] of [["desktop", { viewport: { width: 1280, height: 860 } }], ["phone", devices["Pixel 7"]]]) {
