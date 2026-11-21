@@ -46,6 +46,8 @@ _CAPTCHA_JS = """
 })
 """
 
+MAX_RESENDS = 5  # resends of one message after page reloads
+
 _BLOCKED_MESSAGES = {
     "captcha": "Service is showing a captcha that did not clear by itself",
     "dialog": "Service is showing a pop-up window that blocks sending",
@@ -140,6 +142,7 @@ class Adapter:
         self.settings = settings or get_settings()
         self._last_sent: dict[int, str] = {}  # id(page) -> last prompt (echo filter)
         self._before: dict[int, tuple[int, str]] = {}
+        self._marks: dict[int, str] = {}  # id(page) -> reload marker
         # async (kind: "captcha" | "dialog" | "login", active: bool) -> None; set by the orchestrator
         self.on_attention = None
         # async () -> bool: False once the project was stopped (ends a pause)
@@ -303,29 +306,8 @@ class Adapter:
 
         # Snapshot BEFORE sending: a fast reply must not end up in "before".
         self._before[id(page)] = (await self._message_count(page), await self._last_message_text(page))
-        try:
-            await self._write_input(page, text)
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            raise RuntimeError(f"Could not focus chat input ({input_sel}): {exc}") from exc
         self._last_sent[id(page)] = text
-
-        sent = False
-        try:
-            await page.click(send_sel, timeout=10_000)
-            sent = True
-        except Exception:
-            sent = False
-        if not sent:
-            try:
-                await page.press(input_sel, "Enter")
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Could not send message (no working send selector: {send_sel})"
-                ) from exc
-        await self._accept_dialog_and_resend(page)
-        await self._wait_blockers(page)
+        await self._submit(page, text)
         logger.debug("Message sent to service (len=%d)", len(text))
 
     async def _captcha_visible(self, page) -> bool:
@@ -386,24 +368,27 @@ class Adapter:
         finally:
             await self._attention(kind, False)
 
-    async def _wait_blockers(self, page) -> None:
+    async def _wait_blockers(self, page) -> bool:
         """After sending: a captcha, or a pop-up while our message is still
         unsent -> pause for the human, then send the message if it is still in
         the input. Never resends a delivered message."""
         await asyncio.sleep(1.0)
         kind = await self._blocker(page)
         if kind is None:
-            return
+            return False
 
         async def blocked(p) -> bool:
             return await self._blocker(p) is not None
 
         await self._pause(page, kind, blocked)
+        if await self._reloaded(page):
+            return True  # the human reloaded the page: our text is gone, send again
         if await self._input_pending(page):
             try:
                 await page.click(self._selectors["send"], timeout=5_000)
             except Exception:
                 await page.keyboard.press("Enter")
+        return False
 
     async def _reopen(self, page) -> None:
         template = getattr(self.settings, "ADAPTER_NEW_CHAT_URL", "") or ""
@@ -432,6 +417,49 @@ class Adapter:
                     await el.click()
                 except Exception:
                     pass
+
+    async def _submit(self, page, text: str, depth: int = 0) -> None:
+        """Type, mark the page (to notice a reload), send, handle pop-ups /
+        captcha. If the human reloaded the page while helping, send again."""
+        input_sel, send_sel = self._selectors["input"], self._selectors["send"]
+        try:
+            await self._write_input(page, text)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Could not focus chat input ({input_sel}): {exc}") from exc
+        await self._mark(page)
+        try:
+            await page.click(send_sel, timeout=10_000)
+        except Exception:
+            try:
+                await page.press(input_sel, "Enter")
+            except Exception as exc:
+                raise RuntimeError(f"Could not send message (no working send selector: {send_sel})") from exc
+        await self._accept_dialog_and_resend(page)
+        resend = await self._wait_blockers(page)
+        if resend and depth < MAX_RESENDS:
+            logger.info("The page was reloaded while a human helped; sending the message again")
+            await self.prepare_page(page)  # a reload resets things like the chat mode
+            await self._submit(page, text, depth + 1)
+
+    async def _mark(self, page) -> None:
+        """An invisible marker on the page: gone after a reload."""
+        token = f"aidd-{id(page)}-{_MONOTONIC()}"
+        try:
+            await page.evaluate("(t) => { window.__aiddMark = t; }", token)
+            self._marks[id(page)] = token
+        except Exception:
+            self._marks.pop(id(page), None)
+
+    async def _reloaded(self, page) -> bool:
+        token = self._marks.get(id(page))
+        if not token:
+            return False
+        try:
+            return (await page.evaluate("() => window.__aiddMark || null")) != token
+        except Exception:
+            return False
 
     async def _write_input(self, page, text: str) -> None:
         """Put `text` into the first VISIBLE chat input (a selector may also
@@ -513,6 +541,7 @@ class Adapter:
             snapshot = (await self._message_count(page), await self._last_message_text(page))
         before_count, before_text = snapshot
         candidate, candidate_since = "", 0.0
+        resends = 0
 
         while True:
             state = await self.get_state(page)
@@ -526,6 +555,19 @@ class Adapter:
             if await self._captcha_visible(page):
                 deadline += await self._pause(page, "captcha", self._captcha_visible)
                 continue
+            if await self._reloaded(page):
+                count, last = await self._message_count(page), await self._last_message_text(page)
+                if count > before_count and last and last != before_text and not _is_echo(last, sent):
+                    await self._mark(page)  # the reply is there after the reload: keep waiting for it
+                elif resends < MAX_RESENDS and sent:
+                    resends += 1
+                    logger.info("The page was reloaded before a reply; sending the message again (%d)", resends)
+                    before_count, before_text = count, last
+                    candidate = ""
+                    await self.prepare_page(page)  # a reload resets things like the chat mode
+                    await self._submit(page, sent)
+                    deadline = max(deadline, _MONOTONIC() + timeout)
+                    continue
 
             if state == "generating":
                 candidate = ""  # still working (agents work in several steps)

@@ -543,3 +543,101 @@ def test_captcha_during_the_reply_pauses_and_extends_the_deadline():
         return text
 
     assert asyncio.run(_run(flow())) == "Done after captcha"
+
+
+class ReloadablePage(StubPage):
+    """A chat page with a reload button for the 'human': reload() wipes the
+    marker and the input (like F5). Captcha and dialogs are flags."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.mark = None
+        self.captcha = False
+        self.sent: list[str] = []
+        self.keyboard = self
+
+    async def evaluate(self, script, *args):
+        if "__aiddMark = t" in script:
+            self.mark = args[0]
+            return None
+        if "__aiddMark ||" in script:
+            return self.mark
+        if "captcha" in script:
+            return self.captcha
+        return False
+
+    def reload(self):
+        self.mark = None
+        self.filled.clear()
+
+    async def press(self, *a):
+        pass
+
+    async def click(self, selector, timeout=None):
+        self.clicked.append(selector)
+        if "send" in selector.lower() or "submit" in selector.lower():
+            if not self.captcha and self.filled:
+                self.sent.append(next(iter(self.filled.values())))
+
+
+def test_reload_during_a_captcha_sends_the_message_again():
+    page = ReloadablePage()
+    events = []
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.01)
+
+    async def on_attention(kind, active):
+        events.append((kind, active))
+
+    a.on_attention = on_attention
+    page.captcha = True  # the first send is stopped by a captcha
+
+    async def flow():
+        async def human():
+            await asyncio.sleep(2.5)
+            page.reload()          # «капча бесконечная» -> F5
+            page.captcha = False   # after the reload the captcha is gone
+
+        task = asyncio.create_task(human())
+        await a.send_message(page, "build the UI")
+        await task
+
+    asyncio.run(_run(flow()))
+    assert events == [("captcha", True), ("captcha", False)]
+    assert page.sent == ["build the UI"]  # delivered once, after the reload
+
+
+def test_reload_while_waiting_without_a_reply_resends():
+    page = ReloadablePage()
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.02, ADAPTER_SETTLE_SECONDS=0.1)
+
+    async def flow():
+        await a.send_message(page, "build the UI")
+        assert page.sent == ["build the UI"]
+
+        async def human_then_service():
+            await asyncio.sleep(0.2)
+            page.reload()  # the reply was lost with the reload
+            await asyncio.sleep(0.3)
+            page.messages.append(_StubEl(text="Done"))
+
+        task = asyncio.create_task(human_then_service())
+        text = await a.wait_response(page, timeout=5)
+        await task
+        return text
+
+    assert asyncio.run(_run(flow())) == "Done"
+    assert page.sent == ["build the UI", "build the UI"]
+
+
+def test_reload_after_the_reply_arrived_does_not_resend():
+    page = ReloadablePage()
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.02, ADAPTER_SETTLE_SECONDS=0.3)
+
+    async def flow():
+        await a.send_message(page, "build the UI")
+        page.messages.append(_StubEl(text="Here it is"))
+        page.reload()  # e.g. the user refreshed while watching
+        return await a.wait_response(page, timeout=5)
+
+    assert asyncio.run(_run(flow())) == "Here it is"
+    assert page.sent == ["build the UI"]

@@ -63,6 +63,16 @@ mode.addEventListener("click", () => {
 box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send.click(); } });
 let captchaUntil = 0;
 send.addEventListener("click", () => {
+  // ?captcha=reload: an "endless" captcha on the first send that only goes away
+  // after the page is reloaded (F5), like some real ones
+  if (location.search.includes("captcha=reload") && !sessionStorage.getItem("captcha_seen")) {
+    sessionStorage.setItem("captcha_seen", "1");
+    const f = document.createElement("iframe");
+    f.src = "about:blank#recaptcha"; f.style.cssText = "width:300px;height:80px;border:1px solid red";
+    document.body.append(f);
+    return;
+  }
+  if (location.search.includes("captcha=reload") && document.querySelector("iframe[src*=recaptcha]")) return;
   // ?captcha=1: the first send shows a captcha frame for 12 s; the message
   // stays in the input until it clears (like an invisible check)
   if (location.search.includes("captcha=1") && !sessionStorage.getItem("captcha_done")) {
