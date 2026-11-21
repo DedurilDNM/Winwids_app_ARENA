@@ -143,12 +143,21 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
+def _alnum(text: str) -> str:
+    return re.sub(r"[\W_]+", "", text or "").lower()
+
+
 def _is_echo(candidate: str, sent: str) -> bool:
-    """True if `candidate` is (a prefix of) the prompt we sent, not a reply."""
+    """True if `candidate` is (a prefix of) the prompt we sent, not a reply.
+    Also compares letters/digits only: a chat shown again after a reload may
+    render our own message as markdown (other quotes, bullets, spacing)."""
     c, s = _norm(candidate), _norm(sent)
     if not c or not s:
         return False
-    return c == s or (len(c) >= 20 and s.startswith(c))
+    if c == s or (len(c) >= 20 and s.startswith(c)):
+        return True
+    ca, sa = _alnum(c), _alnum(s)
+    return len(ca) >= 20 and (ca == sa or sa.startswith(ca))
 
 
 class Adapter:
@@ -326,11 +335,11 @@ class Adapter:
         await self._submit(page, text)
         logger.debug("Message sent to service (len=%d)", len(text))
 
-    async def _captcha_visible(self, page) -> bool:
+    async def _captcha_visible(self, page, on_error: bool = False) -> bool:
         try:
             return bool(await page.evaluate(_CAPTCHA_JS))
-        except Exception:
-            return False
+        except Exception:  # e.g. the page is navigating (a reload)
+            return on_error
 
     async def _input_pending(self, page) -> bool:
         """True if text is still sitting in the chat input (not sent)."""
@@ -342,9 +351,19 @@ class Adapter:
         except Exception:
             return False
 
-    async def _blocker(self, page) -> str | None:
+    async def _page_loading(self, page) -> bool:
+        """True while the page is (re)loading or its script context is gone."""
+        if not hasattr(page, "evaluate"):
+            return False  # minimal page objects (tests)
+        try:
+            state = await page.evaluate("() => document.readyState")
+        except Exception:
+            return True
+        return state == "loading"
+
+    async def _blocker(self, page, on_error: bool = False) -> str | None:
         """"captcha" | "dialog" (a pop-up while our message is still unsent) | None."""
-        if await self._captcha_visible(page):
+        if await self._captcha_visible(page, on_error):
             return "captcha"
         try:
             dialog = bool(await page.evaluate(_DIALOG_JS))
@@ -379,12 +398,22 @@ class Adapter:
         logger.warning("Paused: %s needs a human%s%s", kind, detail, f" (limit {limit:.0f}s)" if limit else "")
         await self._attention(kind, True)
         try:
-            while await still_blocked(page):
+            clear = 0
+            while clear < 2:  # the page must look clear twice in a row, fully loaded
                 if limit and _MONOTONIC() - start > limit:
                     raise RuntimeError(_BLOCKED_MESSAGES.get(kind, f"Service is blocked by: {kind}"))
                 if self.should_continue is not None and not await self.should_continue():
                     raise RuntimeError("Stopped by the user while waiting for a human")
-                await asyncio.sleep(2.0)
+                if await self._page_loading(page):
+                    clear = 0  # a reload in progress is not "resolved"
+                else:
+                    try:
+                        blocked = await still_blocked(page)
+                    except Exception:
+                        blocked = True
+                    clear = 0 if blocked else clear + 1
+                if clear < 2:
+                    await asyncio.sleep(2.0)
             logger.info("Resumed: %s resolved after %.0fs", kind, _MONOTONIC() - start)
             return _MONOTONIC() - start
         finally:
@@ -400,7 +429,7 @@ class Adapter:
             return False
 
         async def blocked(p) -> bool:
-            return await self._blocker(p) is not None
+            return await self._blocker(p, on_error=True) is not None
 
         await self._pause(page, kind, blocked)
         if await self._reloaded(page):
@@ -462,8 +491,20 @@ class Adapter:
         resend = await self._wait_blockers(page)
         if resend and depth < MAX_RESENDS:
             logger.info("The page was reloaded while a human helped; sending the message again")
+            await self._wait_ready(page)
             await self.prepare_page(page)  # a reload resets things like the chat mode
             await self._submit(page, text, depth + 1)
+
+    async def _wait_ready(self, page) -> None:
+        """After a reload: wait until the page has loaded and shows the chat input."""
+        try:
+            await page.wait_for_load_state("load", timeout=30_000)
+        except Exception:
+            pass
+        try:
+            await page.wait_for_selector(self._selectors["input"], state="visible", timeout=30_000)
+        except Exception:
+            logger.warning("The chat input did not appear after the reload")
 
     async def _mark(self, page) -> None:
         """An invisible marker on the page: gone after a reload."""
@@ -478,10 +519,19 @@ class Adapter:
         token = self._marks.get(id(page))
         if not token:
             return False
-        try:
-            return (await page.evaluate("() => window.__aiddMark || null")) != token
-        except Exception:
-            return False
+        for attempt in range(3):
+            try:
+                return (await page.evaluate("() => window.__aiddMark || null")) != token
+            except Exception:  # the old page is gone mid-navigation: wait for the new one
+                if attempt == 2:
+                    if getattr(page, "is_closed", None) and page.is_closed():
+                        return False
+                    return True
+                try:
+                    await page.wait_for_load_state("load", timeout=15_000)
+                except Exception:
+                    await asyncio.sleep(1.0)
+        return False
 
     async def _write_input(self, page, text: str) -> None:
         """Put `text` into the first VISIBLE chat input (a selector may also
@@ -490,6 +540,11 @@ class Adapter:
         prompts; if the editor ignores it, lines are typed with Shift+Enter."""
         input_sel = self._selectors["input"]
         el = await self._first_visible(page, input_sel)
+        for _ in range(20):  # a web app may still be drawing its UI (e.g. right after a reload)
+            if el is not None:
+                break
+            await asyncio.sleep(1.0)
+            el = await self._first_visible(page, input_sel)
         if el is None:
             raise RuntimeError(f"Could not focus chat input ({input_sel}): no visible element")
         try:
@@ -575,7 +630,7 @@ class Adapter:
                 # The reply (if any) was lost with the session: let the caller resend.
                 raise RuntimeError("Session restored during the reply; the message must be sent again")
             if await self._captcha_visible(page):
-                deadline += await self._pause(page, "captcha", self._captcha_visible)
+                deadline += await self._pause(page, "captcha", lambda p: self._captcha_visible(p, True))
                 continue
             if await self._reloaded(page):
                 count, last = await self._message_count(page), await self._last_message_text(page)
@@ -586,6 +641,7 @@ class Adapter:
                     logger.info("The page was reloaded before a reply; sending the message again (%d)", resends)
                     before_count, before_text = count, last
                     candidate = ""
+                    await self._wait_ready(page)
                     await self.prepare_page(page)  # a reload resets things like the chat mode
                     await self._submit(page, sent)
                     deadline = max(deadline, _MONOTONIC() + timeout)

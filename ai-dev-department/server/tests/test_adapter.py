@@ -641,3 +641,73 @@ def test_reload_after_the_reply_arrived_does_not_resend():
 
     assert asyncio.run(_run(flow())) == "Here it is"
     assert page.sent == ["build the UI"]
+
+
+class NavigatingPage(ReloadablePage):
+    """A real reload takes time: while the new page loads, scripts fail
+    (context destroyed) and then the chat UI appears a bit later."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.navigating = False
+        self.hidden_input = False
+
+    async def evaluate(self, script, *args):
+        if self.navigating:
+            raise RuntimeError("Execution context was destroyed")
+        if "readyState" in script:
+            return "complete"
+        return await super().evaluate(script, *args)
+
+    async def wait_for_load_state(self, *a, **kw):
+        while self.navigating:
+            await asyncio.sleep(0.05)
+
+    async def wait_for_selector(self, *a, **kw):
+        while self.hidden_input:
+            await asyncio.sleep(0.05)
+
+    async def query_selector_all(self, selector):
+        if self.navigating or (self.hidden_input and "textarea" in selector):
+            return []
+        return await super().query_selector_all(selector)
+
+
+def test_slow_reload_during_a_captcha_waits_for_the_page_then_resends():
+    page = NavigatingPage()
+    events = []
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.01)
+
+    async def on_attention(kind, active):
+        events.append((kind, active))
+
+    a.on_attention = on_attention
+    page.captcha = True
+
+    async def flow():
+        async def human():
+            await asyncio.sleep(2.5)
+            page.navigating = True       # F5: the old page is gone, the new one loads
+            page.reload()
+            page.captcha = False
+            await asyncio.sleep(3.0)     # longer than one pause check
+            page.navigating = False
+            page.hidden_input = True     # the web app is still drawing its UI
+            await asyncio.sleep(1.5)
+            page.hidden_input = False
+
+        task = asyncio.create_task(human())
+        await a.send_message(page, "build the UI")
+        await task
+
+    asyncio.run(_run(flow()))
+    assert events == [("captcha", True), ("captcha", False)]
+    assert page.sent == ["build the UI"]
+
+
+def test_reloaded_chat_showing_our_own_message_as_markdown_is_an_echo():
+    from app.adapters.generic.adapter import _is_echo
+
+    sent = 'Build the "UI" module:\n- login page\n- settings page'
+    assert _is_echo("Build the «UI» module: • login page • settings page", sent)
+    assert not _is_echo("FILE: src/ui.js ... STATUS: DONE", sent)

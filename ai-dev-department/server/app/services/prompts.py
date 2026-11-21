@@ -245,14 +245,6 @@ Send the same answer again as valid JSON inside one ```json code block. Inside t
 double quote character (use «» or single quotes) and no backslashes."""
 
 
-def build_json_fix_prompt(error: str) -> str:
-    """Ask the orchestrator to resend a reply the server could not parse."""
-    return f"""Your previous reply could not be read by the server: {error}
-
-Send the same answer again as valid JSON inside one ```json code block. Inside text values never use the
-double quote character (use «» or single quotes) and no backslashes."""
-
-
 def build_fix_prompt(error: str) -> str:
     """Ask the agent to resend its answer in the required format."""
     return f"""Your previous reply could not be processed by the server: {error}

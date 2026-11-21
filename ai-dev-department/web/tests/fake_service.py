@@ -15,6 +15,11 @@ CHAT = """
 <button id=send aria-label="Send message">Send</button>
 <button id=mode role=combobox aria-label="Mode">Chat</button>
 <script>
+// ?hydrate=N: like a big web app, the chat UI appears N s after the page loads
+const hydrateDelay = (Number(new URLSearchParams(location.search).get("hydrate")) || 0) * 1000;
+if (hydrateDelay) document.querySelectorAll("#box, #send, #mode").forEach((el) => { el.style.display = "none"; });
+setTimeout(() => {
+document.querySelectorAll("#box, #send, #mode").forEach((el) => { el.style.display = ""; });
 let box = document.getElementById("box");
 const send = document.getElementById("send"), messages = document.getElementById("messages");
 if (location.search.includes("editor=ce")) {
@@ -108,6 +113,7 @@ send.addEventListener("click", () => {
     add("assistant", needAgent ? "Switch to Agent mode" : w ? w[1] : f ? f[1] : projectReply(t) || "ok"); messages.setAttribute("aria-busy", "false"); stop.remove();
   }, (Number(new URLSearchParams(location.search).get("slow")) || 2) * 1000);  // ?slow=N: reply after N s
 });
+}, hydrateDelay);
 </script>
 """
 
@@ -123,7 +129,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         from urllib.parse import parse_qs as _pq, urlparse as _up
 
-        auto = _pq(_up(self.path).query).get("as", [None])[0]  # ?as=<user>: log in on first visit
+        query = _pq(_up(self.path).query)
+        if query.get("slowload"):  # ?slowload=N: the page takes N s to load (a real site over the network)
+            import time as _time
+
+            _time.sleep(float(query["slowload"][0]))
+        auto = query.get("as", [None])[0]  # ?as=<user>: log in on first visit
         user = self._user() or auto
         with open(LOG, "a") as f:
             f.write(f"VISIT user={user}\n")
