@@ -5,10 +5,11 @@ import { api } from "../api.js";
 import { openBrowser } from "../browser.js";
 import { confirmDialog, emptyState, errorText, fmtDate, h, icon, modal, toast } from "../ui.js";
 
-export const ROLES = ["Orchestrator", "Architect", "Coder", "Reviewer", "Tester", "Integrator"];
+export const ROLES = ["Orchestrator", "Architect", "Coder", "Reviewer", "Tester", "Integrator", "ImagePrompter"];
 export const ROLE_LABELS = {
   Orchestrator: "Оркестратор", Architect: "Архитектор", Coder: "Разработчик",
   Reviewer: "Ревьюер", Tester: "Тестировщик", Integrator: "Интегратор",
+  ImagePrompter: "Промптер изображений",
 };
 export const MAX_ACCOUNTS = 10;
 export const STATUS = {

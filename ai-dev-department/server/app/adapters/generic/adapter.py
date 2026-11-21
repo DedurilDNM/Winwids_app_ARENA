@@ -46,6 +46,12 @@ _CAPTCHA_JS = """
 })
 """
 
+_BLOCKED_MESSAGES = {
+    "captcha": "Service is showing a captcha that did not clear by itself",
+    "dialog": "Service is showing a pop-up window that blocks sending",
+    "login": "Service requires login: the account session has expired",
+}
+
 _DIALOG_JS = """
 () => [...document.querySelectorAll("[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open]")].some((d) => {
   const r = d.getBoundingClientRect();
@@ -83,8 +89,10 @@ class Adapter:
         self.settings = settings or get_settings()
         self._last_sent: dict[int, str] = {}  # id(page) -> last prompt (echo filter)
         self._before: dict[int, tuple[int, str]] = {}
-        # async (kind: "captcha" | "dialog", active: bool) -> None; set by the orchestrator
-        self.on_attention = None  # id(page) -> chat snapshot taken before sending
+        # async (kind: "captcha" | "dialog" | "login", active: bool) -> None; set by the orchestrator
+        self.on_attention = None
+        # async () -> bool: False once the project was stopped (ends a pause)
+        self.should_continue = None  # id(page) -> chat snapshot taken before sending
 
     # ------------------------------------------------------------------ config
 
@@ -231,7 +239,8 @@ class Adapter:
     async def send_message(self, page, text: str) -> None:
         """Type `text` into the chat input and send it."""
         if await self._is_login_required(page):
-            raise RuntimeError("Service requires login: account storage_state may be expired")
+            await self._pause(page, "login", self._is_login_required)
+            await self._reopen(page)  # logging in may have navigated away from a new chat
         input_sel = self._selectors["input"]
         send_sel = self._selectors["send"]
 
@@ -299,34 +308,56 @@ class Adapter:
         except Exception:
             logger.warning("attention callback failed", exc_info=True)
 
+    async def _pause(self, page, kind: str, still_blocked) -> float:
+        """PAUSE until a human resolves `kind` ("captcha" | "dialog" | "login")
+        in the agent's browser. Tells the user (on_attention), waits without a
+        time limit by default (ADAPTER_CAPTCHA_WAIT_SECONDS > 0 sets one), stops
+        when the project is stopped (should_continue). Returns seconds paused."""
+        limit = float(getattr(self.settings, "ADAPTER_CAPTCHA_WAIT_SECONDS", 0) or 0)
+        start = _MONOTONIC()
+        logger.warning("Paused: %s needs a human%s", kind, f" (limit {limit:.0f}s)" if limit else "")
+        await self._attention(kind, True)
+        try:
+            while await still_blocked(page):
+                if limit and _MONOTONIC() - start > limit:
+                    raise RuntimeError(_BLOCKED_MESSAGES.get(kind, f"Service is blocked by: {kind}"))
+                if self.should_continue is not None and not await self.should_continue():
+                    raise RuntimeError("Stopped by the user while waiting for a human")
+                await asyncio.sleep(2.0)
+            logger.info("Resumed: %s resolved after %.0fs", kind, _MONOTONIC() - start)
+            return _MONOTONIC() - start
+        finally:
+            await self._attention(kind, False)
+
     async def _wait_blockers(self, page) -> None:
-        """A captcha or a pop-up after sending: tell the user (on_attention) and
-        wait for them to clear it in the agent's browser, then send the message
-        if it is still in the input. Never resends a delivered message."""
+        """After sending: a captcha, or a pop-up while our message is still
+        unsent -> pause for the human, then send the message if it is still in
+        the input. Never resends a delivered message."""
         await asyncio.sleep(1.0)
         kind = await self._blocker(page)
         if kind is None:
             return
-        limit = float(getattr(self.settings, "ADAPTER_CAPTCHA_WAIT_SECONDS", 300.0))
-        logger.warning("Service shows a %s after sending; waiting up to %.0fs", kind, limit)
-        await self._attention(kind, True)
+
+        async def blocked(p) -> bool:
+            return await self._blocker(p) is not None
+
+        await self._pause(page, kind, blocked)
+        if await self._input_pending(page):
+            try:
+                await page.click(self._selectors["send"], timeout=5_000)
+            except Exception:
+                await page.keyboard.press("Enter")
+
+    async def _reopen(self, page) -> None:
+        template = getattr(self.settings, "ADAPTER_NEW_CHAT_URL", "") or ""
+        base = self.settings.SERVICE_URL.rstrip("/")
         try:
-            deadline = _MONOTONIC() + limit
-            while _MONOTONIC() < deadline:
-                await asyncio.sleep(2.0)
-                if await self._blocker(page) is None:
-                    logger.info("%s cleared", kind)
-                    if await self._input_pending(page):
-                        try:
-                            await page.click(self._selectors["send"], timeout=5_000)
-                        except Exception:
-                            await page.keyboard.press("Enter")
-                    return
-            if kind == "captcha":
-                raise RuntimeError("Service is showing a captcha that did not clear by itself")
-            raise RuntimeError("Service is showing a pop-up window that blocks sending")
-        finally:
-            await self._attention(kind, False)
+            await page.goto(template.format(base=base, chat_ref="") if template else self.settings.SERVICE_URL,
+                            wait_until="domcontentloaded",
+                            timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS))
+            await self.prepare_page(page)
+        except Exception:
+            logger.warning("Could not reopen a new chat after the pause", exc_info=True)
 
     async def after_reply(self, page) -> None:
         """Close what services show after an answer (rating / feedback panels):
@@ -432,7 +463,12 @@ class Adapter:
             if state == "error":
                 raise RuntimeError("Service entered an error state")
             if state == "login_required":
-                raise RuntimeError("Service requires login during task execution")
+                await self._pause(page, "login", self._is_login_required)
+                # The reply (if any) was lost with the session: let the caller resend.
+                raise RuntimeError("Session restored during the reply; the message must be sent again")
+            if await self._captcha_visible(page):
+                deadline += await self._pause(page, "captcha", self._captcha_visible)
+                continue
 
             if state == "generating":
                 candidate = ""  # still working (agents work in several steps)

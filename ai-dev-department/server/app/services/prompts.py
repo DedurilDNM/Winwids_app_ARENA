@@ -22,6 +22,17 @@ ROLE_GUIDANCE = {
     "Tester": "Write automated tests for the existing code (and test fixtures if needed). "
               "Tests must be runnable with the project's standard test command.",
     "Integrator": "Make the pieces work together: wiring, configuration, build/run scripts and the README usage section.",
+    "ImagePrompter": (
+        "Write production-quality prompts for image-generation models, one file per image: "
+        "prompts/<short-slug>.md. Each file has these sections: Purpose (where the image is used); "
+        "Prompt (one dense English paragraph: subject and action, composition and framing, camera/lens and "
+        "point of view, lighting, colour palette, materials and textures, environment, mood, art style or "
+        "medium described by genre/era/technique - never by the name of a living artist); Negative prompt "
+        "(what must not appear); Variations (2-3 alternative prompts: different angle, mood or style); "
+        "Parameters (aspect ratio, suggested size, style strength / seed notes); Summary (2 lines in the "
+        "language of the project task). Be specific and visual, avoid vague words like 'beautiful'. "
+        "Keep text that must appear in the image short and in quotes."
+    ),
     "Orchestrator": "Do the task as described.",
 }
 
@@ -81,7 +92,7 @@ Available agent accounts:
 
 Rules:
 - Each subtask must be assigned to exactly one account from the list above (use its account_id). Prefer the account's own role.
-- Use roles from: Architect, Coder, Reviewer, Tester, Integrator.
+- Use roles from: Architect, Coder, Reviewer, Tester, Integrator, ImagePrompter (writes prompts for image generation).
 - 1-6 subtasks, in execution order. Later subtasks see the files produced by earlier ones.
 - Each subtask text must be self-contained and specific: which files to create or change and what "done" means.
 - Agents only return complete files; they cannot run commands. Do not ask them to run, deploy or install anything.

@@ -212,7 +212,7 @@ def test_send_message_falls_back_to_enter():
 
 def test_send_message_raises_when_login_required():
     page = StubPage(login_required=True)
-    a = _adapter()
+    a = _adapter(ADAPTER_CAPTCHA_WAIT_SECONDS=0.1)  # with a limit; default = pause until a human logs in
     with pytest.raises(RuntimeError, match="login"):
         asyncio.run(_run(a.send_message(page, "hello")))
 
@@ -238,7 +238,7 @@ def test_wait_response_error_state_raises():
 
 def test_wait_response_login_required_raises():
     page = StubPage(state="idle", login_required=True)
-    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.01)
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.01, ADAPTER_CAPTCHA_WAIT_SECONDS=0.1)
     with pytest.raises(RuntimeError, match="login"):
         asyncio.run(_run(a.wait_response(page, timeout=5)))
 
@@ -465,3 +465,81 @@ def test_after_reply_presses_escape_and_clicks_dismiss():
     a = _adapter(ADAPTER_DISMISS_SELECTOR="[data-x=close-feedback]")
     asyncio.run(_run(a.after_reply(page)))
     assert page.keyboard.keys == ["Escape"] and clicked == ["x"]
+
+
+
+def test_logout_at_send_pauses_until_the_user_logs_in_then_sends():
+    page = StubPage(login_required=True)
+    events = []
+    a = _adapter()  # default: no time limit
+
+    async def on_attention(kind, active):
+        events.append((kind, active))
+
+    a.on_attention = on_attention
+
+    async def flow():
+        async def user_logs_in():
+            await asyncio.sleep(2.5)
+            page.login_required = False
+
+        task = asyncio.create_task(user_logs_in())
+        await a.send_message(page, "hello")
+        await task
+
+    asyncio.run(_run(flow()))
+    assert events == [("login", True), ("login", False)]
+    assert page.filled[DEFAULT_INPUT] == "hello"  # sent after the pause
+
+
+def test_pause_ends_when_the_project_is_stopped():
+    page = StubPage(login_required=True)
+    a = _adapter()
+    stopped = {"v": False}
+
+    async def should_continue():
+        return not stopped["v"]
+
+    a.should_continue = should_continue
+
+    async def flow():
+        async def user_stops():
+            await asyncio.sleep(2.5)
+            stopped["v"] = True
+
+        task = asyncio.create_task(user_stops())
+        try:
+            await a.send_message(page, "hello")
+        finally:
+            await task
+
+    with pytest.raises(RuntimeError, match="Stopped by the user"):
+        asyncio.run(_run(flow()))
+    assert page.filled == {}  # nothing was sent
+
+
+def test_captcha_during_the_reply_pauses_and_extends_the_deadline():
+    """A captcha shows up while waiting for the reply and stays longer than the
+    reply timeout: the task waits for the human instead of timing out."""
+    page = StubPage()
+    captcha = {"on": False}
+
+    async def evaluate(script, *args):
+        return captcha["on"] if "captcha" in script else False
+
+    page.evaluate = evaluate
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.05, ADAPTER_SETTLE_SECONDS=0.1)
+
+    async def flow():
+        async def service():
+            captcha["on"] = True
+            await asyncio.sleep(4.5)          # longer than the 3 s reply timeout
+            captcha["on"] = False
+            page.messages.append(_StubEl(text="Done after captcha"))
+
+        task = asyncio.create_task(service())
+        text = await a.wait_response(page, timeout=3)
+        await task
+        return text
+
+    assert asyncio.run(_run(flow())) == "Done after captcha"

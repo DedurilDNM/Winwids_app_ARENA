@@ -48,9 +48,14 @@ await page.waitForSelector("[data-testid=feed] li:has-text('капчу')");
 console.log("✓ captcha after the first send -> «нужна помощь» banner + feed event");
 if (SHOTS) await page.screenshot({ path: `${SHOTS}/s6-attention.png` });
 await page.waitForSelector(".attention-bar", { state: "hidden", timeout: 60000 });
-await page.waitForSelector("[data-testid=feed] li:has-text('Проверка пройдена')");
+await page.waitForSelector("[data-testid=feed] li:has-text('агент продолжает')");
 console.log("✓ captcha cleared -> banner gone, agent continues");
 
+// Every new chat tab shows the captcha again: now on the agent's task -> it pauses.
+await page.waitForSelector("[data-testid=task-status]:has-text('Пауза')", { timeout: 120000 });
+await page.waitForSelector(".task button:has-text('Открыть браузер и помочь')");
+if (SHOTS) await page.screenshot({ path: `${SHOTS}/s6-paused.png` });
+console.log("✓ agent task shows «Пауза: нужен человек» with «Открыть браузер и помочь»");
 await page.waitForSelector("[data-testid=project-status]:has-text('Завершён')", { timeout: 240000 });
 assert.ok(await page.locator("[data-testid=pr-link]").count() === 1);
 assert.equal(await page.locator("[data-testid=task-status]:has-text('Готово')").count(), 1);

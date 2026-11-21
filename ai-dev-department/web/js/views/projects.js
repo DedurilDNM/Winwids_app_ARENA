@@ -18,6 +18,7 @@ export const PROJECT_STATUS = {
 const TASK_STATUS = {
   pending: ["Ждёт", "idle"],
   running: ["В работе", "info"],
+  paused: ["Пауза: нужен человек", "warn"],
   done: ["Готово", "ok"],
   blocked: ["Заблокировано", "warn"],
   failed: ["Ошибка", "danger"],
@@ -321,7 +322,10 @@ async function renderProject(main, projectId) {
         t.summary ? h("p", { class: "small task-summary" }, t.summary) : null,
         h("div", { class: "actions" }, ...[
           t.commit_sha ? repoLink(project.github_repo, `/commit/${t.commit_sha}`, `коммит ${t.commit_sha.slice(0, 7)}`) : null,
-          agent && t.status === "running" ? h("button", { onclick: () => openBrowser(agent, { mode: "view" }) }, "Смотреть агента") : null,
+          agent && (t.status === "running" || t.status === "paused")
+            ? h("button", { class: t.status === "paused" ? "primary" : "", onclick: () => openBrowser(agent, { mode: "view" }) },
+                t.status === "paused" ? "Открыть браузер и помочь" : "Смотреть агента")
+            : null,
         ].filter(Boolean)));
     }));
   }
@@ -344,8 +348,7 @@ async function renderProject(main, projectId) {
 
   async function start() {
     try {
-      await api.startProject(projectId);
-      addEvent("Проект запущен", "info");
+      await api.startProject(projectId);  // the server sends «project_started» to the feed
       await reload();
     } catch (err) {
       toast(`Не удалось запустить: ${errorText(err)}`, { error: true, timeout: 7000 });
@@ -380,7 +383,7 @@ async function renderProject(main, projectId) {
     session_lost: (e) => [`Аккаунт #${e.account_id}: сессия потеряна — нужен повторный вход`, "danger"],
     session_relogged: (e) => [`Аккаунт #${e.account_id}: сессия восстановлена`, "ok"],
     attention_needed: (e) => [`⚠ ${e.account_name || "Агент"}: ${attentionText(e.kind)}`, "danger"],
-    attention_resolved: () => ["Проверка пройдена, агент продолжает", "ok"],
+    attention_resolved: () => ["Готово, агент продолжает работу", "ok"],
   };
   let ws = null;
   let closed = false;

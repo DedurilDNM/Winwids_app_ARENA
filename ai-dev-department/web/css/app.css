@@ -325,3 +325,4 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.45; }
 .attention-text { font-size: 14px; }
 .attention-bar button { min-height: 34px; padding: 4px 12px; }
 .attention-bar button.primary { background: #fff; color: var(--danger); border-color: #fff; }
+.task-paused { border-left: 3px solid var(--warn); }

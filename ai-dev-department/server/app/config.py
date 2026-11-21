@@ -167,10 +167,10 @@ class Settings(BaseSettings):
     ADAPTER_SETUP_CLICKS: str = ""
     # URL that opens a NEW chat. Empty = SERVICE_URL. Placeholders: {base}, {chat_ref}.
     ADAPTER_NEW_CHAT_URL: str = ""
-    # A captcha frame visible after sending: wait this long for it to clear
-    # (invisible checks usually pass by themselves; a human can solve a visible
-    # one through «Смотреть агента»). Then the task stops with a clear message.
-    ADAPTER_CAPTCHA_WAIT_SECONDS: float = 300.0
+    # Captcha / pop-up / logout during a task: the task PAUSES and the user is
+    # notified («нужна помощь»). 0 = wait for the human without a time limit
+    # (until the project is stopped); > 0 = give up after that many seconds.
+    ADAPTER_CAPTCHA_WAIT_SECONDS: float = 0
     # After each reply: press Escape (closes rating/feedback panels) and click
     # ADAPTER_DISMISS_SELECTOR if it is visible.
     ADAPTER_AFTER_REPLY_ESCAPE: bool = True

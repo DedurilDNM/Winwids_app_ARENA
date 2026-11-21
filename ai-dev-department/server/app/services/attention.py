@@ -13,6 +13,7 @@ _ids = itertools.count(1)
 KIND_TEXT = {
     "captcha": "the service is showing a captcha",
     "dialog": "a pop-up window blocks sending",
+    "login": "the account is logged out",
 }
 
 

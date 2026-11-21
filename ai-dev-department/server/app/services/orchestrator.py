@@ -47,7 +47,7 @@ from app.ws_manager import manager as default_ws_manager
 
 logger = logging.getLogger(__name__)
 
-AGENT_ROLES = ("Architect", "Coder", "Reviewer", "Tester", "Integrator")
+AGENT_ROLES = ("Architect", "Coder", "Reviewer", "Tester", "Integrator", "ImagePrompter")
 AGENT_FORMAT_ATTEMPTS = 2  # first reply + one "resend in the required format"
 CONTEXT_BUDGET_BYTES = 60_000  # file contents shown to each agent
 
@@ -205,7 +205,7 @@ def _is_retryable(exc: BaseException) -> bool:
     )
 
 
-async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, notify=None) -> str:
+async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, notify=None, should_continue=None) -> str:
     """One adapter round-trip: open chat, send prompt, wait for the reply.
 
     open_chat + send_message are retried with exponential backoff
@@ -217,15 +217,23 @@ async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, no
 
     if hasattr(adapter, "on_attention"):
         adapter.on_attention = notify
+    pausable = hasattr(adapter, "should_continue")
+    if pausable:
+        adapter.should_continue = should_continue
     for attempt in range(1, settings.ADAPTER_MAX_RETRIES + 1):
         page = None
         try:
             page = await adapter.open_chat(context, chat_ref)
             await adapter.send_message(page, prompt)
-            # Belt-and-braces: never let a hung adapter hang the worker forever.
-            reply = await asyncio.wait_for(
-                adapter.wait_response(page, timeout=timeout), timeout=timeout + 60
-            )
+            if pausable:
+                # The adapter enforces its own deadline, extended while a task is
+                # paused for a human (captcha / pop-up / login) - no outer cap.
+                reply = await adapter.wait_response(page, timeout=timeout)
+            else:
+                # Belt-and-braces: never let a hung adapter hang the worker forever.
+                reply = await asyncio.wait_for(
+                    adapter.wait_response(page, timeout=timeout), timeout=timeout + 60
+                )
             if hasattr(adapter, "after_reply"):
                 await adapter.after_reply(page)
             return reply
@@ -237,7 +245,7 @@ async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, no
             # login_required / service error: retrying won't help without
             # re-login, so fail fast.
             msg = str(exc)
-            if any(k in msg.lower() for k in ("login", "captcha", "pop-up")):
+            if any(k in msg.lower() for k in ("login", "captcha", "pop-up", "stopped by the user")):
                 raise  # retrying cannot help and could duplicate the message
             last_exc = exc
         except Exception as exc:  # noqa: BLE001 - transient browser/network error
@@ -259,11 +267,15 @@ async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, no
     ) from last_exc
 
 
-def _notifier(ws, *, user_id: int, project_id: int, account):
-    """Adapter callback: a captcha / pop-up needs the user -> attention list + WS event."""
+def _notifier(ws, *, user_id: int, project_id: int, account, session_factory=None, task_id: int | None = None):
+    """Adapter callback: a captcha / pop-up / logout needs the user ->
+    attention list + WS event; the task shows as «paused» meanwhile."""
     from app.services.attention import raise_attention, resolve_attention
 
     async def notify(kind: str, active: bool) -> None:
+        if task_id is not None and session_factory is not None:
+            await _set_task_status(session_factory, task_id, "paused" if active else "running",
+                                   ws_manager=ws, project_id=project_id)
         if active:
             item = raise_attention(user_id, account_id=account.id, account_name=account.name,
                                    project_id=project_id, kind=kind)
@@ -471,6 +483,7 @@ async def run_project_logic(
             prompt=split_prompt,
             timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
             notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
+            should_continue=lambda: _project_still_running(session_factory, project_id),
         )
     except Exception as exc:
         return await _fail_project(
@@ -590,7 +603,9 @@ async def run_project_logic(
                     chat_ref=f"project-{project_id}-task-{task_id}",
                     prompt=prompt,
                     timeout=settings.AGENT_TIMEOUT_SECONDS,
-                    notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=agent),
+                    notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=agent,
+                                     session_factory=session_factory, task_id=task_id),
+                    should_continue=lambda: _project_still_running(session_factory, project_id),
                 )
             except Exception as exc:
                 await _set_task_status(session_factory, task_id, "failed", ws_manager=ws, project_id=project_id)
@@ -661,6 +676,7 @@ async def run_project_logic(
             prompt=final_prompt,
             timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
             notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
+            should_continue=lambda: _project_still_running(session_factory, project_id),
         )
     except Exception as exc:
         return await _fail_project(

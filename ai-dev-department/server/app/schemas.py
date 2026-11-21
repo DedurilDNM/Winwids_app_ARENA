@@ -23,7 +23,7 @@ def _validate_email(value: str) -> str:
 
 EmailAddress = Annotated[str, AfterValidator(_validate_email)]
 
-RoleName = Literal["Architect", "Coder", "Reviewer", "Tester", "Integrator", "Orchestrator"]
+RoleName = Literal["Architect", "Coder", "Reviewer", "Tester", "Integrator", "ImagePrompter", "Orchestrator"]
 AccountStatus = Literal["pending_login", "active", "relogin_needed", "disabled"]
 ProjectStatus = Literal["draft", "running", "completed", "failed"]
 TaskStatus = Literal["pending", "running", "done", "blocked", "failed"]
