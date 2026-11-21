@@ -122,6 +122,7 @@ async def create_project(
         github_repo=data.github_repo.strip(),
         orchestrator_account_id=data.orchestrator_account_id,
         max_rounds=data.max_rounds,
+        ci_enabled=data.ci_enabled,
         status="draft",
     )
     db.add(project)
@@ -259,6 +260,8 @@ async def start_project(
     project.completed_at = None
     project.result = None
     project.pr_url = None
+    project.ci_status = None
+    project.ci_url = None
     await db.commit()
     await db.refresh(project)
 

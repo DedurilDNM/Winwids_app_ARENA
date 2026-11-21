@@ -161,6 +161,7 @@ class ProjectCreate(BaseModel):
     orchestrator_account_id: int | None = None
     assignments: list[ProjectAssignmentIn] = Field(default_factory=list, max_length=50)
     max_rounds: int = Field(default=3, ge=0, le=10)  # orchestrator review rounds
+    ci_enabled: bool = True  # wait for GitHub Actions after every round
 
     @field_validator("github_repo")
     @classmethod
@@ -185,6 +186,9 @@ class ProjectOut(BaseModel):
     work_branch: str | None = None
     pr_url: str | None = None
     max_rounds: int | None = None
+    ci_enabled: bool | None = None
+    ci_status: str | None = None
+    ci_url: str | None = None
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None

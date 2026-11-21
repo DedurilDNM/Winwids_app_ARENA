@@ -85,6 +85,9 @@ class Project(Base):
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
     work_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)  # server commits here
     max_rounds: Mapped[int | None] = mapped_column(Integer, nullable=True)  # review rounds (default 3)
+    ci_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # GitHub Actions loop (default on)
+    ci_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ci_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     pr_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

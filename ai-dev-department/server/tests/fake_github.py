@@ -18,8 +18,14 @@ def _sha(*parts: str) -> str:
 
 class FakeGitHub:
     def __init__(self, *, token: str = "ghp_test_token_1234567890", login: str = "octo",
-                 repo: str = "octo/website", can_push: bool = True, empty: bool = False) -> None:
+                 repo: str = "octo/website", can_push: bool = True, empty: bool = False,
+                 workflow_perm: bool = True, actions_read: bool = True, ci_judge=None, ci_polls: int = 2) -> None:
         self.token, self.login, self.repo, self.can_push = token, login, repo, can_push
+        self.workflow_perm, self.actions_read = workflow_perm, actions_read
+        # ci_judge(files) -> ("success" | "failure", log text); runs finish after `ci_polls` reads
+        self.ci_judge = ci_judge or (lambda files: ("success", "all tests passed"))
+        self.ci_polls = ci_polls
+        self.runs: list[dict] = []
         self.trees: dict[str, dict[str, str]] = {}
         self.commits: dict[str, dict] = {}
         self.refs: dict[str, str] = {}
@@ -51,8 +57,18 @@ class FakeGitHub:
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
 
+    def _maybe_start_ci(self, sha: str) -> None:
+        files = self.trees[self.commits[sha]["tree"]]
+        if any(f.startswith(".github/workflows/") for f in files):
+            conclusion, log = self.ci_judge(files)
+            self.runs.append({"id": len(self.runs) + 1, "head_sha": sha, "reads": 0, "conclusion": conclusion,
+                              "log": log, "html_url": f"https://github.com/{self.repo}/actions/runs/{len(self.runs) + 1}"})
+
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(f"{request.method} {request.url.path}")
+        if request.url.host == "logs.example":  # redirect target: no auth header
+            run = self.runs[int(request.url.path.rsplit("/", 1)[1]) - 1]
+            return httpx.Response(200, text="\n".join(f"2026-01-01T00:00:00Z {l}" for l in run["log"].splitlines()))
         if request.headers.get("authorization") != f"Bearer {self.token}":
             return httpx.Response(401, json={"message": "Bad credentials"})
         path, m = request.url.path, request.method
@@ -77,7 +93,14 @@ class FakeGitHub:
         if (mm := re.fullmatch(r"/git/refs/heads/(.+)", rest)) and m == "PATCH":
             if not self.can_push:
                 return httpx.Response(403, json={"message": "Resource not accessible"})
+            old = self.refs.get(mm.group(1))
+            new_files = self.trees[self.commits[body["sha"]]["tree"]]
+            old_files = self.trees[self.commits[old]["tree"]] if old else {}
+            changed_wf = any(f.startswith(".github/workflows/") and new_files.get(f) != old_files.get(f) for f in new_files)
+            if changed_wf and not self.workflow_perm:
+                return httpx.Response(422, json={"message": "refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflows` permission"})
             self.refs[mm.group(1)] = body["sha"]
+            self._maybe_start_ci(body["sha"])
             return httpx.Response(200, json={})
         if (mm := re.fullmatch(r"/git/trees/(\w+)", rest)) and m == "GET":
             tree = self.trees[self.commits[mm.group(1)]["tree"]]
@@ -101,6 +124,25 @@ class FakeGitHub:
             if content is None:
                 return httpx.Response(404, json={"message": "Not Found"})
             return httpx.Response(200, json={"content": base64.b64encode(content.encode()).decode(), "encoding": "base64"})
+        if rest == "/actions/runs" and m == "GET":
+            if not self.actions_read:
+                return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
+            sha = request.url.params.get("head_sha")
+            out = []
+            for r in self.runs:
+                if sha and r["head_sha"] != sha:
+                    continue
+                r["reads"] += 1
+                done = r["reads"] > self.ci_polls
+                out.append({"id": r["id"], "name": "CI", "html_url": r["html_url"],
+                            "status": "completed" if done else "in_progress", "conclusion": r["conclusion"] if done else None})
+            return httpx.Response(200, json={"total_count": len(out), "workflow_runs": out})
+        if (mm := re.fullmatch(r"/actions/runs/(\d+)/jobs", rest)) and m == "GET":
+            r = self.runs[int(mm.group(1)) - 1]
+            return httpx.Response(200, json={"jobs": [{"id": r["id"], "name": "build", "conclusion": r["conclusion"],
+                                                       "steps": [{"name": "Run tests", "conclusion": r["conclusion"]}]}]})
+        if (mm := re.fullmatch(r"/actions/jobs/(\d+)/logs", rest)) and m == "GET":
+            return httpx.Response(302, headers={"Location": f"https://logs.example/logs/{mm.group(1)}"})
         if rest == "/pulls" and m == "POST":
             if any(p["head"] == body["head"] for p in self.pulls):
                 return httpx.Response(422, json={"message": "A pull request already exists"})

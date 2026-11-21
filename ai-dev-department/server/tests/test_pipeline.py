@@ -101,7 +101,7 @@ def _setup(github_repo: str = "octo/website", with_token: bool = True) -> dict:
         from app.security import encrypt_bytes, hash_password
 
         async with SessionLocal() as s:
-            user = User(email=f"pipe{id(object())}@example.com", hashed_password=hash_password("x" * 10))
+            user = User(email=f"pipe{__import__("uuid").uuid4().hex}@example.com", hashed_password=hash_password("x" * 10))
             s.add(user)
             await s.flush()
             orch = Account(user_id=user.id, name="boss", default_role="Orchestrator", status="active", github_repos=[])

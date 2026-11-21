@@ -41,7 +41,7 @@ from app.config import get_settings
 from app.models import Account, Project, ProjectAssignment, Task
 from app.services import prompts
 from app.connectors.github import GitHubConnector, GitHubError
-from app.services.agent_output import AgentOutputError, check_scope, in_scope, parse_agent_output
+from app.services.agent_output import AgentOutputError, _norm_scope, check_scope, in_scope, parse_agent_output
 from app.services.github_watcher import load_github_token
 from app.ws_manager import manager as default_ws_manager
 
@@ -160,7 +160,7 @@ def _plan_items(data: list, *, assignments, orchestrator_account_id, key_prefix:
         plan.append(PlanItem(
             role=role, task=task_text, assign_to_account_id=account_id, key=key,
             depends_on=[str(d).strip() for d in deps if str(d).strip()] if isinstance(deps, list) else [],
-            scope=[str(x).strip().lstrip("./") for x in scope if str(x).strip()][:20] if isinstance(scope, list) else [],
+            scope=[_norm_scope(str(x)) for x in scope if str(x).strip()][:20] if isinstance(scope, list) else [],
         ))
     if not plan:
         raise ValueError("Orchestrator plan has no valid tasks (bad role/task or unknown account)")
@@ -673,6 +673,10 @@ class _Run:
                     message=f"task-{task_id} [{task_role}]: {first_line or task_text[:72]}")
         except GitHubError as exc:
             await _set_task_status(sf, task_id, "failed", ws_manager=ws, project_id=self.project_id)
+            if any(p.startswith(".github/workflows/") for p in files) and "workflow" in exc.message.lower():
+                return ("GitHub refused to write the CI workflow (.github/workflows/): give the token the permission "
+                        "«Workflows: Read and write» (GitHub → Settings → Developer settings → Fine-grained tokens) "
+                        "and start the project again.")
             return f"GitHub commit failed: {exc.message}"
 
         await _save_task_result(sf, task_id, summary=output.summary, commit_sha=commit_sha)
@@ -741,6 +745,7 @@ async def run_project_logic(
             "github_repo": project.github_repo,
             "orchestrator_account_id": project.orchestrator_account_id,
             "max_rounds": 3 if project.max_rounds is None else project.max_rounds,
+            "ci": project.ci_enabled is not False,
         }
         assignments = (
             await session.scalars(
@@ -828,6 +833,7 @@ async def run_project_logic(
         github_repo=repo,
         accounts=account_rows,
         repo_files=repo_files,
+        ci=project_snapshot["ci"],
     )
     try:
         raw_plan = await _ask(
@@ -871,10 +877,16 @@ async def run_project_logic(
         settings=settings, accounts=assignment_accounts, orchestrator=orchestrator,
     )
     round_no = 0
+    ci_result = None
     while True:
         failure = await run.execute(plan, round_no)
         if failure:
             return await _fail_project(session_factory, project_id, failure, ws_manager=ws)
+        if project_snapshot["ci"]:
+            ci_result = await _run_ci(gh, repo, work_branch, project_id=project_id, ws=ws,
+                                      session_factory=session_factory, settings=settings)
+            if ci_result.status == "stopped":
+                return "failed"
         if round_no >= max_rounds:
             break
         if not await _project_still_running(session_factory, project_id):
@@ -888,6 +900,7 @@ async def run_project_logic(
             project_name=project_snapshot["name"], github_repo=repo, project_task=project_snapshot["task"],
             round_no=round_no + 1, max_rounds=max_rounds, completed=run.completed, repo_files=repo_files,
             questions=questions, accounts=account_rows,
+            ci_text=ci_result.for_prompt() if ci_result else "",
         )
         try:
             raw_review = await _ask(
@@ -925,6 +938,7 @@ async def run_project_logic(
         github_repo=repo,
         completed=completed,
         branch=work_branch,
+        ci_text=ci_result.for_prompt() if ci_result else "",
     )
     try:
         summary = await _ask(
@@ -947,7 +961,7 @@ async def run_project_logic(
         pr_url = await gh.create_pull_request(
             repo, head=work_branch, base=base_branch,
             title=f"[AI] {project_snapshot['name']}",
-            body=f"{summary}\n\n---\nCommits made by AI Dev Department on behalf of the project agents.",
+            body=f"{summary}\n\n---\n{_ci_line(ci_result)}Commits made by AI Dev Department on behalf of the project agents.",
         )
     except GitHubError as exc:
         logger.warning("Project %s: pull request not created: %s", project_id, exc.message)
@@ -958,7 +972,7 @@ async def run_project_logic(
         if project is None:
             return "failed"
         project.status = "completed"
-        project.result = summary
+        project.result = summary + (f"\n\n{_ci_line(ci_result)}" if ci_result else "")
         project.pr_url = pr_url
         project.completed_at = _utc_naive()
         await session.commit()
@@ -1003,6 +1017,35 @@ async def _collect_context(gh, repo: str, branch: str, paths: list[str], repo_fi
         out[path] = content
         used += size
     return out
+
+
+async def _run_ci(gh, repo, branch, *, project_id, ws, session_factory, settings):
+    from app.services.ci import wait_for_ci
+
+    await ws.send_to_project(project_id, _event("ci_waiting", project_id, status="running",
+                                                message="Waiting for GitHub Actions"))
+    result = await wait_for_ci(
+        gh, repo, branch, timeout=settings.CI_TIMEOUT_SECONDS, poll=settings.CI_POLL_SECONDS,
+        start_timeout=settings.CI_START_TIMEOUT_SECONDS,
+        should_continue=lambda: _project_still_running(session_factory, project_id),
+    )
+    async with session_factory() as session:
+        project = await session.get(Project, project_id)
+        if project is not None:
+            project.ci_status, project.ci_url = result.status, result.url or None
+            await session.commit()
+    await ws.send_to_project(project_id, _event(
+        "ci_result", project_id, status=result.status, message=f"CI: {result.status}",
+        extra={"ci_status": result.status, "ci_url": result.url}))
+    return result
+
+
+def _ci_line(ci_result) -> str:
+    if ci_result is None:
+        return ""
+    text = {"passed": "✅ CI passed", "failed": "❌ CI failed", "no_workflow": "CI: no workflow",
+            "no_access": "CI: no access to GitHub Actions (token needs «Actions: Read»)"}.get(ci_result.status, f"CI: {ci_result.status}")
+    return f"{text}{' — ' + ci_result.url if ci_result.url else ''}\n\n"
 
 
 def _default_github(token: str):

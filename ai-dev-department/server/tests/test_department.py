@@ -24,7 +24,7 @@ def _setup_team(n_coders: int = 3, max_rounds: int = 3) -> dict:
         from app.security import encrypt_bytes, hash_password
 
         async with SessionLocal() as s:
-            user = User(email=f"dept{time.time_ns()}@example.com", hashed_password=hash_password("x" * 10))
+            user = User(email=f"dept{__import__("uuid").uuid4().hex}@example.com", hashed_password=hash_password("x" * 10))
             s.add(user)
             await s.flush()
             mk = lambda name, role: Account(user_id=user.id, name=name, default_role=role, status="active", github_repos=[])  # noqa: E731
@@ -253,3 +253,94 @@ def test_plan_with_a_cycle_is_rejected() -> None:
     legacy = parse_task_plan('[{"role": "Coder", "task": "x", "assign_to_account_id": 1}]',
                              assignments=[A(1, "Coder")], orchestrator_account_id=None)
     assert legacy[0].key == "t1" and legacy[0].depends_on == [] and legacy[0].scope == []
+
+
+def _fast_ci(monkeypatch):
+    from app.config import get_settings
+
+    s = get_settings()
+    monkeypatch.setattr(s, "CI_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(s, "CI_START_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(s, "CI_TIMEOUT_SECONDS", 10)
+
+
+def _ci_team_plan(ids):
+    return json.dumps({"tasks": [
+        {"id": "t1", "role": "Coder", "task": "Write the sum module", "assign_to_account_id": ids["coders"][0],
+         "scope": ["src/"]},
+        {"id": "t2", "role": "Integrator", "task": "Add CI", "assign_to_account_id": ids["integ"],
+         "depends_on": ["t1"], "scope": [".github/workflows/", "README.md"]},
+    ]})
+
+
+def test_ci_failure_goes_back_to_the_orchestrator_and_gets_fixed(monkeypatch):
+    _fast_ci(monkeypatch)
+    ids = _setup_team(n_coders=1)
+    seen_reviews = []
+
+    def judge(files):
+        if "BUG" in files.get("src/sum.py", ""):
+            return "failure", "collected 1 item\nFAILED tests/test_sum.py::test_sum - assert 3 == 2"
+        return "success", "1 passed"
+
+    def reply(role, task_id, area, prompt):
+        if role == "Coder":
+            body = "def add(a, b):\n    return a + b\n" if "Fix" in prompt else "def add(a, b):\n    return a + b + 1  # BUG\n"
+            return f"FILE: src/sum.py\n```python\n{body}```\nSTATUS: DONE\nSUMMARY: sum module"
+        if role == "Integrator":
+            return ("FILE: .github/workflows/ci.yml\n```yaml\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n```\n"
+                    "STATUS: DONE\nSUMMARY: CI added")
+        return None
+
+    def review(n, prompt):
+        seen_reviews.append(prompt)
+        if n == 1:
+            assert "CI (GitHub Actions): FAILED" in prompt and "assert 3 == 2" in prompt
+            return json.dumps({"verdict": "continue", "tasks": [
+                {"id": "f1", "role": "Coder", "task": "Fix add() so test_sum passes",
+                 "assign_to_account_id": ids["coders"][0], "scope": ["src/"]}]})
+        assert "CI (GitHub Actions): PASSED" in prompt
+        return '{"verdict": "done"}'
+
+    adapter = TeamAdapter(ids, review=review, agent_reply=reply, delay=0)
+    original = adapter.wait_response
+
+    async def wait_response(page, timeout=600):  # this test's own plan
+        if page == f"project-{ids['project']}" and "Split the project task" in adapter.prompts[page][-1]:
+            assert "writes .github/workflows/ci.yml" in adapter.prompts[page][-1]  # CI rule in the plan prompt
+            return _ci_team_plan(ids)
+        return await original(page, timeout)
+
+    adapter.wait_response = wait_response
+    gh = FakeGitHub(ci_judge=judge)
+    status, ws = _run(ids, adapter, gh)
+    project, tasks, _ = _tasks(ids)
+    assert status == "completed", project.result
+    assert len(seen_reviews) == 2
+    assert project.ci_status == "passed" and project.ci_url.endswith("/actions/runs/" + str(len(gh.runs)))
+    assert "✅ CI passed" in project.result and "✅ CI passed" in gh.pulls[0]["body"]
+    assert [e["ci_status"] for e in ws.events if e["type"] == "ci_result"] == ["failed", "passed"]
+    assert "BUG" not in gh.files(f"ai/project-{ids['project']}")["src/sum.py"]
+
+
+def test_missing_workflows_permission_is_explained(monkeypatch):
+    _fast_ci(monkeypatch)
+    ids = _setup_team(n_coders=1)
+
+    def reply(role, task_id, area, prompt):
+        if role == "Integrator":
+            return ("FILE: .github/workflows/ci.yml\n```yaml\non: push\n```\nSTATUS: DONE\nSUMMARY: CI")
+        return None
+
+    adapter = TeamAdapter(ids, review=_accept, agent_reply=reply, delay=0)
+    original = adapter.wait_response
+
+    async def wait_response(page, timeout=600):
+        if page == f"project-{ids['project']}" and "Split the project task" in adapter.prompts[page][-1]:
+            return _ci_team_plan(ids)
+        return await original(page, timeout)
+
+    adapter.wait_response = wait_response
+    status, _ = _run(ids, adapter, FakeGitHub(workflow_perm=False))
+    project = _tasks(ids)[0]
+    assert status == "failed" and "Workflows: Read and write" in project.result

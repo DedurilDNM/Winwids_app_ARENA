@@ -114,6 +114,11 @@ class Settings(BaseSettings):
     # agents work over VNC. "arq": a separate worker process (no live events,
     # separate headless browsers) - only for multi-server setups.
     PROJECT_RUNNER: str = "api"
+
+    # CI (GitHub Actions) after every round: wait for the run of the latest commit
+    CI_TIMEOUT_SECONDS: float = 1200
+    CI_POLL_SECONDS: float = 15
+    CI_START_TIMEOUT_SECONDS: float = 180
     GITHUB_API_URL: str = "https://api.github.com"
 
     # --- GitHub watcher / orchestration (Phase 3) ---

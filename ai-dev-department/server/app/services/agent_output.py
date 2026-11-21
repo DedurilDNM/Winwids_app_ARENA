@@ -45,12 +45,20 @@ class AgentOutput:
     questions: list[str] = field(default_factory=list)
 
 
+def _norm_scope(entry: str) -> str:
+    """Drop a leading "./" or "/" only - hidden dirs like ".github/" must survive."""
+    entry = entry.strip()
+    while entry.startswith("./"):
+        entry = entry[2:]
+    return entry.lstrip("/")
+
+
 def in_scope(path: str, scope: list[str] | None) -> bool:
     """`scope` entries are directories ("src/api/") or exact files ("README.md")."""
     if not scope:
         return True
     for entry in scope:
-        entry = entry.strip().lstrip("./")
+        entry = _norm_scope(entry)
         if not entry:
             continue
         if entry.endswith("/") and path.startswith(entry):

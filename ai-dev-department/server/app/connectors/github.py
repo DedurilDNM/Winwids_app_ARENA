@@ -86,11 +86,13 @@ class GitHubConnector:
             kwargs["proxy"] = self._proxy
         return httpx.AsyncClient(**kwargs)
 
-    async def _call(self, method: str, url: str, *, json=None, params=None, ok=(200, 201)) -> httpx.Response:
+    async def _call(self, method: str, url: str, *, json=None, params=None, ok=(200, 201),
+                    follow_redirects: bool = False) -> httpx.Response:
         """Write-path request: raises GitHubError with a user-safe message."""
         try:
             async with self._client() as client:
-                response = await client.request(method, url, json=json, params=params)
+                response = await client.request(method, url, json=json, params=params,
+                                                follow_redirects=follow_redirects)
         except httpx.HTTPError as exc:
             raise GitHubError(0, f"Cannot reach GitHub: {type(exc).__name__}") from exc
         if response.status_code not in ok:
@@ -201,3 +203,43 @@ class GitHubConnector:
         if existing:
             return existing[0]["html_url"]
         raise GitHubError(422, "Could not open a pull request (no changes compared to the base branch?)")
+
+    # ------------------------------------------------------------ Actions (CI)
+
+    async def actions_readable(self, repo: str) -> bool:
+        """Can the token read workflow runs (permission «Actions: Read»)?"""
+        try:
+            await self._call("GET", f"/repos/{repo}/actions/runs", params={"per_page": "1"})
+            return True
+        except GitHubError as exc:
+            if exc.status in (401, 403, 404):
+                return False
+            raise
+
+    async def workflow_runs(self, repo: str, head_sha: str) -> list[dict]:
+        data = (await self._call("GET", f"/repos/{repo}/actions/runs",
+                                 params={"head_sha": head_sha, "per_page": "20"})).json()
+        return [
+            {"id": r["id"], "name": r.get("name") or "", "status": r.get("status"),
+             "conclusion": r.get("conclusion"), "html_url": r.get("html_url") or ""}
+            for r in data.get("workflow_runs", [])
+        ]
+
+    async def run_jobs(self, repo: str, run_id: int) -> list[dict]:
+        data = (await self._call("GET", f"/repos/{repo}/actions/runs/{run_id}/jobs")).json()
+        return [
+            {"id": j["id"], "name": j.get("name") or "", "conclusion": j.get("conclusion"),
+             "failed_steps": [s.get("name") for s in j.get("steps") or [] if s.get("conclusion") == "failure"]}
+            for j in data.get("jobs", [])
+        ]
+
+    async def job_log_tail(self, repo: str, job_id: int, *, max_chars: int = 6000) -> str:
+        """The end of a job's plain-text log (GitHub redirects to a log file)."""
+        try:
+            text = (await self._call("GET", f"/repos/{repo}/actions/jobs/{job_id}/logs",
+                                     follow_redirects=True)).text
+        except GitHubError:
+            return ""
+        # drop the timestamps GitHub prefixes to every line
+        lines = [l.split(" ", 1)[1] if l[:4].isdigit() and " " in l else l for l in text.splitlines()]
+        return "\n".join(lines)[-max_chars:]

@@ -69,6 +69,7 @@ def build_split_prompt(
     github_repo: str,
     accounts: list[dict[str, Any]],
     repo_files: list[str] | None = None,
+    ci: bool = False,
 ) -> str:
     """Ask the orchestrator to split the project task into per-role subtasks."""
     account_lines = "\n".join(
@@ -76,6 +77,12 @@ def build_split_prompt(
         for a in accounts
     ) or "(no accounts available)"
     files = _file_list(repo_files)
+    ci_rule = (
+        "- CI: the server runs GitHub Actions after every round and shows you the result. Unless the repository\n"
+        "  already has one, plan a subtask (Integrator or Tester) whose scope includes \".github/workflows/\" and that\n"
+        "  writes .github/workflows/ci.yml: on push to any branch; set up the language; install dependencies; build;\n"
+        "  run the tests (and lint if cheap). It must pass on a clean runner. Plan tests the CI will run.\n"
+    ) if ci else ""
     return f"""You are the ORCHESTRATOR of a software project. Split the project task into concrete subtasks for the available agent accounts.
 
 Project: {project_name}
@@ -104,7 +111,7 @@ You lead a team that works IN PARALLEL. Rules:
   parts together (entry point, configuration, README); a Tester/Reviewer comes after what they check.
 - Each subtask text must be self-contained: what to build, which interfaces from the contract to follow,
   what "done" means. 2-8 subtasks. Agents only return files; they cannot run commands.
-
+{ci_rule}
 Reply with ONLY JSON, no other text, in exactly this format:
 {{"tasks": [
   {{"id": "t1", "role": "Architect", "task": "...", "assign_to_account_id": 1, "depends_on": [], "scope": ["docs/"]}},
@@ -188,6 +195,7 @@ def build_review_prompt(
     repo_files: list[str] | None,
     questions: list[dict[str, Any]],
     accounts: list[dict[str, Any]],
+    ci_text: str = "",
 ) -> str:
     """After a round: the orchestrator accepts the work or plans fixes."""
     work = "\n".join(
@@ -210,10 +218,13 @@ Files in the repository now:
 Open questions from the team:
 {qs}
 
+{ci_text or "CI: not used for this project."}
+
 Available accounts:
 {account_lines}
 
-Decide whether the project goal is met. If parts are missing, wrong or do not fit together, plan FIX
+Decide whether the project goal is met. Never answer "done" while CI is failing or missing (if CI is used):
+give each CI error to the agent who owns the broken file. If parts are missing, wrong or do not fit together, plan FIX
 subtasks (same format and rules as the plan: id, role, task, assign_to_account_id, depends_on, scope with
 non-overlapping areas for parallel subtasks). Answer the open questions.
 
@@ -240,6 +251,7 @@ def build_final_prompt(
     github_repo: str,
     completed: list[dict[str, Any]],
     branch: str = "",
+    ci_text: str = "",
 ) -> str:
     """Ask the orchestrator for the final summary of the finished project."""
     lines = "\n".join(
@@ -252,7 +264,9 @@ def build_final_prompt(
 All agent tasks are complete; their files are committed on branch {branch or "(project branch)"} and a pull request will be opened by the server:
 {lines}
 
-Write the final project summary for the user:
+{ci_text}
+
+Write the final project summary for the user (mention the CI result if there is one):
 - what was built or changed,
 - how to run or use it (based on the files),
 - anything left unfinished or needing human attention.
