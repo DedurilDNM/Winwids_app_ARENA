@@ -176,7 +176,8 @@ async def lifespan(app: FastAPI):
         logger.warning("Shared Xvfb display unavailable: %s", exc)
         display = None
     try:
-        await browser_manager.restore_active_accounts(SessionLocal, display=display)
+        await browser_manager.restore_active_accounts(SessionLocal, display=display,
+                                                      launcher=vnc_manager.launch_on_own_display)
     except Exception as exc:
         logger.warning("Active account restore failed: %s", exc)
 

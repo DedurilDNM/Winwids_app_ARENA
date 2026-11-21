@@ -184,7 +184,7 @@ class BrowserManager:
         for account_id in list(self._handles):
             await self.stop(account_id)
 
-    async def restore_active_accounts(self, session_factory, display: str | None = None) -> int:
+    async def restore_active_accounts(self, session_factory, display: str | None = None, launcher=None) -> int:
         """Relaunch browsers for all accounts with status=active and saved storage state.
 
         Called once on server startup. `display` is the shared Xvfb display used in
@@ -211,6 +211,10 @@ class BrowserManager:
         for account in rows:
             try:
                 storage_state = json.loads(decrypt_bytes(account.storage_state_encrypted))
+                if launcher is not None:  # each account on its own display (can be shown over VNC safely)
+                    await launcher(account.id, storage_state)
+                    restored += 1
+                    continue
                 if settings.VNC_HEADLESS:
                     headless, use_display = True, None
                 elif display:

@@ -293,6 +293,7 @@ async function renderProject(main, projectId) {
   const actions = h("div", { class: "actions m-0" });
   const board = h("div", { class: "tasks", "data-testid": "tasks" });
   const result = h("section", { class: "card", hidden: true });
+  const brief = h("details", { class: "card brief", open: true, "data-testid": "brief" });
   const feed = h("ol", { class: "feed", "data-testid": "feed" });
   const chat = h("ol", { class: "feed chat", "data-testid": "messages" });
   let messages = project.messages || [];
@@ -302,6 +303,7 @@ async function renderProject(main, projectId) {
     h("div", { class: "page-head" }, head, actions),
     h("div", { class: "project-grid" },
       h("div", { class: "stack" },
+        brief,
         result,
         h("section", {}, h("h2", {}, "Задачи"), board)),
       h("div", { class: "stack feed-card" },
@@ -355,6 +357,15 @@ async function renderProject(main, projectId) {
               t.status === "paused" ? "Открыть браузер и помочь" : "Смотреть агента")
           : null,
       ].filter(Boolean)));
+  }
+
+  function renderBrief() {
+    brief.replaceChildren(...[
+      h("summary", {}, h("h2", { class: "m-0 inline" }, "Задача проекта")),
+      h("div", { class: "pre brief-text", "data-testid": "brief-task" }, project.task || "—"),
+      project.description ? h("h3", { class: "round-title" }, "Описание") : null,
+      project.description ? h("div", { class: "pre brief-text" }, project.description) : null,
+    ].filter(Boolean));
   }
 
   function renderTasks() {
@@ -492,6 +503,7 @@ async function renderProject(main, projectId) {
     });
   }
 
+  renderBrief();
   renderHead();
   renderTasks();
   renderMessages();

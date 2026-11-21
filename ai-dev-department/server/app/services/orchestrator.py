@@ -301,6 +301,11 @@ async def _ensure_context(account: Account, *, session_factory, browser_manager)
         logger.warning("Could not decrypt storage_state for account %s", account.id)
         return None
     try:
+        if browser_manager is _real_browser_manager():
+            from app.services.vnc_manager import vnc_manager
+
+            # Own display: the user can watch / help (captcha) without disturbing the agent.
+            return await vnc_manager.launch_on_own_display(account.id, storage_state)
         return await browser_manager.launch(
             account.id,
             storage_state=storage_state,
@@ -329,14 +334,22 @@ def _is_retryable(exc: BaseException) -> bool:
     )
 
 
+def _real_browser_manager():
+    from app.services.browser_manager import browser_manager
+
+    return browser_manager
+
+
 class _Chat:
     """One conversation in the service. The first ask() opens a new chat (with
     retries on transient errors); later asks - e.g. «resend in the required
     format» - go to the SAME chat, so the agent keeps its context. close()
     closes the tab (the conversation stays on the service)."""
 
-    def __init__(self, adapter, context, *, chat_ref: str, timeout: int, notify=None, should_continue=None) -> None:
+    def __init__(self, adapter, context, *, chat_ref: str, timeout: int, notify=None, should_continue=None,
+                 refresh_context=None) -> None:
         self.adapter, self.context, self.chat_ref, self.timeout = adapter, context, chat_ref, timeout
+        self.refresh_context = refresh_context  # async () -> context: the CURRENT browser of the account
         self.page = None
         if hasattr(adapter, "on_attention"):
             adapter.on_attention = notify
@@ -387,6 +400,11 @@ class _Chat:
                 await _close_page(page)
             if attempt < settings.ADAPTER_MAX_RETRIES:
                 await _retryable_sleep(attempt, settings)
+                if self.refresh_context is not None:  # the browser may have been restarted meanwhile
+                    try:
+                        self.context = await self.refresh_context() or self.context
+                    except Exception:
+                        logger.warning("Could not refresh the browser context", exc_info=True)
         raise RuntimeError(f"Adapter failed after {settings.ADAPTER_MAX_RETRIES} attempts: {last_exc}") from last_exc
 
     async def close(self) -> None:
@@ -716,6 +734,7 @@ class _Run:
             notify=_notifier(ws, user_id=self.snapshot["user_id"], project_id=self.project_id, account=agent,
                              session_factory=sf, task_id=task_id),
             should_continue=lambda: _project_still_running(sf, self.project_id),
+            refresh_context=lambda: _ensure_context(agent, session_factory=sf, browser_manager=self.browser_manager),
         )
         output, prompt, last_error = None, agent_prompt, ""
         try:

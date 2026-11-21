@@ -335,3 +335,9 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.45; }
 .chat .msg-question { border-left: 3px solid var(--warn); }
 .chat .msg-answer { border-left: 3px solid var(--ok); }
 .badge-link { text-decoration: none; }
+.brief summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+.brief summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+.brief[open] summary::before { transform: rotate(90deg); }
+.brief summary::-webkit-details-marker { display: none; }
+.brief-text { margin-top: 10px; font-size: 14px; max-height: 50vh; overflow: auto; }
+.inline { display: inline; }

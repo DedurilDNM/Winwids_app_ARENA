@@ -278,6 +278,55 @@ class VncManager:
             raise
         return f":{display}"
 
+    @staticmethod
+    async def _ensure_service_page(account_id: int) -> None:
+        """A browser restored in the background has no tab: show the service
+        instead of an empty window (an existing tab - e.g. an agent's chat - is kept)."""
+        from app.services.browser_manager import browser_manager
+
+        context = browser_manager.get_context(account_id)
+        if context is None:
+            return
+        try:
+            if not [p for p in context.pages if not p.is_closed()]:
+                page = await context.new_page()
+                await page.goto(get_settings().SERVICE_URL, wait_until="domcontentloaded", timeout=60_000)
+        except Exception:
+            logger.warning("Could not open the service page for account %s", account_id, exc_info=True)
+
+    async def launch_on_own_display(self, account_id: int, storage_state: dict | None, *, open_url: bool = False):
+        """Start a browser for an account on its OWN Xvfb display (parked, i.e.
+        ready to be shown over VNC without touching the browser). Used when
+        browsers are restored after a restart and when an agent needs one.
+        Falls back to headless when Xvfb is not available."""
+        from app.services.browser_manager import browser_manager
+
+        settings = get_settings()
+        context = browser_manager.get_context(account_id)
+        if context is not None:
+            return context
+        xvfb_bin = shutil.which("Xvfb")
+        if settings.VNC_HEADLESS or not xvfb_bin:
+            return await browser_manager.launch(account_id, storage_state=storage_state, headless=True, open_url=open_url)
+        async with self._lock:
+            display = self._free_display()
+            xvfb = subprocess.Popen(
+                [xvfb_bin, f":{display}", "-screen", "0", f"{settings.VNC_WIDTH}x{settings.VNC_HEIGHT}x24", "-nolisten", "tcp"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+            try:
+                await asyncio.get_event_loop().run_in_executor(None, self._wait_x_socket, display, 10.0)
+                self._ensure_dirs()
+                (VNC_DIR / f"display-{display}.lock").write_text(str(xvfb.pid), encoding="utf-8")
+                context = await browser_manager.launch(account_id, storage_state=storage_state, display=f":{display}",
+                                                       headless=False, open_url=open_url)
+            except Exception:
+                self._terminate(xvfb)
+                (VNC_DIR / f"display-{display}.lock").unlink(missing_ok=True)
+                raise
+            self._parked[account_id] = (display, xvfb)
+            return context
+
     async def start_session(self, account, open_url: bool = True) -> VncSession:
         """Start Xvfb + browser + x11vnc + websockify route for an account."""
         from app.services.browser_manager import browser_manager
@@ -316,21 +365,24 @@ class VncManager:
                 # VNC to it (keeps the live page and login, no relaunch).
                 display, xvfb = parked
                 lock_file = VNC_DIR / f"display-{display}.lock"
+            elif running_on and running_on.startswith(":") and self.x_display_alive(int(running_on[1:])):
+                # Running on another display (e.g. a shared one): show it as it is.
+                # NEVER relaunch a running browser - an agent may be working in it.
+                if parked:
+                    self._terminate(parked[1])
+                    (VNC_DIR / f"display-{parked[0]}.lock").unlink(missing_ok=True)
+                display, xvfb, lock_file = int(running_on[1:]), None, None
             else:
                 if parked:
                     self._terminate(parked[1])
                     (VNC_DIR / f"display-{parked[0]}.lock").unlink(missing_ok=True)
-
-                storage_state = None
                 if browser_manager.is_running(account.id):
-                    # Running elsewhere (e.g. restored on the shared display, which
-                    # must not be streamed): carry the live session over, relaunch.
-                    try:
-                        storage_state = await browser_manager.export_storage_state(account.id)
-                    except Exception:
-                        logger.warning("Could not export live session of account %s", account.id, exc_info=True)
-                    await browser_manager.stop(account.id)
-                if storage_state is None and account.storage_state_encrypted:
+                    raise VncUnavailableError(
+                        "The browser of this account runs without a screen right now (an agent may be working "
+                        "in it); it cannot be shown. Try again after the task."
+                    )
+                storage_state = None
+                if account.storage_state_encrypted:
                     import json
 
                     from app.security import decrypt_bytes
@@ -366,6 +418,9 @@ class VncManager:
                     xvfb.terminate()
                     lock_file.unlink(missing_ok=True)
                     raise
+
+            if open_url:
+                await self._ensure_service_page(account.id)
 
             x11vnc = subprocess.Popen(
                 [

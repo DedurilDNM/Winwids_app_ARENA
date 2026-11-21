@@ -96,7 +96,7 @@ send.addEventListener("click", () => {
     // ?agent=1: answers only in Agent mode (like a service with a mode switch)
     const needAgent = location.search.includes("agent=1") && mode.textContent !== "Agent";
     add("assistant", needAgent ? "Switch to Agent mode" : w ? w[1] : f ? f[1] : projectReply(t) || "ok"); messages.setAttribute("aria-busy", "false"); stop.remove();
-  }, 2000);
+  }, (Number(new URLSearchParams(location.search).get("slow")) || 2) * 1000);  // ?slow=N: reply after N s
 });
 </script>
 """

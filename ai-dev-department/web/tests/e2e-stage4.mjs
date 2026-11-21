@@ -61,6 +61,7 @@ await page.click("button:has-text('Создать и запустить')");
 console.log("✓ wizard: repo check, orchestrator preselected, agents + roles, create & start");
 
 await page.waitForSelector("[data-testid=live].on");
+assert.equal((await page.textContent("[data-testid=brief-task]")).trim(), "Сделать лендинг кофейни", "full task shown on the project page");
 await page.waitForSelector("[data-testid=feed] li:has-text('начата')");
 await page.waitForSelector("[data-testid=task-status]:has-text('В работе')");
 console.log("✓ live: WebSocket online, task started events, a task «В работе»");
