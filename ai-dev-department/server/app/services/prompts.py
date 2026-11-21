@@ -90,15 +90,24 @@ Current files in the repository:
 Available agent accounts:
 {account_lines}
 
-Rules:
-- Each subtask must be assigned to exactly one account from the list above (use its account_id). Prefer the account's own role.
-- Use roles from: Architect, Coder, Reviewer, Tester, Integrator, ImagePrompter (writes prompts for image generation).
-- 1-6 subtasks, in execution order. Later subtasks see the files produced by earlier ones.
-- Each subtask text must be self-contained and specific: which files to create or change and what "done" means.
-- Agents only return complete files; they cannot run commands. Do not ask them to run, deploy or install anything.
+You lead a team that works IN PARALLEL. Rules:
+- Assign every subtask to exactly one account from the list (its account_id). Prefer the account's role.
+- Roles: Architect, Coder, Reviewer, Tester, Integrator, ImagePrompter (writes prompts for image generation).
+- Parallel work: subtasks without dependencies run at the same time; one account does one subtask at a time.
+  If several accounts share a role (e.g. 3 Coders), split that work between them into separate parts.
+- No conflicts: give every subtask an "scope" - the folders/files it alone may write (e.g. ["src/api/"],
+  ["src/ui/", "assets/"], ["README.md"]). Scopes of subtasks that can run at the same time must not overlap.
+- Order with "depends_on": usually an Architect first writes docs/CONTRACTS.md (modules, interfaces, data
+  formats) that the others follow; the parts are built in parallel; an Integrator (or a Coder) then wires the
+  parts together (entry point, configuration, README); a Tester/Reviewer comes after what they check.
+- Each subtask text must be self-contained: what to build, which interfaces from the contract to follow,
+  what "done" means. 2-8 subtasks. Agents only return files; they cannot run commands.
 
-Reply with ONLY a JSON array, no other text, in exactly this format:
-[{{"role": "Coder", "task": "what to do", "assign_to_account_id": 1}}]
+Reply with ONLY JSON, no other text, in exactly this format:
+{{"tasks": [
+  {{"id": "t1", "role": "Architect", "task": "...", "assign_to_account_id": 1, "depends_on": [], "scope": ["docs/"]}},
+  {{"id": "t2", "role": "Coder", "task": "...", "assign_to_account_id": 2, "depends_on": ["t1"], "scope": ["src/api/"]}}
+]}}
 """
 
 
@@ -114,12 +123,20 @@ def build_agent_prompt(
     repo_files: list[str] | None = None,
     context_files: dict[str, str] | None = None,
     previous: list[dict[str, Any]] | None = None,
+    scope: list[str] | None = None,
+    peers: list[dict[str, Any]] | None = None,
+    inbox: list[dict[str, Any]] | None = None,
 ) -> str:
     """One agent's subtask: role guidance + repository context + output contract."""
     guidance = ROLE_GUIDANCE.get(role, ROLE_GUIDANCE["Coder"])
     done_before = "\n".join(
         f"- task {t['id']} [{t['role']}]: {t.get('summary') or t['task'][:200]}" for t in (previous or [])
     ) or "(you are the first)"
+    peer_lines = "\n".join(
+        f"- {p['name']} [{p['role']}] area: {', '.join(p.get('scope') or []) or '(any)'} - {p['task'][:120]}"
+        for p in (peers or [])
+    ) or "(nobody)"
+    inbox_lines = "\n".join(f"- from {m['from']}: {m['text']}" for m in (inbox or [])) or "(none)"
     context = "\n\n".join(
         f"FILE: {path}\n````\n{content.rstrip()}\n````" for path, content in (context_files or {}).items()
     ) or "(no file contents provided)"
@@ -136,13 +153,72 @@ How to work as the {role}: {guidance}
 Work already done by other agents:
 {done_before}
 
+YOUR AREA - you may only write these paths: {", ".join(scope) if scope else "(anywhere in the repository)"}
+
+Agents working in parallel with you (do not write their files):
+{peer_lines}
+
+Messages for you from the team:
+{inbox_lines}
+
 All files currently in the repository:
 {_file_list(repo_files)}
 
 Contents of the relevant files:
 {context}
 
+TEAM COMMUNICATION (optional, before the STATUS line):
+MESSAGE to <role or agent name or all>: <one line - e.g. an interface you expose, a change others must follow>
+QUESTION: <one line to the orchestrator if something is unclear; do your best meanwhile>
+
 {OUTPUT_CONTRACT}
+"""
+
+
+def build_review_prompt(
+    *,
+    project_name: str,
+    github_repo: str,
+    project_task: str,
+    round_no: int,
+    max_rounds: int,
+    completed: list[dict[str, Any]],
+    repo_files: list[str] | None,
+    questions: list[dict[str, Any]],
+    accounts: list[dict[str, Any]],
+) -> str:
+    """After a round: the orchestrator accepts the work or plans fixes."""
+    work = "\n".join(
+        f"- {t['key']} [{t['role']}] {t.get('agent', '')}: {t.get('summary') or '-'} (files: {', '.join(t.get('files') or []) or '-'})"
+        for t in completed
+    ) or "(nothing)"
+    qs = "\n".join(f"- from {q['from']}: {q['text']}" for q in questions) or "(none)"
+    account_lines = "\n".join(f"- account_id={a['id']} name={a['name']!r} role={a['default_role']}" for a in accounts)
+    return f"""You are the ORCHESTRATOR of project "{project_name}" (repository {github_repo}). Review round {round_no} of {max_rounds}.
+
+Project goal:
+{project_task}
+
+Work done so far:
+{work}
+
+Files in the repository now:
+{_file_list(repo_files)}
+
+Open questions from the team:
+{qs}
+
+Available accounts:
+{account_lines}
+
+Decide whether the project goal is met. If parts are missing, wrong or do not fit together, plan FIX
+subtasks (same format and rules as the plan: id, role, task, assign_to_account_id, depends_on, scope with
+non-overlapping areas for parallel subtasks). Answer the open questions.
+
+Reply with ONLY JSON:
+{{"verdict": "done" | "continue",
+  "answers": [{{"to": "<agent name or role>", "text": "..."}}],
+  "tasks": [ ...fix subtasks, empty when done... ]}}
 """
 
 

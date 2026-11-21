@@ -41,7 +41,7 @@ from app.config import get_settings
 from app.models import Account, Project, ProjectAssignment, Task
 from app.services import prompts
 from app.connectors.github import GitHubConnector, GitHubError
-from app.services.agent_output import AgentOutputError, parse_agent_output
+from app.services.agent_output import AgentOutputError, check_scope, in_scope, parse_agent_output
 from app.services.github_watcher import load_github_token
 from app.ws_manager import manager as default_ws_manager
 
@@ -57,6 +57,20 @@ class PlanItem:
     role: str
     task: str
     assign_to_account_id: int
+    key: str = ""
+    depends_on: list = None  # keys of plan items this one waits for
+    scope: list = None       # paths this task may write (its area)
+
+    def __post_init__(self) -> None:
+        self.depends_on = list(self.depends_on or [])
+        self.scope = list(self.scope or [])
+
+
+@dataclass
+class Review:
+    done: bool
+    answers: list  # [(to, text)]
+    tasks: list    # [PlanItem]
 
 
 def _utc_naive() -> datetime:
@@ -100,23 +114,37 @@ def parse_task_plan(
     Tolerates markdown fences and surrounding prose. Invalid items are
     skipped; an empty/invalid plan raises ValueError (caller fails the project).
     """
+    data = _extract_json(raw)
+    if isinstance(data, dict):
+        data = data.get("tasks")
+    if not isinstance(data, list) or not data:
+        raise ValueError("Orchestrator reply contains an empty task plan")
+    return _plan_items(data, assignments=assignments, orchestrator_account_id=orchestrator_account_id)
+
+
+def _extract_json(raw: str):
+    """The first JSON object/array in a reply (tolerates fences and prose)."""
     text = (raw or "").strip()
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
     if fence:
         text = fence.group(1).strip()
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError("Orchestrator reply does not contain a JSON array")
+    starts = [i for i in (text.find("["), text.find("{")) if i != -1]
+    if not starts:
+        raise ValueError("Orchestrator reply does not contain JSON")
+    start = min(starts)
+    end = text.rfind("]" if text[start] == "[" else "}")
+    if end < start:
+        raise ValueError("Orchestrator reply does not contain complete JSON")
     try:
-        data = json.loads(text[start : end + 1])
+        return json.loads(text[start : end + 1])
     except json.JSONDecodeError as exc:
         raise ValueError(f"Orchestrator reply is not valid JSON: {exc}") from exc
-    if not isinstance(data, list) or not data:
-        raise ValueError("Orchestrator reply contains an empty task plan")
 
+
+def _plan_items(data: list, *, assignments, orchestrator_account_id, key_prefix: str = "t") -> list[PlanItem]:
     by_id = {a.account_id: a for a in assignments}
     plan: list[PlanItem] = []
-    for item in data:
+    for n, item in enumerate(data, start=1):
         if not isinstance(item, dict):
             continue
         role = str(item.get("role") or "").strip()
@@ -126,10 +154,56 @@ def parse_task_plan(
         account_id = _resolve_assignee(item.get("assign_to_account_id"), role, by_id, orchestrator_account_id)
         if account_id is None:
             continue
-        plan.append(PlanItem(role=role, task=task_text, assign_to_account_id=account_id))
+        key = str(item.get("id") or f"{key_prefix}{n}").strip()[:32]
+        deps = item.get("depends_on") or []
+        scope = item.get("scope") or item.get("files") or []
+        plan.append(PlanItem(
+            role=role, task=task_text, assign_to_account_id=account_id, key=key,
+            depends_on=[str(d).strip() for d in deps if str(d).strip()] if isinstance(deps, list) else [],
+            scope=[str(x).strip().lstrip("./") for x in scope if str(x).strip()][:20] if isinstance(scope, list) else [],
+        ))
     if not plan:
         raise ValueError("Orchestrator plan has no valid tasks (bad role/task or unknown account)")
+    keys = {p.key for p in plan}
+    if len(keys) != len(plan):
+        raise ValueError("Orchestrator plan has duplicate task ids")
+    for p in plan:
+        p.depends_on = [d for d in p.depends_on if d in keys and d != p.key]
+    _check_acyclic(plan)
     return plan
+
+
+def _check_acyclic(plan: list[PlanItem]) -> None:
+    deps = {p.key: set(p.depends_on) for p in plan}
+    done: set[str] = set()
+    while deps:
+        ready = [k for k, d in deps.items() if d <= done]
+        if not ready:
+            raise ValueError(f"Orchestrator plan has circular dependencies between {sorted(deps)}")
+        for k in ready:
+            done.add(k)
+            del deps[k]
+
+
+def parse_review(raw: str, *, assignments, orchestrator_account_id, round_no: int) -> Review:
+    """Orchestrator's verdict after a round: {"verdict": "done"|"continue",
+    "answers": [{"to", "text"}], "tasks": [plan items]}."""
+    data = _extract_json(raw)
+    if isinstance(data, list):  # a bare task list means "continue with these"
+        data = {"verdict": "continue", "tasks": data}
+    if not isinstance(data, dict):
+        raise ValueError("Review reply is not a JSON object")
+    answers = [
+        (str(a.get("to") or "all")[:120], str(a.get("text") or "").strip())
+        for a in (data.get("answers") or []) if isinstance(a, dict) and str(a.get("text") or "").strip()
+    ]
+    verdict = str(data.get("verdict") or "").lower()
+    raw_tasks = data.get("tasks") or []
+    if verdict == "done" or not raw_tasks:
+        return Review(done=True, answers=answers, tasks=[])
+    tasks = _plan_items(raw_tasks, assignments=assignments, orchestrator_account_id=orchestrator_account_id,
+                        key_prefix=f"r{round_no}t")
+    return Review(done=False, answers=answers, tasks=tasks)
 
 
 def _resolve_assignee(
@@ -350,6 +424,284 @@ async def _project_still_running(session_factory, project_id: int) -> bool:
         return project is not None and project.status == "running"
 
 
+# ------------------------------------------------------------ parallel rounds
+
+@dataclass
+class _Run:
+    """Executes plans for one project run: dependency graph, parallel agents
+    (one task per account at a time), area checks, serialized commits,
+    messages between agents."""
+
+    project_id: int
+    snapshot: dict
+    repo: str
+    branch: str
+    gh: Any
+    ws: Any
+    session_factory: Any
+    browser_manager: Any
+    make_adapter: Any
+    settings: Any
+    accounts: dict
+    orchestrator: Any
+    completed: list = None
+    touched: list = None
+
+    def __post_init__(self) -> None:
+        self.completed = []
+        self.touched = []
+        self._commit_lock = asyncio.Lock()
+        self._running: dict[int, dict] = {}  # task_id -> info (for "peers")
+
+    # ---- messages ------------------------------------------------------
+    async def post_message(self, *, from_task_id, from_account, to: str, text: str, kind: str = "message") -> None:
+        from app.models import AgentMessage
+
+        name = getattr(from_account, "name", "orchestrator") if from_account is not None else "orchestrator"
+        async with self.session_factory() as session:
+            session.add(AgentMessage(
+                project_id=self.project_id, from_task_id=from_task_id,
+                from_account_id=getattr(from_account, "id", None), from_name=name,
+                to=to[:120], kind=kind, text=text[:2000], delivered_to=[],
+            ))
+            await session.commit()
+        await self.ws.send_to_project(self.project_id, _event(
+            "agent_message", self.project_id, task_id=from_task_id, account_id=getattr(from_account, "id", None),
+            status=kind, message=f"{name} → {to}: {text[:300]}", extra={"from": name, "to": to, "text": text[:2000], "kind": kind},
+        ))
+
+    async def inbox_for(self, account) -> list[dict]:
+        """Undelivered messages for this agent (by name, role or "all"); marks them delivered."""
+        from app.models import AgentMessage
+
+        names = {account.name.lower(), "all", "everyone", "team"}
+        roles = {r.lower() for r in self._roles_of(account.id)}
+        out = []
+        async with self.session_factory() as session:
+            rows = (await session.scalars(
+                select(AgentMessage).where(AgentMessage.project_id == self.project_id,
+                                           AgentMessage.kind.in_(("message", "answer")))
+                .order_by(AgentMessage.id)
+            )).all()
+            for m in rows:
+                to = m.to.strip().lower().rstrip("s")
+                if m.from_account_id == account.id or account.id in (m.delivered_to or []):
+                    continue
+                if to in names or m.to.strip().lower() in names or to in {r.rstrip("s") for r in roles}:
+                    out.append({"from": m.from_name, "text": m.text})
+                    m.delivered_to = [*(m.delivered_to or []), account.id]
+            await session.commit()
+        return out[-15:]
+
+    async def take_questions(self) -> list[dict]:
+        from app.models import AgentMessage
+
+        out = []
+        async with self.session_factory() as session:
+            rows = (await session.scalars(
+                select(AgentMessage).where(AgentMessage.project_id == self.project_id, AgentMessage.kind == "question")
+            )).all()
+            for m in rows:
+                if -1 in (m.delivered_to or []):
+                    continue
+                out.append({"from": m.from_name, "text": m.text})
+                m.delivered_to = [*(m.delivered_to or []), -1]  # -1 = the orchestrator
+            await session.commit()
+        return out
+
+    def _roles_of(self, account_id: int) -> set[str]:
+        roles = {t["role"] for t in self._running.values() if t["account_id"] == account_id}
+        roles |= {t["role"] for t in self.completed if t.get("account_id") == account_id}
+        acc = self.accounts.get(account_id)
+        if acc is not None:
+            roles.add(acc.default_role)
+        return roles
+
+    # ---- one round -----------------------------------------------------
+    async def execute(self, plan: list[PlanItem], round_no: int) -> str | None:
+        """Run a plan; returns None on success or a failure reason."""
+        key_to_id: dict[str, int] = {}
+        async with self.session_factory() as session:
+            rows = []
+            for item in plan:
+                task = Task(project_id=self.project_id, role=item.role, task=item.task,
+                            assigned_account_id=item.assign_to_account_id, status="pending",
+                            branch=self.branch, plan_key=item.key, scope=item.scope, round=round_no)
+                session.add(task)
+                rows.append((item, task))
+            await session.flush()
+            for item, task in rows:
+                key_to_id[item.key] = task.id
+            for item, task in rows:
+                task.depends_on = [key_to_id[d] for d in item.depends_on if d in key_to_id]
+            await session.commit()
+            specs = {task.id: {"id": task.id, "key": item.key, "role": item.role, "task": item.task,
+                               "account_id": item.assign_to_account_id, "scope": item.scope,
+                               "deps": set(task.depends_on or [])} for item, task in rows}
+        for task_id in specs:
+            await _set_task_status(self.session_factory, task_id, "pending", ws_manager=self.ws, project_id=self.project_id)
+
+        pending = dict(specs)
+        done: set[int] = set()
+        running: dict[asyncio.Task, int] = {}
+        failure: str | None = None
+        while (pending or running) and failure is None:
+            if not await _project_still_running(self.session_factory, self.project_id):
+                failure = "Stopped by user"
+                break
+            busy = {specs[t]["account_id"] for t in running.values()}
+            for task_id, spec in list(pending.items()):
+                if spec["deps"] <= done and spec["account_id"] not in busy:
+                    busy.add(spec["account_id"])
+                    del pending[task_id]
+                    self._running[task_id] = spec
+                    running[asyncio.create_task(self._run_task(spec))] = task_id
+            if not running:
+                failure = "Some tasks can never start (their dependencies failed)."
+                break
+            finished, _ = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+            for fut in finished:
+                task_id = running.pop(fut)
+                self._running.pop(task_id, None)
+                try:
+                    result = fut.result()
+                except Exception as exc:  # unexpected bug in a task runner
+                    logger.exception("Task %s crashed", task_id)
+                    result = f"Task {task_id} crashed: {type(exc).__name__}: {exc}"
+                if result is None:
+                    done.add(task_id)
+                elif failure is None:
+                    failure = result
+        if running:  # let in-flight agents finish (their work is not thrown away)
+            for fut, task_id in list(running.items()):
+                try:
+                    result = await fut
+                    if result is None:
+                        done.add(task_id)
+                except Exception:
+                    logger.exception("Task %s crashed while stopping", task_id)
+                self._running.pop(task_id, None)
+        if failure == "Stopped by user":
+            return failure
+        return failure
+
+    # ---- one task ------------------------------------------------------
+    async def _run_task(self, spec: dict) -> str | None:
+        task_id, task_role, task_text, scope = spec["id"], spec["role"], spec["task"], spec["scope"]
+        ws, sf = self.ws, self.session_factory
+        agent = self.accounts.get(spec["account_id"])
+        if agent is None:
+            async with sf() as session:
+                agent = await session.get(Account, spec["account_id"])
+        if agent is None:
+            await _set_task_status(sf, task_id, "blocked", ws_manager=ws, project_id=self.project_id)
+            return f"Task {task_id} has no assigned account (it may have been deleted)."
+
+        agent_context = await _ensure_context(agent, session_factory=sf, browser_manager=self.browser_manager)
+        if agent_context is None:
+            await ws.send_to_project(self.project_id, _event(
+                "session_lost", self.project_id, task_id=task_id, account_id=agent.id,
+                message=f"Agent account {agent.id} has no live browser session"))
+            await _set_task_status(sf, task_id, "blocked", ws_manager=ws, project_id=self.project_id)
+            return f"Agent account {agent.id} ({agent.name}) has no live browser session. Log in again via VNC."
+
+        await _set_task_status(sf, task_id, "running", ws_manager=ws, project_id=self.project_id)
+        await ws.send_to_project(self.project_id, _event(
+            "task_started", self.project_id, task_id=task_id, account_id=agent.id, status="running",
+            message=f"Task {task_id} started ({task_role}, {agent.name})"))
+
+        try:
+            repo_files = await self.gh.list_tree(self.repo, self.branch)
+            context_files = await _collect_context(self.gh, self.repo, self.branch, self._context_paths(spec, repo_files), repo_files)
+        except GitHubError as exc:
+            await _set_task_status(sf, task_id, "failed", ws_manager=ws, project_id=self.project_id)
+            return f"GitHub: {exc.message}"
+
+        peers = [{"name": getattr(self.accounts.get(p["account_id"]), "name", "?"), "role": p["role"],
+                  "scope": p["scope"], "task": p["task"]}
+                 for tid, p in self._running.items() if tid != task_id]
+        agent_prompt = prompts.build_agent_prompt(
+            project_name=self.snapshot["name"], github_repo=self.repo, role=task_role, task_text=task_text,
+            task_id=task_id, branch=self.branch, project_task=self.snapshot["task"], repo_files=repo_files,
+            context_files=context_files, previous=self.completed, scope=scope, peers=peers,
+            inbox=await self.inbox_for(agent),
+        )
+        adapter = self.make_adapter()  # one adapter per task: callbacks must not be shared
+        output, prompt, last_error = None, agent_prompt, ""
+        for attempt in range(1, AGENT_FORMAT_ATTEMPTS + 1):
+            try:
+                reply = await _ask(
+                    adapter, agent_context, chat_ref=f"project-{self.project_id}-task-{task_id}", prompt=prompt,
+                    timeout=self.settings.AGENT_TIMEOUT_SECONDS,
+                    notify=_notifier(ws, user_id=self.snapshot["user_id"], project_id=self.project_id, account=agent,
+                                     session_factory=sf, task_id=task_id),
+                    should_continue=lambda: _project_still_running(sf, self.project_id),
+                )
+            except Exception as exc:
+                await _set_task_status(sf, task_id, "failed", ws_manager=ws, project_id=self.project_id)
+                return _explain(exc, f"Agent for task {task_id} ({agent.name})")
+            try:
+                output = parse_agent_output(reply)
+                if output.status == "DONE":
+                    check_scope(output, scope)
+                break
+            except AgentOutputError as exc:
+                output, last_error = None, str(exc)
+                logger.info("Task %s: reply rejected (attempt %d): %s", task_id, attempt, last_error)
+                prompt = prompts.build_fix_prompt(last_error) + "\n\nTHE ORIGINAL TASK:\n\n" + agent_prompt
+        if output is None:
+            await _set_task_status(sf, task_id, "failed", ws_manager=ws, project_id=self.project_id)
+            return f"Task {task_id}: the agent's reply did not follow the required format ({last_error})."
+
+        for to, text in output.messages:
+            await self.post_message(from_task_id=task_id, from_account=agent, to=to, text=text)
+        for text in output.questions:
+            await self.post_message(from_task_id=task_id, from_account=agent, to="orchestrator", text=text, kind="question")
+
+        if output.status == "BLOCKED":
+            await _save_task_result(sf, task_id, summary=output.summary, commit_sha=None)
+            await _set_task_status(sf, task_id, "blocked", ws_manager=ws, project_id=self.project_id)
+            return f"Task {task_id} ({task_role}) is BLOCKED: {output.summary}"
+
+        files = dict(output.files)
+        files[f"status/task-{task_id}.md"] = f"DONE\n\n[{task_role}] {output.summary}\n"
+        first_line = (output.summary.splitlines() or [""])[0][:72]
+        try:
+            async with self._commit_lock:  # parallel agents share the branch: one commit at a time
+                commit_sha = await self.gh.commit_files(
+                    self.repo, self.branch, files,
+                    message=f"task-{task_id} [{task_role}]: {first_line or task_text[:72]}")
+        except GitHubError as exc:
+            await _set_task_status(sf, task_id, "failed", ws_manager=ws, project_id=self.project_id)
+            return f"GitHub commit failed: {exc.message}"
+
+        await _save_task_result(sf, task_id, summary=output.summary, commit_sha=commit_sha)
+        await _set_task_status(sf, task_id, "done", ws_manager=ws, project_id=self.project_id)
+        for path in output.files:
+            if path in self.touched:
+                self.touched.remove(path)
+            self.touched.append(path)
+        self.completed.append({
+            "id": task_id, "key": spec["key"], "role": task_role, "task": task_text, "branch": self.branch,
+            "summary": output.summary, "commit": commit_sha, "files": sorted(output.files),
+            "account_id": agent.id, "agent": agent.name,
+        })
+        return None
+
+    def _context_paths(self, spec: dict, repo_files: list[str]) -> list[str]:
+        """Most relevant first: the contract, files from dependencies, own area, other recent work."""
+        deps = spec["deps"]
+        dep_files = [f for t in self.completed if t["id"] in deps for f in t["files"]]
+        own = [f for f in repo_files if spec["scope"] and in_scope(f, spec["scope"])]
+        ordered = ["docs/CONTRACTS.md", *dep_files, *own, *reversed(self.touched)]
+        seen, out = set(), []
+        for f in ordered:
+            if f not in seen and f in repo_files:
+                seen.add(f)
+                out.append(f)
+        return out[:40]
+
+
 # ------------------------------------------------------------------ main flow
 
 async def run_project_logic(
@@ -388,6 +740,7 @@ async def run_project_logic(
             "task": project.task,
             "github_repo": project.github_repo,
             "orchestrator_account_id": project.orchestrator_account_id,
+            "max_rounds": 3 if project.max_rounds is None else project.max_rounds,
         }
         assignments = (
             await session.scalars(
@@ -509,158 +862,62 @@ async def run_project_logic(
             item.role = project_roles[item.assign_to_account_id]
     logger.info("Project %s: orchestrator produced %d subtasks", project_id, len(plan))
 
-    # ---- create Task rows -------------------------------------------------
-    task_ids: list[int] = []
-    async with session_factory() as session:
-        for item in plan:
-            task = Task(
-                project_id=project_id,
-                role=item.role,
-                task=item.task,
-                assigned_account_id=item.assign_to_account_id,
-                status="pending",
-                branch=work_branch,
-            )
-            session.add(task)
-            await session.flush()
-            task_ids.append(task.id)
-        await session.commit()
-    for task_id in task_ids:
-        await _set_task_status(session_factory, task_id, "pending", ws_manager=ws, project_id=project_id)
-
-    # ---- execute tasks sequentially (each sees the previous tasks' files) --
-    completed: list[dict[str, Any]] = []
-    touched: list[str] = []  # files written by earlier tasks, newest last
-    for task_id in task_ids:
+    # ---- rounds: run the plan in parallel, then the orchestrator reviews ---
+    max_rounds = project_snapshot["max_rounds"]
+    make_adapter = adapter_factory or load_adapter
+    run = _Run(
+        project_id=project_id, snapshot=project_snapshot, repo=repo, branch=work_branch, gh=gh, ws=ws,
+        session_factory=session_factory, browser_manager=browser_manager, make_adapter=make_adapter,
+        settings=settings, accounts=assignment_accounts, orchestrator=orchestrator,
+    )
+    round_no = 0
+    while True:
+        failure = await run.execute(plan, round_no)
+        if failure:
+            return await _fail_project(session_factory, project_id, failure, ws_manager=ws)
+        if round_no >= max_rounds:
+            break
         if not await _project_still_running(session_factory, project_id):
-            logger.info("Project %s stopped by user; aborting task loop", project_id)
             return "failed"
-
-        async with session_factory() as session:
-            task = await session.get(Task, task_id)
-            agent = await session.get(Account, task.assigned_account_id) if task.assigned_account_id else None
-            task_role, task_text = task.role, task.task
-
-        if agent is None:
-            await _set_task_status(session_factory, task_id, "blocked", ws_manager=ws, project_id=project_id)
-            return await _fail_project(
-                session_factory, project_id,
-                f"Task {task_id} has no assigned account (it may have been deleted).",
-                ws_manager=ws,
-            )
-
-        agent_context = await _ensure_context(agent, session_factory=session_factory, browser_manager=browser_manager)
-        if agent_context is None:
-            await ws.send_to_project(
-                project_id,
-                _event(
-                    "session_lost", project_id, task_id=task_id, account_id=agent.id,
-                    message=f"Agent account {agent.id} has no live browser session",
-                ),
-            )
-            await _set_task_status(session_factory, task_id, "blocked", ws_manager=ws, project_id=project_id)
-            return await _fail_project(
-                session_factory, project_id,
-                f"Agent account {agent.id} ({agent.name}) has no live browser session. Log in again via VNC.",
-                ws_manager=ws,
-            )
-
-        await _set_task_status(session_factory, task_id, "running", ws_manager=ws, project_id=project_id)
-        await ws.send_to_project(
-            project_id,
-            _event(
-                "task_started", project_id, task_id=task_id, account_id=agent.id,
-                status="running", message=f"Task {task_id} started ({task_role})",
-            ),
-        )
-
         try:
             repo_files = await gh.list_tree(repo, work_branch)
-            context_files = await _collect_context(gh, repo, work_branch, touched, repo_files)
         except GitHubError as exc:
-            await _set_task_status(session_factory, task_id, "failed", ws_manager=ws, project_id=project_id)
             return await _fail_project(session_factory, project_id, f"GitHub: {exc.message}", ws_manager=ws)
-
-        agent_prompt = prompts.build_agent_prompt(
-            project_name=project_snapshot["name"],
-            github_repo=repo,
-            role=task_role,
-            task_text=task_text,
-            task_id=task_id,
-            branch=work_branch,
-            project_task=project_snapshot["task"],
-            repo_files=repo_files,
-            context_files=context_files,
-            previous=completed,
+        questions = await run.take_questions()
+        review_prompt = prompts.build_review_prompt(
+            project_name=project_snapshot["name"], github_repo=repo, project_task=project_snapshot["task"],
+            round_no=round_no + 1, max_rounds=max_rounds, completed=run.completed, repo_files=repo_files,
+            questions=questions, accounts=account_rows,
         )
-        output = None
-        prompt = agent_prompt
-        last_error = ""
-        for attempt in range(1, AGENT_FORMAT_ATTEMPTS + 1):
-            try:
-                reply = await _ask(
-                    adapter, agent_context,
-                    chat_ref=f"project-{project_id}-task-{task_id}",
-                    prompt=prompt,
-                    timeout=settings.AGENT_TIMEOUT_SECONDS,
-                    notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=agent,
-                                     session_factory=session_factory, task_id=task_id),
-                    should_continue=lambda: _project_still_running(session_factory, project_id),
-                )
-            except Exception as exc:
-                await _set_task_status(session_factory, task_id, "failed", ws_manager=ws, project_id=project_id)
-                return await _fail_project(
-                    session_factory, project_id,
-                    _explain(exc, f"Agent for task {task_id} ({agent.name})"),
-                    ws_manager=ws,
-                )
-            try:
-                output = parse_agent_output(reply)
-                break
-            except AgentOutputError as exc:
-                last_error = str(exc)
-                logger.info("Task %s: reply rejected (attempt %d): %s", task_id, attempt, last_error)
-                prompt = prompts.build_fix_prompt(last_error) + "\n\nTHE ORIGINAL TASK:\n\n" + agent_prompt
-
-        if output is None:
-            await _set_task_status(session_factory, task_id, "failed", ws_manager=ws, project_id=project_id)
-            return await _fail_project(
-                session_factory, project_id,
-                f"Task {task_id}: the agent's reply did not follow the required format ({last_error}).",
-                ws_manager=ws,
-            )
-
-        if output.status == "BLOCKED":
-            await _save_task_result(session_factory, task_id, summary=output.summary, commit_sha=None)
-            await _set_task_status(session_factory, task_id, "blocked", ws_manager=ws, project_id=project_id)
-            return await _fail_project(
-                session_factory, project_id,
-                f"Task {task_id} ({task_role}) is BLOCKED: {output.summary}",
-                ws_manager=ws,
-            )
-
-        files = dict(output.files)
-        files[f"status/task-{task_id}.md"] = f"DONE\n\n[{task_role}] {output.summary}\n"
-        first_line = (output.summary.splitlines() or [""])[0][:72]
         try:
-            commit_sha = await gh.commit_files(
-                repo, work_branch, files,
-                message=f"task-{task_id} [{task_role}]: {first_line or task_text[:72]}",
+            raw_review = await _ask(
+                make_adapter(), orchestrator_context,
+                chat_ref=f"project-{project_id}-review-{round_no + 1}",
+                prompt=review_prompt,
+                timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
+                notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
+                should_continue=lambda: _project_still_running(session_factory, project_id),
             )
-        except GitHubError as exc:
-            await _set_task_status(session_factory, task_id, "failed", ws_manager=ws, project_id=project_id)
-            return await _fail_project(session_factory, project_id, f"GitHub commit failed: {exc.message}", ws_manager=ws)
-
-        await _save_task_result(session_factory, task_id, summary=output.summary, commit_sha=commit_sha)
-        await _set_task_status(session_factory, task_id, "done", ws_manager=ws, project_id=project_id)
-        for path in output.files:
-            if path in touched:
-                touched.remove(path)
-            touched.append(path)
-        completed.append({
-            "id": task_id, "role": task_role, "task": task_text, "branch": work_branch,
-            "summary": output.summary, "commit": commit_sha, "files": sorted(output.files),
-        })
+            review = parse_review(raw_review, assignments=list(assignments),
+                                  orchestrator_account_id=project_snapshot["orchestrator_account_id"],
+                                  round_no=round_no + 1)
+        except ValueError as exc:
+            logger.warning("Project %s: review reply not usable (%s); finishing", project_id, exc)
+            break
+        except Exception as exc:
+            return await _fail_project(session_factory, project_id, _explain(exc, "Orchestrator (review)"), ws_manager=ws)
+        for to, text in review.answers:
+            await run.post_message(from_task_id=None, from_account=None, to=to, text=text, kind="answer")
+        if review.done:
+            await ws.send_to_project(project_id, _event(
+                "review_done", project_id, status="accepted", message=f"Orchestrator accepted the work (round {round_no + 1})"))
+            break
+        round_no += 1
+        await ws.send_to_project(project_id, _event(
+            "review_round", project_id, status="continue",
+            message=f"Orchestrator requested {len(review.tasks)} fix task(s) (round {round_no})"))
+        plan = review.tasks
+    completed = run.completed
 
     # ---- final orchestrator summary + pull request -------------------------
     final_prompt = prompts.build_final_prompt(
@@ -727,10 +984,10 @@ async def _save_task_result(session_factory, task_id: int, *, summary: str, comm
             await session.commit()
 
 
-async def _collect_context(gh, repo: str, branch: str, touched: list[str], repo_files: list[str]) -> dict[str, str]:
-    """File contents to show the next agent: files written by earlier tasks
-    (newest first), then small top-level docs, within CONTEXT_BUDGET_BYTES."""
-    wanted = list(reversed(touched))
+async def _collect_context(gh, repo: str, branch: str, paths: list[str], repo_files: list[str]) -> dict[str, str]:
+    """File contents to show an agent, most relevant first (`paths`), then
+    small top-level docs, within CONTEXT_BUDGET_BYTES."""
+    wanted = list(paths)
     for name in ("README.md", "readme.md", "README"):
         if name in repo_files and name not in wanted:
             wanted.append(name)

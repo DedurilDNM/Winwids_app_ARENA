@@ -26,6 +26,8 @@ MAX_PATH_LEN = 300
 
 _FILE_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?FILE:(?:\*\*)?\s*`?([^`\s]+?)`?\s*(?:\*\*)?\s*$")
 _STATUS_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?STATUS:(?:\*\*)?\s*\**\s*(DONE|BLOCKED)\b\**\s*(.*)$", re.IGNORECASE)
+_MESSAGE_RE = re.compile(r"^\s*(?:\*\*)?MESSAGE\s+to\s+([^:*]{1,60})(?:\*\*)?:(?:\*\*)?\s*(.+)$", re.IGNORECASE)
+_QUESTION_RE = re.compile(r"^\s*(?:\*\*)?QUESTION:(?:\*\*)?\s*(.+)$", re.IGNORECASE)
 _SUMMARY_RE = re.compile(r"^\s*(?:\*\*)?SUMMARY:(?:\*\*)?\s*(.*)$", re.IGNORECASE)
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 
@@ -39,6 +41,33 @@ class AgentOutput:
     status: str  # "DONE" | "BLOCKED"
     summary: str
     files: dict[str, str] = field(default_factory=dict)
+    messages: list[tuple[str, str]] = field(default_factory=list)  # (to, text)
+    questions: list[str] = field(default_factory=list)
+
+
+def in_scope(path: str, scope: list[str] | None) -> bool:
+    """`scope` entries are directories ("src/api/") or exact files ("README.md")."""
+    if not scope:
+        return True
+    for entry in scope:
+        entry = entry.strip().lstrip("./")
+        if not entry:
+            continue
+        if entry.endswith("/") and path.startswith(entry):
+            return True
+        if path == entry or path.startswith(entry.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def check_scope(output: "AgentOutput", scope: list[str] | None) -> None:
+    """Agents working in parallel must stay in their area (no conflicts)."""
+    outside = [p for p in output.files if not in_scope(p, scope)]
+    if outside:
+        raise AgentOutputError(
+            f"These files are outside your area {scope}: {', '.join(outside)}. "
+            "Only write files inside your area; ask the owner with a MESSAGE line instead."
+        )
 
 
 def validate_path(path: str) -> str:
@@ -81,15 +110,19 @@ def parse_agent_output(reply: str) -> AgentOutput:
     status: str | None = None
     status_rest = ""
     summary_lines: list[str] = []
+    messages: list[tuple[str, str]] = []
+    questions: list[str] = []
 
     current_path: str | None = None
     current: list[str] = []
     fence: str | None = None  # open fence marker inside a FILE block
+    block_closed = False  # the current FILE block's fenced content has ended
     section = "preamble"  # preamble | file | status
 
     def flush() -> None:
-        nonlocal current_path, current, fence
+        nonlocal current_path, current, fence, block_closed
         fence = None
+        block_closed = False
         if current_path is not None:
             files[current_path] = _strip_fences(current)
         current_path, current = None, []
@@ -101,6 +134,7 @@ def parse_agent_output(reply: str) -> AgentOutput:
                 fence = m_fence.group(1)
             elif fence is not None and line.strip() and set(line.strip()) == {fence[0]} and len(line.strip()) >= len(fence):
                 fence = None
+                block_closed = True
                 current.append(line)
                 continue
         if fence is None:
@@ -119,6 +153,15 @@ def parse_agent_output(reply: str) -> AgentOutput:
                 status_rest = m_status.group(2).strip(" -—:*")
                 section = "status"
                 continue
+            if section != "file" or block_closed:
+                m_msg = _MESSAGE_RE.match(line)
+                m_q = _QUESTION_RE.match(line)
+                if m_msg:
+                    messages.append((m_msg.group(1).strip(), m_msg.group(2).strip()))
+                    continue
+                if m_q:
+                    questions.append(m_q.group(1).strip())
+                    continue
         if section == "file":
             current.append(line)
         elif section == "status":
@@ -139,4 +182,5 @@ def parse_agent_output(reply: str) -> AgentOutput:
         raise AgentOutputError("STATUS is DONE but no FILE blocks were given")
 
     summary = "\n".join(summary_lines).strip() or status_rest
-    return AgentOutput(status=status, summary=summary, files=files)
+    return AgentOutput(status=status, summary=summary, files=files,
+                       messages=messages[:10], questions=questions[:5])

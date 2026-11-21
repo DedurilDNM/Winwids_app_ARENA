@@ -160,6 +160,7 @@ class ProjectCreate(BaseModel):
     github_repo: str = Field(min_length=3, max_length=300)
     orchestrator_account_id: int | None = None
     assignments: list[ProjectAssignmentIn] = Field(default_factory=list, max_length=50)
+    max_rounds: int = Field(default=3, ge=0, le=10)  # orchestrator review rounds
 
     @field_validator("github_repo")
     @classmethod
@@ -183,6 +184,7 @@ class ProjectOut(BaseModel):
     result: str | None
     work_branch: str | None = None
     pr_url: str | None = None
+    max_rounds: int | None = None
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
@@ -214,10 +216,23 @@ class ProjectUpdate(BaseModel):
         return value
 
 
+class AgentMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    from_task_id: int | None
+    from_name: str
+    to: str
+    kind: str
+    text: str
+    created_at: datetime
+
+
 class ProjectDetailOut(ProjectOut):
-    """Project + its tasks (timeline source for the client)."""
+    """Project + its tasks (timeline source for the client) + agent messages."""
 
     tasks: list[TaskOut] = Field(default_factory=list)
+    messages: list[AgentMessageOut] = Field(default_factory=list)
 
 
 class TaskOut(BaseModel):
@@ -232,6 +247,10 @@ class TaskOut(BaseModel):
     branch: str | None
     summary: str | None = None
     commit_sha: str | None = None
+    plan_key: str | None = None
+    depends_on: list | None = None
+    scope: list | None = None
+    round: int | None = None
     created_at: datetime
     updated_at: datetime
 

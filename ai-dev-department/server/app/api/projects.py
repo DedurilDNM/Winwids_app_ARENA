@@ -18,8 +18,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db
-from app.models import Account, Project, ProjectAssignment, Task, User
+from app.models import Account, AgentMessage, Project, ProjectAssignment, Task, User
 from app.schemas import (
+    AgentMessageOut,
     ProjectAssignmentIn,
     ProjectCreate,
     ProjectDetailOut,
@@ -81,6 +82,12 @@ async def _serialize(project: Project, db: AsyncSession, *, with_tasks: bool = F
             )
         ).all()
         base["tasks"] = [TaskOut.model_validate(t) for t in tasks]
+        messages = (
+            await db.scalars(
+                select(AgentMessage).where(AgentMessage.project_id == project.id).order_by(AgentMessage.id)
+            )
+        ).all()
+        base["messages"] = [AgentMessageOut.model_validate(m) for m in messages]
         return ProjectDetailOut(**base)
     return ProjectOut(**base)
 
@@ -114,6 +121,7 @@ async def create_project(
         task=data.task.strip(),
         github_repo=data.github_repo.strip(),
         orchestrator_account_id=data.orchestrator_account_id,
+        max_rounds=data.max_rounds,
         status="draft",
     )
     db.add(project)
@@ -243,8 +251,9 @@ async def start_project(
                 detail=f"Assigned account {account.id} is not active (status={account.status}). Log in via VNC first.",
             )
 
-    # A re-run starts from a clean task list (history stays in git).
+    # A re-run starts from a clean task list and message board (history stays in git).
     await db.execute(Task.__table__.delete().where(Task.project_id == project.id))
+    await db.execute(AgentMessage.__table__.delete().where(AgentMessage.project_id == project.id))
     project.status = "running"
     project.started_at = _utc_naive()
     project.completed_at = None

@@ -84,6 +84,7 @@ class Project(Base):
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
     work_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)  # server commits here
+    max_rounds: Mapped[int | None] = mapped_column(Integer, nullable=True)  # review rounds (default 3)
     pr_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -114,6 +115,12 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)  # agent's SUMMARY line
+    # «Big department»: plan-local key ("t1"), task ids it waits for, the paths
+    # it may write (its area), and the review round (0 = initial plan).
+    plan_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    depends_on: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    scope: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    round: Mapped[int | None] = mapped_column(Integer, nullable=True)
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)  # server-made commit
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -145,3 +152,21 @@ def account_to_summary(account: Account) -> dict[str, Any]:
         "github_repos": account.github_repos,
         "status": account.status,
     }
+
+
+class AgentMessage(Base):
+    """A message one agent left for others (or a question to the orchestrator).
+    Delivered in the recipient's next prompt; shown in the project feed."""
+
+    __tablename__ = "agent_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    from_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    from_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    from_name: Mapped[str] = mapped_column(String(120), default="")
+    to: Mapped[str] = mapped_column(String(120), default="all")  # role | account name | "all" | "orchestrator"
+    kind: Mapped[str] = mapped_column(String(16), default="message")  # message | question | answer
+    text: Mapped[str] = mapped_column(Text)
+    delivered_to: Mapped[list] = mapped_column(JSON, default=list)  # account ids that got it
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

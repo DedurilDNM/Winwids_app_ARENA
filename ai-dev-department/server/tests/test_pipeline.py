@@ -71,11 +71,14 @@ class FakeAdapter:
     async def after_reply(self, page):
         self.escaped += 1
 
+    async def wait_response(self, page, timeout=600):
+        if "-review-" in page:  # orchestrator review: accept by default
+            queue = self.replies.get(page)
+            return queue.pop(0) if queue else '{"verdict": "done"}'
+        return self.replies[page].pop(0)
+
     async def send_message(self, page, text):
         self.prompts.append((page, text))
-
-    async def wait_response(self, page, timeout=600):
-        return self.replies[page].pop(0)
 
 
 class FakeBrowserManager:
@@ -154,10 +157,12 @@ def _load(ids: dict):
 
 
 def _plan(ids: dict) -> str:
-    return json.dumps([
-        {"role": "Coder", "task": "Create index.html", "assign_to_account_id": ids["coder"]},
-        {"role": "Reviewer", "task": "Review index.html", "assign_to_account_id": ids["reviewer"]},
-    ])
+    # The reviewer depends on the coder -> sequential (without depends_on they run in parallel).
+    return json.dumps({"tasks": [
+        {"id": "t1", "role": "Coder", "task": "Create index.html", "assign_to_account_id": ids["coder"]},
+        {"id": "t2", "role": "Reviewer", "task": "Review index.html", "assign_to_account_id": ids["reviewer"],
+         "depends_on": ["t1"]},
+    ]})
 
 
 # --------------------------------------------------------------- pipeline
@@ -282,6 +287,8 @@ def test_attention_events_reach_the_app_and_tabs_are_closed() -> None:
             seen_during.append([i["kind"] for i in list_attention(uid)])
             await adapter.on_attention("captcha", False)
             return "FILE: a.txt\nhi\nSTATUS: DONE\nSUMMARY: ok"
+        if "-review-" in page:
+            return '{"verdict": "done"}'
         return adapter.replies[page].pop(0)
 
     adapter.wait_response = wait_response
@@ -294,7 +301,7 @@ def test_attention_events_reach_the_app_and_tabs_are_closed() -> None:
     assert needed["kind"] == "captcha" and needed["account_name"] in ("coder", "rev")
     assert seen_during == [["captcha"], ["captcha"]]
     assert list_attention(_user_of(ids)) == []
-    assert len(FakePage.closed) == 4 and adapter.escaped == 4  # plan + 2 tasks + summary
+    assert len(FakePage.closed) == 5 and adapter.escaped == 5  # plan + 2 tasks + review + summary
 
 
 def _user_of(ids: dict) -> int:
