@@ -48,7 +48,7 @@ from app.ws_manager import manager as default_ws_manager
 logger = logging.getLogger(__name__)
 
 AGENT_ROLES = ("Architect", "Coder", "Reviewer", "Tester", "Integrator", "ImagePrompter")
-AGENT_FORMAT_ATTEMPTS = 2  # first reply + one "resend in the required format"
+AGENT_FORMAT_ATTEMPTS = 3  # first reply + two "resend complete / in the required format"
 CONTEXT_BUDGET_BYTES = 60_000  # file contents shown to each agent
 
 

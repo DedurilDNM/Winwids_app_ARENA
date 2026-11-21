@@ -180,6 +180,15 @@ def parse_agent_output(reply: str) -> AgentOutput:
         raise AgentOutputError(f"Empty file content for: {', '.join(empty)}")
     if status == "DONE" and not files:
         raise AgentOutputError("STATUS is DONE but no FILE blocks were given")
+    if status == "DONE":
+        from app.services.file_checks import check_complete
+
+        problems = [f"{p}: {r}" for p, c in files.items() if (r := check_complete(p, c))]
+        if problems:
+            raise AgentOutputError(
+                "Some files look unfinished: " + "; ".join(problems[:5])
+                + ". Send every file complete; split very large files into several smaller files."
+            )
 
     summary = "\n".join(summary_lines).strip() or status_rest
     return AgentOutput(status=status, summary=summary, files=files,

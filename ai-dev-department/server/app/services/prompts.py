@@ -38,7 +38,9 @@ ROLE_GUIDANCE = {
 
 OUTPUT_CONTRACT = """OUTPUT FORMAT (mandatory - your reply is parsed by a program):
 You cannot access the repository yourself. The server commits the files from your reply.
-For every file you create or change, output its FULL final content (never a diff, never "..." placeholders):
+For every file you create or change, output its FULL final content (never a diff, never "..." or
+"rest of the code" placeholders - the server rejects unfinished files). Keep each file under ~300 lines;
+split bigger code into several files:
 
 FILE: path/relative/to/repo/root.ext
 ```
