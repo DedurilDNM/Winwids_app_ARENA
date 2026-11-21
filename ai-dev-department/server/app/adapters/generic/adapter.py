@@ -40,10 +40,26 @@ _MONOTONIC = time.monotonic
 
 
 _CAPTCHA_JS = """
-() => [...document.querySelectorAll("iframe")].some((f) => {
-  const r = f.getBoundingClientRect();
-  return r.width > 0 && r.height > 0 && /captcha|challenge|turnstile/i.test(f.src || "");
-})
+() => {
+  // A captcha the HUMAN must solve - not the small reCAPTCHA badge many sites
+  // keep in a corner (size=invisible), hidden challenge frames or off-screen ones.
+  // Returns a short description (host + size) or null.
+  for (const f of document.querySelectorAll("iframe")) {
+    const src = f.src || "";
+    if (!/captcha|challenge|turnstile/i.test(src)) continue;
+    if (/size=invisible/i.test(src)) continue;
+    const r = f.getBoundingClientRect();
+    const cs = getComputedStyle(f);
+    if (r.width < 2 || r.height < 2 || cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) === 0) continue;
+    if (r.right <= 0 || r.bottom <= 0 || r.left >= innerWidth || r.top >= innerHeight) continue;
+    const challenge = /bframe|challenge|turnstile/i.test(src);
+    if (!challenge && r.width * r.height < 20000) continue;
+    let host = "";
+    try { host = new URL(src).host; } catch (e) { host = ""; }
+    return `${host || "frame"} ${Math.round(r.width)}x${Math.round(r.height)}`;
+  }
+  return null;
+}
 """
 
 MAX_RESENDS = 5  # resends of one message after page reloads
@@ -354,7 +370,13 @@ class Adapter:
         when the project is stopped (should_continue). Returns seconds paused."""
         limit = float(getattr(self.settings, "ADAPTER_CAPTCHA_WAIT_SECONDS", 0) or 0)
         start = _MONOTONIC()
-        logger.warning("Paused: %s needs a human%s", kind, f" (limit {limit:.0f}s)" if limit else "")
+        detail = ""
+        if kind == "captcha":
+            try:
+                detail = f" [{await page.evaluate(_CAPTCHA_JS)}]"
+            except Exception:
+                detail = ""
+        logger.warning("Paused: %s needs a human%s%s", kind, detail, f" (limit {limit:.0f}s)" if limit else "")
         await self._attention(kind, True)
         try:
             while await still_blocked(page):
