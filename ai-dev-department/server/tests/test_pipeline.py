@@ -313,3 +313,26 @@ def _user_of(ids: dict) -> int:
             return (await s.get(Project, ids["project"])).user_id
 
     return asyncio.run(go())
+
+
+def test_plan_json_with_bare_quotes_from_markdown_is_repaired() -> None:
+    from app.services.orchestrator import _extract_json
+
+    # A markdown renderer turned \" into " inside a task text.
+    raw = ('{"tasks": [{"id": "t1", "role": "Coder", "task": "Model a "realistic" berry, layer "seeds", flesh",\n'
+           '"assign_to_account_id": 1, "depends_on": [], "scope": ["src/"]}]}')
+    assert _extract_json(raw)["tasks"][0]["task"] == 'Model a "realistic" berry, layer "seeds", flesh'
+    assert _extract_json('Plan:\n{"a": "x\ny"}\nok') == {"a": "x\ny"}  # raw newline inside a string
+
+
+def test_unreadable_plan_is_requested_again() -> None:
+    ids = _setup()
+    p = ids["project"]
+    gh = FakeGitHub()
+    adapter = FakeAdapter({f"project-{p}": ["Sure! The plan is: first the coder, then the reviewer.", _plan(ids), "Summary"]})
+    adapter.wait_response = _by_prefix(adapter, p, "FILE: a.txt\nhi\nSTATUS: DONE\nSUMMARY: ok")
+    status, _ = _run(ids, adapter, gh)
+    assert status == "completed", _load(ids)[0].result
+    orchestrator_prompts = [t for page, t in adapter.prompts if page == f"project-{p}"]
+    assert "could not be read by the server" in orchestrator_prompts[1]
+    assert "json code block" in orchestrator_prompts[0]

@@ -112,7 +112,8 @@ You lead a team that works IN PARALLEL. Rules:
 - Each subtask text must be self-contained: what to build, which interfaces from the contract to follow,
   what "done" means. 2-8 subtasks. Agents only return files; they cannot run commands.
 {ci_rule}
-Reply with ONLY JSON, no other text, in exactly this format:
+Reply with ONLY JSON inside one ```json code block. Inside text values never use the double quote
+character (write «like this» or 'like this' instead) and do not use backslashes. Exactly this format:
 {{"tasks": [
   {{"id": "t1", "role": "Architect", "task": "...", "assign_to_account_id": 1, "depends_on": [], "scope": ["docs/"]}},
   {{"id": "t2", "role": "Coder", "task": "...", "assign_to_account_id": 2, "depends_on": ["t1"], "scope": ["src/api/"]}}
@@ -228,11 +229,28 @@ give each CI error to the agent who owns the broken file. If parts are missing, 
 subtasks (same format and rules as the plan: id, role, task, assign_to_account_id, depends_on, scope with
 non-overlapping areas for parallel subtasks). Answer the open questions.
 
-Reply with ONLY JSON:
+Reply with ONLY JSON inside one ```json code block. Inside text values never use the double quote
+character (write «like this» or 'like this' instead) and do not use backslashes. Format:
 {{"verdict": "done" | "continue",
   "answers": [{{"to": "<agent name or role>", "text": "..."}}],
   "tasks": [ ...fix subtasks, empty when done... ]}}
 """
+
+
+def build_json_fix_prompt(error: str) -> str:
+    """Ask the orchestrator to resend a reply the server could not parse."""
+    return f"""Your previous reply could not be read by the server: {error}
+
+Send it again as valid JSON inside one ```json code block. Inside text values never use the double quote
+character (use «» or single quotes) and no backslashes. Same content, same format as requested below."""
+
+
+def build_json_fix_prompt(error: str) -> str:
+    """Ask the orchestrator to resend a reply the server could not parse."""
+    return f"""Your previous reply could not be read by the server: {error}
+
+Send it again as valid JSON inside one ```json code block. Inside text values never use the double quote
+character (use «» or single quotes) and no backslashes. Same content, same format as requested below."""
 
 
 def build_fix_prompt(error: str) -> str:

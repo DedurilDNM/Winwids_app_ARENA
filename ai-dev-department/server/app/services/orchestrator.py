@@ -48,6 +48,8 @@ from app.ws_manager import manager as default_ws_manager
 logger = logging.getLogger(__name__)
 
 AGENT_ROLES = ("Architect", "Coder", "Reviewer", "Tester", "Integrator", "ImagePrompter")
+PLAN_FORMAT_ATTEMPTS = 3  # orchestrator plan: first reply + two "resend valid JSON"
+PLAN_FORMAT_ATTEMPTS = 3  # orchestrator plan: first reply + two "resend valid JSON"
 AGENT_FORMAT_ATTEMPTS = 3  # first reply + two "resend complete / in the required format"
 CONTEXT_BUDGET_BYTES = 60_000  # file contents shown to each agent
 
@@ -135,10 +137,58 @@ def _extract_json(raw: str):
     end = text.rfind("]" if text[start] == "[" else "}")
     if end < start:
         raise ValueError("Orchestrator reply does not contain complete JSON")
+    candidate = text[start : end + 1]
     try:
-        return json.loads(text[start : end + 1])
+        return json.loads(candidate, strict=False)  # strict=False: raw newlines inside strings
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Orchestrator reply is not valid JSON: {exc}") from exc
+        try:
+            return json.loads(_repair_json(candidate), strict=False)
+        except json.JSONDecodeError:
+            raise ValueError(f"Orchestrator reply is not valid JSON: {exc}") from exc
+
+
+def _repair_json(text: str) -> str:
+    """Escape double quotes that sit INSIDE string values.
+
+    Chat services render replies as markdown, which turns the escape \\" into a
+    bare ", so `"task": "make the \\"seeds\\" layer"` arrives as
+    `"task": "make the "seeds" layer"`. A quote closes a string only when the
+    next non-space character is , : } ] (or the end); otherwise it is escaped.
+    """
+    out: list[str] = []
+    in_str = False
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if in_str:
+            if c == "\\" and i + 1 < n:
+                out.append(text[i : i + 2])
+                i += 2
+                continue
+            if c == '"':
+                j = i + 1
+                while j < n and text[j] in " \t\r\n":
+                    j += 1
+                closes = j >= n or text[j] in ":}]"
+                if not closes and text[j] == ",":
+                    k = j + 1
+                    while k < n and text[k] in " \t\r\n":
+                        k += 1
+                    # after a real comma comes the next JSON value or key
+                    closes = k >= n or text[k] in '"{[-0123456789' or text.startswith(("true", "false", "null"), k)
+                if closes:
+                    in_str = False
+                    out.append(c)
+                else:
+                    out.append('\\"')
+            else:
+                out.append(c)
+        else:
+            if c == '"':
+                in_str = True
+            out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _plan_items(data: list, *, assignments, orchestrator_account_id, key_prefix: str = "t") -> list[PlanItem]:
@@ -851,18 +901,33 @@ async def run_project_logic(
             ws_manager=ws,
         )
 
-    try:
-        plan = parse_task_plan(
-            raw_plan,
-            assignments=list(assignments),
-            orchestrator_account_id=project_snapshot["orchestrator_account_id"],
-        )
-    except ValueError as exc:
-        return await _fail_project(
-            session_factory, project_id,
-            f"Could not parse orchestrator plan: {exc}. Raw reply (truncated): {raw_plan[:500]}",
-            ws_manager=ws,
-        )
+    plan = None
+    for attempt in range(1, PLAN_FORMAT_ATTEMPTS + 1):
+        try:
+            plan = parse_task_plan(
+                raw_plan,
+                assignments=list(assignments),
+                orchestrator_account_id=project_snapshot["orchestrator_account_id"],
+            )
+            break
+        except ValueError as exc:
+            if attempt == PLAN_FORMAT_ATTEMPTS:
+                return await _fail_project(
+                    session_factory, project_id,
+                    f"Could not parse orchestrator plan: {exc}. Raw reply (truncated): {raw_plan[:500]}",
+                    ws_manager=ws,
+                )
+            logger.info("Project %s: plan not parsed (attempt %d): %s", project_id, attempt, exc)
+            try:
+                raw_plan = await _ask(
+                    adapter, orchestrator_context, chat_ref=f"project-{project_id}",
+                    prompt=prompts.build_json_fix_prompt(str(exc)) + "\n\nTHE ORIGINAL REQUEST:\n\n" + split_prompt,
+                    timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
+                    notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
+                    should_continue=lambda: _project_still_running(session_factory, project_id),
+                )
+            except Exception as ask_exc:
+                return await _fail_project(session_factory, project_id, _explain(ask_exc, "Orchestrator"), ws_manager=ws)
     for item in plan:
         if item.assign_to_account_id in project_roles and project_roles[item.assign_to_account_id] in AGENT_ROLES:
             item.role = project_roles[item.assign_to_account_id]
@@ -911,9 +976,22 @@ async def run_project_logic(
                 notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
                 should_continue=lambda: _project_still_running(session_factory, project_id),
             )
-            review = parse_review(raw_review, assignments=list(assignments),
-                                  orchestrator_account_id=project_snapshot["orchestrator_account_id"],
-                                  round_no=round_no + 1)
+            try:
+                review = parse_review(raw_review, assignments=list(assignments),
+                                      orchestrator_account_id=project_snapshot["orchestrator_account_id"],
+                                      round_no=round_no + 1)
+            except ValueError as first:
+                raw_review = await _ask(
+                    make_adapter(), orchestrator_context,
+                    chat_ref=f"project-{project_id}-review-{round_no + 1}",
+                    prompt=prompts.build_json_fix_prompt(str(first)) + "\n\nTHE ORIGINAL REQUEST:\n\n" + review_prompt,
+                    timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
+                    notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
+                    should_continue=lambda: _project_still_running(session_factory, project_id),
+                )
+                review = parse_review(raw_review, assignments=list(assignments),
+                                      orchestrator_account_id=project_snapshot["orchestrator_account_id"],
+                                      round_no=round_no + 1)
         except ValueError as exc:
             logger.warning("Project %s: review reply not usable (%s); finishing", project_id, exc)
             break
