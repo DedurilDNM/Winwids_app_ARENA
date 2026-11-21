@@ -76,7 +76,7 @@ async function renderWizard(main) {
   } catch (err) {
     toast(errorText(err), { error: true });
   }
-  const draft = { name: "", task: "", description: "", github_repo: "", orchestrator_account_id: null, agents: new Map() };
+  const draft = { name: "", task: "", description: "", github_repo: "", orchestrator_account_id: null, agents: new Map(), max_rounds: 3 };
   let step = 0;
   let repoOk = false;
 
@@ -214,6 +214,10 @@ async function renderWizard(main) {
     const error = h("div", { class: "form-error", role: "alert" });
     const createBtn = h("button", { type: "button" }, "Сохранить черновик");
     const startBtn = h("button", { type: "button", class: "primary", disabled: Boolean(inactive.length) || !github.connected }, "Создать и запустить");
+    const rounds = h("select", { name: "max_rounds", "aria-label": "Круги проверки" },
+      [[0, "без проверки"], [1, "1 круг доработок"], [3, "до 3 кругов (рекомендуется)"], [5, "до 5 кругов"]].map(([v, label]) =>
+        h("option", { value: v, selected: v === draft.max_rounds }, label)));
+    rounds.addEventListener("change", () => { draft.max_rounds = Number(rounds.value); });
 
     async function create(start) {
       createBtn.disabled = startBtn.disabled = true;
@@ -225,6 +229,7 @@ async function renderWizard(main) {
           github_repo: draft.github_repo,
           orchestrator_account_id: draft.orchestrator_account_id,
           assignments: [...draft.agents].map(([account_id, role]) => ({ account_id, role })),
+          max_rounds: draft.max_rounds,
         });
         if (start) await api.startProject(project.id);
         toast(start ? "Проект запущен" : "Черновик сохранён");
@@ -244,7 +249,8 @@ async function renderWizard(main) {
         h("dt", {}, "Репозиторий"), h("dd", {}, draft.github_repo),
         h("dt", {}, "Задача"), h("dd", { class: "pre" }, draft.task),
         h("dt", {}, "Оркестратор"), h("dd", {}, byId.get(draft.orchestrator_account_id)?.name),
-        h("dt", {}, "Агенты"), h("dd", {}, [...draft.agents].map(([id, role]) => `${byId.get(id)?.name} — ${ROLE_LABELS[role]}`).join(", "))),
+        h("dt", {}, "Агенты"), h("dd", {}, [...draft.agents].map(([id, role]) => `${byId.get(id)?.name} — ${ROLE_LABELS[role]}`).join(", ")),
+        h("dt", {}, "Проверки"), h("dd", {}, rounds)),
       inactive.length
         ? h("div", { class: "banner warn-banner mt-16" }, `Нужно войти в аккаунты: ${inactive.map((a) => a.name).join(", ")}. `, h("a", { href: "#/accounts" }, "К аккаунтам"))
         : h("p", { class: "small muted mt-16" }, `Сервер создаст ветку ai/project-<id>, агенты по очереди выполнят подзадачи, в конце откроется Pull Request.`),
@@ -274,6 +280,8 @@ async function renderProject(main, projectId) {
   const board = h("div", { class: "tasks", "data-testid": "tasks" });
   const result = h("section", { class: "card", hidden: true });
   const feed = h("ol", { class: "feed", "data-testid": "feed" });
+  const chat = h("ol", { class: "feed chat", "data-testid": "messages" });
+  let messages = project.messages || [];
   const live = h("span", { class: "live", "data-testid": "live" }, "офлайн");
 
   main.append(
@@ -282,7 +290,9 @@ async function renderProject(main, projectId) {
       h("div", { class: "stack" },
         result,
         h("section", {}, h("h2", {}, "Задачи"), board)),
-      h("section", { class: "card feed-card" }, h("div", { class: "card-head" }, h("h2", { class: "m-0" }, "События"), live), feed)));
+      h("div", { class: "stack feed-card" },
+        h("section", { class: "card" }, h("div", { class: "card-head" }, h("h2", { class: "m-0" }, "События"), live), feed),
+        h("section", { class: "card" }, h("h2", {}, "Переписка агентов"), chat))));
 
   function renderHead() {
     head.replaceChildren(
@@ -305,29 +315,57 @@ async function renderProject(main, projectId) {
     }
   }
 
+  function taskCard(t) {
+    const agent = byId.get(t.assigned_account_id);
+    const deps = (t.depends_on || []).map((d) => `#${d}`).join(", ");
+    return h("article", { class: `card task task-${t.status}`, dataset: { taskId: t.id } },
+      h("div", { class: "card-head" },
+        h("div", {}, h("div", { class: "card-title" }, `#${t.id} · ${ROLE_LABELS[t.role] || t.role}`),
+          h("div", { class: "small muted" }, agent ? agent.name : "агент удалён", deps ? ` · после ${deps}` : "")),
+        badge(TASK_STATUS, t.status, "task-status")),
+      (t.scope || []).length ? h("div", { class: "chips", "data-testid": "scope" }, t.scope.map((x) => h("code", {}, x))) : null,
+      h("p", { class: "small pre" }, t.task),
+      t.summary ? h("p", { class: "small task-summary" }, t.summary) : null,
+      h("div", { class: "actions" }, ...[
+        t.commit_sha ? repoLink(project.github_repo, `/commit/${t.commit_sha}`, `коммит ${t.commit_sha.slice(0, 7)}`) : null,
+        agent && (t.status === "running" || t.status === "paused")
+          ? h("button", { class: t.status === "paused" ? "primary" : "", onclick: () => openBrowser(agent, { mode: "view" }) },
+              t.status === "paused" ? "Открыть браузер и помочь" : "Смотреть агента")
+          : null,
+      ].filter(Boolean)));
+  }
+
   function renderTasks() {
     if (!tasks.length) {
       board.replaceChildren(h("p", { class: "muted small" }, project.status === "running"
         ? "Оркестратор составляет план…" : "Задачи появятся после запуска: их составит оркестратор."));
       return;
     }
-    board.replaceChildren(...tasks.map((t) => {
-      const agent = byId.get(t.assigned_account_id);
-      return h("article", { class: `card task task-${t.status}`, dataset: { taskId: t.id } },
-        h("div", { class: "card-head" },
-          h("div", {}, h("div", { class: "card-title" }, `#${t.id} · ${ROLE_LABELS[t.role] || t.role}`),
-            h("div", { class: "small muted" }, agent ? agent.name : "агент удалён")),
-          badge(TASK_STATUS, t.status, "task-status")),
-        h("p", { class: "small pre" }, t.task),
-        t.summary ? h("p", { class: "small task-summary" }, t.summary) : null,
-        h("div", { class: "actions" }, ...[
-          t.commit_sha ? repoLink(project.github_repo, `/commit/${t.commit_sha}`, `коммит ${t.commit_sha.slice(0, 7)}`) : null,
-          agent && (t.status === "running" || t.status === "paused")
-            ? h("button", { class: t.status === "paused" ? "primary" : "", onclick: () => openBrowser(agent, { mode: "view" }) },
-                t.status === "paused" ? "Открыть браузер и помочь" : "Смотреть агента")
-            : null,
-        ].filter(Boolean)));
-    }));
+    const rounds = new Map();
+    for (const t of tasks) {
+      const r = t.round || 0;
+      if (!rounds.has(r)) rounds.set(r, []);
+      rounds.get(r).push(t);
+    }
+    const working = tasks.filter((t) => t.status === "running" || t.status === "paused").length;
+    board.replaceChildren(...[
+      working > 1 ? h("p", { class: "small ok-text", "data-testid": "parallel" }, `Сейчас параллельно работают агентов: ${working}`) : null,
+      ...[...rounds].sort(([a], [b]) => a - b).map(([r, list]) => h("div", { class: "round" },
+        h("h3", { class: "round-title" }, r === 0 ? "План" : `Доработки — круг ${r}`),
+        h("div", { class: "tasks" }, list.map(taskCard)))),
+    ].filter(Boolean));
+  }
+
+  function renderMessages() {
+    if (!messages.length) {
+      chat.replaceChildren(h("li", { class: "muted" }, "Агенты ещё ничего не писали друг другу"));
+      return;
+    }
+    const KIND = { question: "вопрос", answer: "ответ", message: "" };
+    chat.replaceChildren(...messages.slice(-100).reverse().map((m) => h("li", { class: `msg-${m.kind}` },
+      h("strong", {}, m.from_name), " → ", h("strong", {}, m.to),
+      KIND[m.kind] ? h("span", { class: "muted" }, ` (${KIND[m.kind]})`) : null,
+      h("div", { class: "pre" }, m.text))));
   }
 
   function addEvent(text, cls = "") {
@@ -339,8 +377,10 @@ async function renderProject(main, projectId) {
     try {
       project = await api.getProject(projectId);
       tasks = project.tasks || [];
+      messages = project.messages || [];
       renderHead();
       renderTasks();
+      renderMessages();
     } catch (err) {
       toast(errorText(err), { error: true });
     }
@@ -384,6 +424,9 @@ async function renderProject(main, projectId) {
     session_relogged: (e) => [`Аккаунт #${e.account_id}: сессия восстановлена`, "ok"],
     attention_needed: (e) => [`⚠ ${e.account_name || "Агент"}: ${attentionText(e.kind)}`, "danger"],
     attention_resolved: () => ["Готово, агент продолжает работу", "ok"],
+    agent_message: (e) => [`✉ ${e.from} → ${e.to}: ${e.text.slice(0, 120)}`, "info"],
+    review_round: (e) => [`Оркестратор отправил на доработку: ${e.message.match(/\d+ fix/) ? e.message.match(/(\d+) fix/)[1] + " задач(и)" : ""}`, "info"],
+    review_done: () => ["Оркестратор принял работу", "ok"],
   };
   let ws = null;
   let closed = false;
@@ -427,6 +470,7 @@ async function renderProject(main, projectId) {
 
   renderHead();
   renderTasks();
+  renderMessages();
   connect();
   return () => {
     closed = true;

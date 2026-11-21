@@ -67,12 +67,13 @@ console.log("✓ live: WebSocket online, task started events, a task «В раб
 if (SHOTS) await page.screenshot({ path: `${SHOTS}/s4-project-running.png` });
 
 await page.waitForSelector("[data-testid=project-status]:has-text('Завершён')", { timeout: 60000 });
-assert.equal(await page.locator("[data-testid=task-status]:has-text('Готово')").count(), 2);
+// 2 plan tasks + review fix tasks (the orchestrator reviews the work)
+assert.ok(await page.locator("[data-testid=task-status]:has-text('Готово')").count() >= 2);
 assert.ok((await page.textContent("[data-testid=result]")).includes("Лендинг готов"));
 assert.ok(!(await page.textContent("[data-testid=result]")).includes("##"), "markdown rendered");
 assert.equal(await page.locator(".task .card-title:has-text('Тестировщик')").count(), 1, "project role (Tester) wins over default (Reviewer)");
 assert.match(await page.getAttribute("[data-testid=pr-link]", "href"), /github\.com\/octo\/website\/pull\/\d+/);
-assert.ok(await page.locator(".task a:has-text('коммит')").count() === 2);
+assert.ok(await page.locator(".task a:has-text('коммит')").count() >= 2);
 await page.waitForSelector("[data-testid=feed] li:has-text('Проект завершён')");
 console.log("✓ completed: 2 tasks done with commit links, result + PR link, feed shows completion");
 if (SHOTS) await page.screenshot({ path: `${SHOTS}/s4-project-done.png`, fullPage: true });

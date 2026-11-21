@@ -53,18 +53,37 @@ if os.environ.get("E2E_FAKE_AGENTS"):
             self.calls[page] = text
 
         async def wait_response(self, page, timeout=600):
-            await asyncio.sleep(1.5)
             prompt = self.calls[page]
-            if "-task-" not in page:
-                if "Split the project task" in prompt:
-                    ids = re.findall(r"account_id=(\d+) name='[^']*' role=(\w+)", prompt)
-                    return json.dumps([{"role": role if role != "Orchestrator" else "Coder",
-                                        "task": f"Part {n + 1} of the project", "assign_to_account_id": int(i)}
-                                       for n, (i, role) in enumerate(ids)])
-                return "## Итог\nЛендинг готов: index.html и ревью."
+            accounts = re.findall(r"account_id=(\d+) name='([^']*)' role=(\w+)", prompt)
+            if "Split the project task" in prompt:
+                await asyncio.sleep(1)
+                arch = next((i for i, _, r in accounts if r == "Architect"), None)
+                tasks = []
+                if arch:
+                    tasks.append({"id": "t1", "role": "Architect", "task": "Write docs/CONTRACTS.md",
+                                  "assign_to_account_id": int(arch), "scope": ["docs/"]})
+                for n, (i, name, role) in enumerate([a for a in accounts if a[2] != "Architect"], start=2):
+                    tasks.append({"id": f"t{n}", "role": "Coder" if role == "Orchestrator" else role,
+                                  "task": f"Build module {n}", "assign_to_account_id": int(i),
+                                  "depends_on": ["t1"] if arch else [], "scope": [f"src/m{n}/"]})
+                return json.dumps({"tasks": tasks})
+            if "Review round 1" in prompt:
+                await asyncio.sleep(1)
+                coder = next(i for i, _, r in accounts if r == "Coder")
+                return json.dumps({"verdict": "continue", "answers": [{"to": "all", "text": "Good, one fix needed"}],
+                                   "tasks": [{"id": "f1", "role": "Coder", "task": "Polish module 2",
+                                              "assign_to_account_id": int(coder), "scope": ["src/m2/"]}]})
+            if "Review round" in prompt:
+                return '{"verdict": "done"}'
+            if "All agent tasks are complete" in prompt:
+                return "## Итог\nЛендинг готов: модули и ревью."
+            await asyncio.sleep(4)  # long enough to see agents working in parallel
             role = re.search(r"You are the (\w+)", prompt).group(1)
             task_id = re.search(r"YOUR TASK \(task (\d+)\)", prompt).group(1)
-            return (f"FILE: src/part-{task_id}.html\n```html\n<p>{role} work for task {task_id}</p>\n```\n"
+            area = re.search(r"you may only write these paths: (\S+)", prompt).group(1).rstrip(",")
+            path = f"{area}part-{task_id}.html" if area.endswith("/") else area
+            msg = "MESSAGE to Coder: follow docs/CONTRACTS.md\n" if role == "Architect" else ""
+            return (f"{msg}FILE: {path}\n```html\n<p>{role} work for task {task_id}</p>\n```\n"
                     f"STATUS: DONE\nSUMMARY: {role} finished task {task_id}")
 
     orch_module.load_adapter = lambda: ScriptedAdapter()

@@ -326,3 +326,11 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.45; }
 .attention-bar button { min-height: 34px; padding: 4px 12px; }
 .attention-bar button.primary { background: #fff; color: var(--danger); border-color: #fff; }
 .task-paused { border-left: 3px solid var(--warn); }
+
+/* ---------- department ---------- */
+.round { display: grid; gap: 10px; margin-bottom: 14px; }
+.round-title { font-size: 14px; color: var(--muted); margin: 6px 0 0; text-transform: uppercase; letter-spacing: .04em; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.chat li { display: block; }
+.chat .msg-question { border-left: 3px solid var(--warn); }
+.chat .msg-answer { border-left: 3px solid var(--ok); }
