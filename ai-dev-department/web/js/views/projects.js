@@ -326,9 +326,14 @@ async function renderProject(main, projectId) {
         project.pr_url ? h("a", { href: project.pr_url, target: "_blank", rel: "noopener noreferrer", class: "ok-text", "data-testid": "pr-link" }, "Pull Request") : null,
         ciBadge()));
     const running = project.status === "running";
+    const canResume = project.status === "failed" && tasks.length > 0;
     actions.replaceChildren(...[
-      running ? h("button", { class: "danger", onclick: stop }, "Остановить")
-        : project.status !== "completed" ? h("button", { class: "primary", onclick: start }, project.status === "draft" ? "Запустить" : "Запустить заново") : null,
+      running ? h("button", { class: "danger", onclick: stop }, "Остановить") : null,
+      canResume ? h("button", { class: "primary", onclick: resume, "data-testid": "resume" }, "Продолжить с места остановки") : null,
+      !running && project.status !== "completed"
+        ? h("button", { class: canResume ? "" : "primary", onclick: () => start(canResume) },
+            project.status === "draft" ? "Запустить" : "Запустить заново")
+        : null,
       !running ? h("button", { class: "danger", onclick: remove }, "Удалить") : null,
     ].filter(Boolean));
     if (project.result) {
@@ -345,7 +350,8 @@ async function renderProject(main, projectId) {
     return h("article", { class: `card task task-${t.status}`, dataset: { taskId: t.id } },
       h("div", { class: "card-head" },
         h("div", {}, h("div", { class: "card-title" }, `#${t.id} · ${ROLE_LABELS[t.role] || t.role}`),
-          h("div", { class: "small muted" }, agent ? agent.name : "агент удалён", deps ? ` · после ${deps}` : "")),
+          h("div", { class: "small muted" }, agent ? agent.name : "агент удалён", deps ? ` · после ${deps}` : "",
+            t.attempts ? ` · повтор ${t.attempts}` : "")),
         badge(TASK_STATUS, t.status, "task-status")),
       (t.scope || []).length ? h("div", { class: "chips", "data-testid": "scope" }, t.scope.map((x) => h("code", {}, x))) : null,
       h("p", { class: "small pre" }, t.task),
@@ -419,7 +425,19 @@ async function renderProject(main, projectId) {
     }
   }
 
-  async function start() {
+  async function resume() {
+    try {
+      await api.resumeProject(projectId);
+      await reload();
+    } catch (err) {
+      toast(`Не удалось продолжить: ${errorText(err)}`, { error: true, timeout: 7000 });
+    }
+  }
+
+  async function start(confirmFirst = false) {
+    if (confirmFirst && !(await confirmDialog("Запустить с нуля?",
+      "Оркестратор составит новый план, все задачи начнутся заново. Чтобы сохранить сделанное, нажмите «Продолжить с места остановки».",
+      "Запустить заново"))) return;
     try {
       await api.startProject(projectId);  // the server sends «project_started» to the feed
       await reload();
@@ -460,6 +478,8 @@ async function renderProject(main, projectId) {
     agent_message: (e) => [`✉ ${e.from} → ${e.to}: ${e.text.slice(0, 120)}`, "info"],
     review_round: (e) => [`Оркестратор отправил на доработку: ${e.message.match(/\d+ fix/) ? e.message.match(/(\d+) fix/)[1] + " задач(и)" : ""}`, "info"],
     review_done: () => ["Оркестратор принял работу", "ok"],
+    task_retry: (e) => [`Задача #${e.task_id}: временный сбой, повторяю автоматически`, "info"],
+    project_resumed: () => ["Проект продолжен с места остановки", "ok"],
     ci_waiting: () => ["Ждём проверку сборки (GitHub Actions)…", "info"],
     ci_result: (e) => [(CI_STATUS[e.ci_status] || [`CI: ${e.ci_status}`])[0], e.ci_status === "passed" ? "ok" : e.ci_status === "failed" ? "danger" : ""],
   };

@@ -92,6 +92,46 @@ async def _serialize(project: Project, db: AsyncSession, *, with_tasks: bool = F
     return ProjectOut(**base)
 
 
+async def _check_can_run(project: Project, db: AsyncSession) -> None:
+    """The orchestrator and every assigned account must exist and be logged in."""
+    if project.orchestrator_account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project has no orchestrator account. Set orchestrator_account_id first.",
+        )
+    orchestrator = await _validate_account(
+        db, project.user_id, project.orchestrator_account_id, field="orchestrator_account_id"
+    )
+    if orchestrator is not None and orchestrator.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Orchestrator account {orchestrator.id} is not active (status={orchestrator.status}). Log in via VNC first.",
+        )
+
+    assignments = (
+        await db.scalars(
+            select(ProjectAssignment).where(ProjectAssignment.project_id == project.id)
+        )
+    ).all()
+    if not assignments:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project has no agent assignments. Add at least one assignment.",
+        )
+    for assignment in assignments:
+        account = await db.get(Account, assignment.account_id)
+        if account is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Assigned account {assignment.account_id} no longer exists",
+            )
+        if account.status != "active":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Assigned account {account.id} is not active (status={account.status}). Log in via VNC first.",
+            )
+
+
 def _dedupe_assignments(items: list[ProjectAssignmentIn]) -> list[ProjectAssignmentIn]:
     seen: set[int] = set()
     result: list[ProjectAssignmentIn] = []
@@ -215,42 +255,7 @@ async def start_project(
     if project.status == "completed":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project is already completed")
 
-    if project.orchestrator_account_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Project has no orchestrator account. Set orchestrator_account_id first.",
-        )
-    orchestrator = await _validate_account(
-        db, project.user_id, project.orchestrator_account_id, field="orchestrator_account_id"
-    )
-    if orchestrator is not None and orchestrator.status != "active":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Orchestrator account {orchestrator.id} is not active (status={orchestrator.status}). Log in via VNC first.",
-        )
-
-    assignments = (
-        await db.scalars(
-            select(ProjectAssignment).where(ProjectAssignment.project_id == project.id)
-        )
-    ).all()
-    if not assignments:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Project has no agent assignments. Add at least one assignment.",
-        )
-    for assignment in assignments:
-        account = await db.get(Account, assignment.account_id)
-        if account is None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Assigned account {assignment.account_id} no longer exists",
-            )
-        if account.status != "active":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Assigned account {account.id} is not active (status={account.status}). Log in via VNC first.",
-            )
+    await _check_can_run(project, db)
 
     # A re-run starts from a clean task list and message board (history stays in git).
     await db.execute(Task.__table__.delete().where(Task.project_id == project.id))
@@ -266,6 +271,27 @@ async def start_project(
     await db.refresh(project)
 
     await enqueue_run_project(project.id)
+    return await _serialize(project, db)
+
+
+@router.post("/{project_id}/resume", response_model=ProjectOut, status_code=status.HTTP_202_ACCEPTED)
+async def resume_project(
+    project: Annotated[Project, Depends(_get_own_project)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ProjectOut:
+    """Continue a stopped project from where it stopped: finished tasks are
+    kept, the unfinished ones of the latest round run again."""
+    if project.status != "failed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only a stopped project can be resumed")
+    await _check_can_run(project, db)
+    project.status = "running"
+    project.started_at = _utc_naive()
+    project.completed_at = None
+    project.result = None
+    project.ci_status = None
+    await db.commit()
+    await db.refresh(project)
+    await enqueue_run_project(project.id, resume=True)
     return await _serialize(project, db)
 
 

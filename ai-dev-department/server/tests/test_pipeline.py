@@ -126,12 +126,12 @@ def _setup(github_repo: str = "octo/website", with_token: bool = True) -> dict:
     return asyncio.run(go())
 
 
-def _run(ids: dict, adapter: FakeAdapter, gh: FakeGitHub) -> tuple[str, RecordingWS]:
+def _run(ids: dict, adapter: FakeAdapter, gh: FakeGitHub, *, resume: bool = False) -> tuple[str, RecordingWS]:
     from app.db import SessionLocal
 
     ws = RecordingWS()
     status = asyncio.run(orchestrator.run_project_logic(
-        ids["project"],
+        ids["project"], resume=resume,
         session_factory=SessionLocal,
         adapter_factory=lambda: adapter,
         github_factory=lambda token: GitHubConnector(token=token, transport=gh.transport()),
@@ -339,3 +339,121 @@ def test_unreadable_plan_is_requested_again() -> None:
     orchestrator_prompts = [t for page, t in adapter.prompts if page == f"project-{p}"]
     assert "could not be read by the server" in orchestrator_prompts[1]
     assert "json code block" in orchestrator_prompts[0]
+
+
+
+def _set_running(ids):
+    async def go():
+        from app.db import SessionLocal
+        from app.models import Project
+
+        async with SessionLocal() as s:
+            (await s.get(Project, ids["project"])).status = "running"
+            await s.commit()
+
+    asyncio.run(go())
+
+
+def test_task_failing_for_a_temporary_reason_is_retried_automatically() -> None:
+    ids = _setup()
+    p = ids["project"]
+    adapter = FakeAdapter({f"project-{p}": [_plan(ids), "Summary"]})
+    calls = {"coder": 0}
+    good = "FILE: index.html\n```html\n<h1>Hi</h1>\n```\nSTATUS: DONE\nSUMMARY: ok"
+
+    async def wait_response(page, timeout=600):
+        if page.startswith(f"project-{p}-task-"):
+            first = next(t for pg, t in adapter.prompts if pg == page)
+            if "You are the Coder" in first:
+                calls["coder"] += 1
+                return "I am thinking about it..." if calls["coder"] <= 3 else good  # 3 bad replies, then fine
+            return good
+        if "-review-" in page:
+            return '{"verdict": "done"}'
+        return adapter.replies[page].pop(0)
+
+    adapter.wait_response = wait_response
+    status, ws = _run(ids, adapter, FakeGitHub())
+    project, tasks = _load(ids)
+    assert status == "completed", project.result
+    assert tasks[0].attempts == 1 and tasks[0].status == "done"
+    assert [e["type"] for e in ws.events].count("task_retry") == 1
+
+
+def test_resume_keeps_finished_tasks_and_runs_the_rest() -> None:
+    ids = _setup()
+    p = ids["project"]
+    gh = FakeGitHub()
+    coder_reply = "FILE: index.html\n```html\n<h1>Hello</h1>\n```\nSTATUS: DONE\nSUMMARY: Added index.html"
+    state = {"reviewer": "STATUS: BLOCKED\nSUMMARY: the design is missing"}
+    adapter = FakeAdapter({f"project-{p}": [_plan(ids), "Summary"]})
+
+    async def wait_response(page, timeout=600):
+        if page.startswith(f"project-{p}-task-"):
+            first = next(t for pg, t in adapter.prompts if pg == page)
+            return coder_reply if "You are the Coder" in first else state["reviewer"]
+        if "-review-" in page:
+            return '{"verdict": "done"}'
+        return adapter.replies[page].pop(0)
+
+    adapter.wait_response = wait_response
+    status, _ = _run(ids, adapter, gh)
+    project, tasks = _load(ids)
+    assert status == "failed" and "BLOCKED" in project.result
+    assert [t.status for t in tasks] == ["done", "blocked"]
+    assert tasks[0].files == ["index.html"]
+
+    # The user fixes the cause and presses «Продолжить с места остановки».
+    state["reviewer"] = "FILE: review.md\n```\nlooks good\n```\nSTATUS: DONE\nSUMMARY: reviewed"
+    plans_before = sum(1 for pg, t in adapter.prompts if pg == f"project-{p}" and "Split the project task" in t)
+    coder_runs_before = sum(1 for pg, t in adapter.prompts if "You are the Coder" in t)
+    _set_running(ids)
+    status, ws = _run(ids, adapter, gh, resume=True)
+    project, tasks = _load(ids)
+    assert status == "completed", project.result
+    assert [t.status for t in tasks] == ["done", "done"] and len(tasks) == 2  # same tasks, none recreated
+    assert sum(1 for pg, t in adapter.prompts if pg == f"project-{p}" and "Split the project task" in t) == plans_before
+    assert sum(1 for pg, t in adapter.prompts if "You are the Coder" in t) == coder_runs_before  # coder not re-run
+    reviewer_prompt = [t for pg, t in adapter.prompts if "You are the Tester" in t][-1]
+    assert "<h1>Hello</h1>" in reviewer_prompt and "Added index.html" in reviewer_prompt
+    assert "project_resumed" in [e["type"] for e in ws.events]
+    assert gh.pulls  # PR at the end
+
+
+def test_resume_api_only_for_stopped_projects(monkeypatch) -> None:
+    from app.api import projects as projects_api
+    from tests.test_projects import _auth, _fresh_user
+
+    started = []
+
+    async def fake_enqueue(project_id, resume=False):
+        started.append((project_id, resume))
+
+    monkeypatch.setattr(projects_api, "enqueue_run_project", fake_enqueue)
+    with TestClient(app) as client:
+        token = _fresh_user(client, "resume")
+        accounts = []
+        for name in ("o", "a"):
+            acc = client.post("/api/accounts", json={"name": name, "default_role": "Coder"}, headers=_auth(token)).json()
+            accounts.append(acc["id"])
+
+        async def activate():
+            from app.db import SessionLocal
+            from app.models import Account
+
+            async with SessionLocal() as s:
+                for aid in accounts:
+                    (await s.get(Account, aid)).status = "active"
+                await s.commit()
+
+        asyncio.run(activate())
+        pid = client.post("/api/projects", json={
+            "name": "R", "description": "", "task": "t", "github_repo": "octo/website",
+            "orchestrator_account_id": accounts[0], "assignments": [{"account_id": accounts[1], "role": "Coder"}],
+        }, headers=_auth(token)).json()["id"]
+        assert client.post(f"/api/projects/{pid}/resume", headers=_auth(token)).status_code == 409  # draft
+        assert client.post(f"/api/projects/{pid}/start", headers=_auth(token)).status_code == 202
+        client.post(f"/api/projects/{pid}/stop", headers=_auth(token))
+        res = client.post(f"/api/projects/{pid}/resume", headers=_auth(token))
+        assert res.status_code == 202 and res.json()["status"] == "running"
+        assert started[-1] == (pid, True)

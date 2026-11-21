@@ -190,5 +190,6 @@ export const api = {
   updateProject: (id, data) => request("PATCH", `/api/projects/${id}`, data),
   startProject: (id) => request("POST", `/api/projects/${id}/start`),
   stopProject: (id) => request("POST", `/api/projects/${id}/stop`),
+  resumeProject: (id) => request("POST", `/api/projects/${id}/resume`),
   deleteProject: (id) => request("DELETE", `/api/projects/${id}`),
 };

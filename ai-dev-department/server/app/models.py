@@ -124,6 +124,8 @@ class Task(Base):
     depends_on: Mapped[list | None] = mapped_column(JSON, nullable=True)
     scope: Mapped[list | None] = mapped_column(JSON, nullable=True)
     round: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    files: Mapped[list | None] = mapped_column(JSON, nullable=True)  # paths the task committed
+    attempts: Mapped[int | None] = mapped_column(Integer, nullable=True)  # automatic retries used
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)  # server-made commit
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

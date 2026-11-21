@@ -80,6 +80,9 @@ if os.environ.get("E2E_FAKE_AGENTS"):
             if "All agent tasks are complete" in prompt:
                 return "## Итог\nЛендинг готов: модули и ревью."
             await asyncio.sleep(4)  # long enough to see agents working in parallel
+            if "BLOCK_ONCE" in prompt and "You are the Coder" in prompt and not getattr(self, "blocked_once", False):
+                ScriptedAdapter.blocked_once = True  # one stop to test «Продолжить с места остановки»
+                return "STATUS: BLOCKED\nSUMMARY: need the logo"
             role = re.search(r"You are the (\w+)", prompt).group(1)
             task_id = re.search(r"YOUR TASK \(task (\d+)\)", prompt).group(1)
             area = re.search(r"you may only write these paths: (\S+)", prompt).group(1).rstrip(",")

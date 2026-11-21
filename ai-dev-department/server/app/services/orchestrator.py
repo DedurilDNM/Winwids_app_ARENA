@@ -48,7 +48,9 @@ from app.ws_manager import manager as default_ws_manager
 logger = logging.getLogger(__name__)
 
 AGENT_ROLES = ("Architect", "Coder", "Reviewer", "Tester", "Integrator", "ImagePrompter")
+TASK_RETRIES = 2  # automatic retries of a task that failed for a temporary reason
 PLAN_FORMAT_ATTEMPTS = 3  # orchestrator plan: first reply + two "resend valid JSON"
+TASK_RETRIES = 2  # automatic retries of a task that failed for a temporary reason
 PLAN_FORMAT_ATTEMPTS = 3  # orchestrator plan: first reply + two "resend valid JSON"
 AGENT_FORMAT_ATTEMPTS = 3  # first reply + two "resend complete / in the required format"
 CONTEXT_BUDGET_BYTES = 60_000  # file contents shown to each agent
@@ -332,6 +334,43 @@ def _is_retryable(exc: BaseException) -> bool:
         exc,
         (BrowserUnavailableError, OSError, TimeoutError),
     )
+
+
+_PERMANENT = ("is BLOCKED", "Stopped by", "Workflows", "no assigned account", "captcha", "pop-up",
+              "logged out", "Log in again", "no live browser session", "cannot write")
+
+
+def _retryable(reason: str) -> bool:
+    """Temporary failures (no reply, browser/network/GitHub hiccup, unusable
+    reply) are retried; a human or a permission is needed for the rest."""
+    return not any(marker.lower() in reason.lower() for marker in _PERMANENT)
+
+
+async def _load_resume(session_factory, project_id: int, accounts: dict) -> dict | None:
+    """State to continue a stopped project: finished tasks (as context) and the
+    unfinished tasks of the latest round (reset to pending)."""
+    async with session_factory() as session:
+        tasks = (await session.scalars(select(Task).where(Task.project_id == project_id).order_by(Task.id))).all()
+        if not tasks:
+            return None
+        round_no = max(t.round or 0 for t in tasks)
+        done = [t for t in tasks if t.status == "done"]
+        todo = [t for t in tasks if (t.round or 0) == round_no and t.status != "done"]
+        for t in todo:
+            t.status, t.attempts = "pending", 0
+        await session.commit()
+        completed = [{
+            "id": t.id, "key": t.plan_key or f"t{t.id}", "role": t.role, "task": t.task, "branch": t.branch,
+            "summary": t.summary or "", "commit": t.commit_sha, "files": list(t.files or []),
+            "account_id": t.assigned_account_id,
+            "agent": getattr(accounts.get(t.assigned_account_id), "name", "?"),
+        } for t in done]
+        specs = {t.id: {"id": t.id, "key": t.plan_key or f"t{t.id}", "role": t.role, "task": t.task,
+                        "account_id": t.assigned_account_id, "scope": list(t.scope or []),
+                        "deps": set(t.depends_on or []), "attempts": 0} for t in todo}
+        touched = [f for t in done for f in (t.files or [])]
+        return {"round": round_no, "completed": completed, "specs": specs,
+                "done_ids": {t.id for t in done}, "touched": touched}
 
 
 def _real_browser_manager():
@@ -641,9 +680,14 @@ class _Run:
                                "deps": set(task.depends_on or [])} for item, task in rows}
         for task_id in specs:
             await _set_task_status(self.session_factory, task_id, "pending", ws_manager=self.ws, project_id=self.project_id)
+        return await self.run_specs(specs)
 
+    async def run_specs(self, specs: dict[int, dict], done: set[int] | None = None) -> str | None:
+        """Run task specs respecting dependencies; `done` = already finished task ids.
+        A task that failed for a temporary reason is retried automatically."""
         pending = dict(specs)
-        done: set[int] = set()
+        done = set(done or ())
+        attempts: dict[int, int] = {t: specs[t].get("attempts", 0) for t in specs}
         running: dict[asyncio.Task, int] = {}
         failure: str | None = None
         while (pending or running) and failure is None:
@@ -671,20 +715,36 @@ class _Run:
                     result = f"Task {task_id} crashed: {type(exc).__name__}: {exc}"
                 if result is None:
                     done.add(task_id)
-                elif failure is None:
+                    continue
+                if failure is None and _retryable(result) and attempts[task_id] < TASK_RETRIES \
+                        and await _project_still_running(self.session_factory, self.project_id):
+                    attempts[task_id] += 1
+                    await self._note_retry(task_id, attempts[task_id], result)
+                    pending[task_id] = specs[task_id]
+                    continue
+                if failure is None:
                     failure = result
         if running:  # let in-flight agents finish (their work is not thrown away)
             for fut, task_id in list(running.items()):
                 try:
-                    result = await fut
-                    if result is None:
+                    if await fut is None:
                         done.add(task_id)
                 except Exception:
                     logger.exception("Task %s crashed while stopping", task_id)
                 self._running.pop(task_id, None)
-        if failure == "Stopped by user":
-            return failure
         return failure
+
+    async def _note_retry(self, task_id: int, attempt: int, reason: str) -> None:
+        async with self.session_factory() as session:
+            task = await session.get(Task, task_id)
+            if task is not None:
+                task.attempts = attempt
+                await session.commit()
+        await _set_task_status(self.session_factory, task_id, "pending", ws_manager=self.ws, project_id=self.project_id)
+        await self.ws.send_to_project(self.project_id, _event(
+            "task_retry", self.project_id, task_id=task_id, status="pending",
+            message=f"Task {task_id}: retry {attempt} of {TASK_RETRIES} ({reason[:200]})"))
+        logger.info("Task %s: automatic retry %d (%s)", task_id, attempt, reason[:200])
 
     # ---- one task ------------------------------------------------------
     async def _run_task(self, spec: dict) -> str | None:
@@ -787,7 +847,7 @@ class _Run:
                         "and start the project again.")
             return f"GitHub commit failed: {exc.message}"
 
-        await _save_task_result(sf, task_id, summary=output.summary, commit_sha=commit_sha)
+        await _save_task_result(sf, task_id, summary=output.summary, commit_sha=commit_sha, files=sorted(output.files))
         await _set_task_status(sf, task_id, "done", ws_manager=ws, project_id=self.project_id)
         for path in output.files:
             if path in self.touched:
@@ -827,8 +887,10 @@ async def run_project_logic(
     ws_manager=None,
     poll_interval: float | None = None,
     task_timeout: float | None = None,
+    resume: bool = False,
 ) -> str:
-    """Run one project end-to-end. Returns the final project status."""
+    """Run one project end-to-end (or resume it: finished tasks are kept).
+    Returns the final project status."""
     settings = get_settings()
     ws = ws_manager or default_ws_manager
     poll_interval = settings.GITHUB_POLL_INTERVAL_SECONDS if poll_interval is None else poll_interval
@@ -934,61 +996,71 @@ async def run_project_logic(
         {"id": a.id, "name": a.name, "default_role": project_roles.get(a.id, a.default_role)}
         for a in assignment_accounts.values()
     ]
-    split_prompt = prompts.build_split_prompt(
-        project_name=project_snapshot["name"],
-        description=project_snapshot["description"],
-        task=project_snapshot["task"],
-        github_repo=repo,
-        accounts=account_rows,
-        repo_files=repo_files,
-        ci=project_snapshot["ci"],
-    )
-    plan_chat = _Chat(
-        adapter, orchestrator_context, chat_ref=f"project-{project_id}",
-        timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
-        notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
-        should_continue=lambda: _project_still_running(session_factory, project_id),
-    )
-    try:
-        raw_plan = await plan_chat.ask(split_prompt)
-    except Exception as exc:
-        await plan_chat.close()
-        return await _fail_project(
-            session_factory, project_id,
-            _explain(exc, "Orchestrator"),
-            ws_manager=ws,
-        )
-
+    # Resume after a failure: keep the plan and the finished tasks.
+    resume_state = await _load_resume(session_factory, project_id, assignment_accounts) if resume else None
     plan = None
-    for attempt in range(1, PLAN_FORMAT_ATTEMPTS + 1):
+    if resume_state is None:
+        split_prompt = prompts.build_split_prompt(
+            project_name=project_snapshot["name"],
+            description=project_snapshot["description"],
+            task=project_snapshot["task"],
+            github_repo=repo,
+            accounts=account_rows,
+            repo_files=repo_files,
+            ci=project_snapshot["ci"],
+        )
+        plan_chat = _Chat(
+            adapter, orchestrator_context, chat_ref=f"project-{project_id}",
+            timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
+            notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
+            should_continue=lambda: _project_still_running(session_factory, project_id),
+        )
         try:
-            plan = parse_task_plan(
-                raw_plan,
-                assignments=list(assignments),
-                orchestrator_account_id=project_snapshot["orchestrator_account_id"],
+            raw_plan = await plan_chat.ask(split_prompt)
+        except Exception as exc:
+            await plan_chat.close()
+            return await _fail_project(
+                session_factory, project_id,
+                _explain(exc, "Orchestrator"),
+                ws_manager=ws,
             )
-            break
-        except ValueError as exc:
-            if attempt == PLAN_FORMAT_ATTEMPTS:
-                await plan_chat.close()
-                _save_reply(project_id, f"plan-attempt-{attempt}", raw_plan)
-                return await _fail_project(
-                    session_factory, project_id,
-                    f"Could not parse orchestrator plan: {exc}. Raw reply (truncated): {raw_plan[:500]}",
-                    ws_manager=ws,
-                )
-            logger.info("Project %s: plan not parsed (attempt %d): %s", project_id, attempt, exc)
-            _save_reply(project_id, f"plan-attempt-{attempt}", raw_plan)
+
+        plan = None
+        for attempt in range(1, PLAN_FORMAT_ATTEMPTS + 1):
             try:
-                raw_plan = await plan_chat.ask(prompts.build_json_fix_prompt(str(exc)))
-            except Exception as ask_exc:
-                await plan_chat.close()
-                return await _fail_project(session_factory, project_id, _explain(ask_exc, "Orchestrator"), ws_manager=ws)
-    await plan_chat.close()
-    for item in plan:
-        if item.assign_to_account_id in project_roles and project_roles[item.assign_to_account_id] in AGENT_ROLES:
-            item.role = project_roles[item.assign_to_account_id]
-    logger.info("Project %s: orchestrator produced %d subtasks", project_id, len(plan))
+                plan = parse_task_plan(
+                    raw_plan,
+                    assignments=list(assignments),
+                    orchestrator_account_id=project_snapshot["orchestrator_account_id"],
+                )
+                break
+            except ValueError as exc:
+                if attempt == PLAN_FORMAT_ATTEMPTS:
+                    await plan_chat.close()
+                    _save_reply(project_id, f"plan-attempt-{attempt}", raw_plan)
+                    return await _fail_project(
+                        session_factory, project_id,
+                        f"Could not parse orchestrator plan: {exc}. Raw reply (truncated): {raw_plan[:500]}",
+                        ws_manager=ws,
+                    )
+                logger.info("Project %s: plan not parsed (attempt %d): %s", project_id, attempt, exc)
+                _save_reply(project_id, f"plan-attempt-{attempt}", raw_plan)
+                try:
+                    raw_plan = await plan_chat.ask(prompts.build_json_fix_prompt(str(exc)))
+                except Exception as ask_exc:
+                    await plan_chat.close()
+                    return await _fail_project(session_factory, project_id, _explain(ask_exc, "Orchestrator"), ws_manager=ws)
+        await plan_chat.close()
+        for item in plan:
+            if item.assign_to_account_id in project_roles and project_roles[item.assign_to_account_id] in AGENT_ROLES:
+                item.role = project_roles[item.assign_to_account_id]
+        logger.info("Project %s: orchestrator produced %d subtasks", project_id, len(plan))
+    else:
+        logger.info("Project %s: resuming round %d (%d finished, %d to run)", project_id,
+                    resume_state["round"], len(resume_state["done_ids"]), len(resume_state["specs"]))
+        await ws.send_to_project(project_id, _event(
+            "project_resumed", project_id, status="running",
+            message=f"Resumed: {len(resume_state['done_ids'])} task(s) kept, {len(resume_state['specs'])} to run"))
 
     # ---- rounds: run the plan in parallel, then the orchestrator reviews ---
     max_rounds = project_snapshot["max_rounds"]
@@ -998,10 +1070,18 @@ async def run_project_logic(
         session_factory=session_factory, browser_manager=browser_manager, make_adapter=make_adapter,
         settings=settings, accounts=assignment_accounts, orchestrator=orchestrator,
     )
-    round_no = 0
+    round_no = resume_state["round"] if resume_state else 0
+    if resume_state:
+        run.completed = resume_state["completed"]
+        run.touched = resume_state["touched"]
     ci_result = None
+    first = True
     while True:
-        failure = await run.execute(plan, round_no)
+        if first and resume_state:
+            failure = await run.run_specs(resume_state["specs"], done=resume_state["done_ids"])
+        else:
+            failure = await run.execute(plan, round_no)
+        first = False
         if failure:
             return await _fail_project(session_factory, project_id, failure, ws_manager=ws)
         if project_snapshot["ci"]:
@@ -1124,12 +1204,15 @@ async def run_project_logic(
     return "completed"
 
 
-async def _save_task_result(session_factory, task_id: int, *, summary: str, commit_sha: str | None) -> None:
+async def _save_task_result(session_factory, task_id: int, *, summary: str, commit_sha: str | None,
+                            files: list[str] | None = None) -> None:
     async with session_factory() as session:
         task = await session.get(Task, task_id)
         if task is not None:
             task.summary = summary[:4000]
             task.commit_sha = commit_sha
+            if files is not None:
+                task.files = files
             await session.commit()
 
 

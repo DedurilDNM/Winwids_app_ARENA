@@ -255,6 +255,8 @@ class TaskOut(BaseModel):
     depends_on: list | None = None
     scope: list | None = None
     round: int | None = None
+    files: list | None = None
+    attempts: int | None = None
     created_at: datetime
     updated_at: datetime
 
