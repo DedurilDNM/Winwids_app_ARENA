@@ -334,3 +334,4 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.45; }
 .chat li { display: block; }
 .chat .msg-question { border-left: 3px solid var(--warn); }
 .chat .msg-answer { border-left: 3px solid var(--ok); }
+.badge-link { text-decoration: none; }

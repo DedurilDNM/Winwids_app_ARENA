@@ -1022,6 +1022,11 @@ async def _collect_context(gh, repo: str, branch: str, paths: list[str], repo_fi
 async def _run_ci(gh, repo, branch, *, project_id, ws, session_factory, settings):
     from app.services.ci import wait_for_ci
 
+    async with session_factory() as session:
+        project = await session.get(Project, project_id)
+        if project is not None:
+            project.ci_status = "running"
+            await session.commit()
     await ws.send_to_project(project_id, _event("ci_waiting", project_id, status="running",
                                                 message="Waiting for GitHub Actions"))
     result = await wait_for_ci(

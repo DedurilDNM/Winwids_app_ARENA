@@ -51,6 +51,7 @@ class RepoCheck(BaseModel):
     can_push: bool = False
     default_branch: str | None = None
     private: bool | None = None
+    actions: bool | None = None  # token can read GitHub Actions results (CI)
     message: str
 
 
@@ -146,13 +147,16 @@ async def repo_check(
     can_push = bool((meta.get("permissions") or {}).get("push"))
     branch = meta.get("default_branch")
     has_commits = bool(branch) and await gh.get_branch_sha(repo, branch) is not None
+    actions = await gh.actions_readable(repo)
     if not can_push:
         msg = "Read-only access: give the token 'Contents' and 'Pull requests' read and write"
     elif not has_commits:
         msg = "The repository is empty: add a README (any first commit) on GitHub"
+    elif not actions:
+        msg = "OK for commits; for CI add the token permission 'Actions: Read'"
     else:
         msg = "OK: the server can commit to this repository"
     return RepoCheck(
         repo=repo, ok=can_push and has_commits, can_push=can_push,
-        default_branch=branch, private=meta.get("private"), message=msg,
+        default_branch=branch, private=meta.get("private"), actions=actions, message=msg,
     )

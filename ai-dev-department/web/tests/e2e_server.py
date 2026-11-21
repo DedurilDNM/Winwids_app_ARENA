@@ -66,6 +66,8 @@ if os.environ.get("E2E_FAKE_AGENTS"):
                     tasks.append({"id": f"t{n}", "role": "Coder" if role == "Orchestrator" else role,
                                   "task": f"Build module {n}", "assign_to_account_id": int(i),
                                   "depends_on": ["t1"] if arch else [], "scope": [f"src/m{n}/"]})
+                if "writes .github/workflows/ci.yml" in prompt and tasks:
+                    tasks[-1]["scope"].append(".github/workflows/")  # the last task also adds CI
                 return json.dumps({"tasks": tasks})
             if "Review round 1" in prompt:
                 await asyncio.sleep(1)
@@ -83,6 +85,8 @@ if os.environ.get("E2E_FAKE_AGENTS"):
             area = re.search(r"you may only write these paths: (\S+)", prompt).group(1).rstrip(",")
             path = f"{area}part-{task_id}.html" if area.endswith("/") else area
             msg = "MESSAGE to Coder: follow docs/CONTRACTS.md\n" if role == "Architect" else ""
+            if ".github/workflows/" in prompt.split("you may only write these paths:")[1].split("\n")[0]:
+                msg += "FILE: .github/workflows/ci.yml\n```yaml\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n```\n"
             return (f"{msg}FILE: {path}\n```html\n<p>{role} work for task {task_id}</p>\n```\n"
                     f"STATUS: DONE\nSUMMARY: {role} finished task {task_id}")
 

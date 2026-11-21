@@ -24,6 +24,15 @@ const TASK_STATUS = {
   failed: ["Ошибка", "danger"],
 };
 const AGENT_ROLES = ROLES.filter((r) => r !== "Orchestrator");
+const CI_STATUS = {
+  passed: ["CI: проходит", "ok"],
+  failed: ["CI: упал", "danger"],
+  running: ["CI: проверяется…", "info"],
+  no_workflow: ["CI: ещё не настроен", "idle"],
+  no_access: ["CI: нет права Actions: Read", "warn"],
+  not_started: ["CI: не запустился", "warn"],
+  timeout: ["CI: слишком долго", "warn"],
+};
 
 function badge(map, status, testid) {
   const [label, cls] = map[status] || [status, "idle"];
@@ -76,7 +85,7 @@ async function renderWizard(main) {
   } catch (err) {
     toast(errorText(err), { error: true });
   }
-  const draft = { name: "", task: "", description: "", github_repo: "", orchestrator_account_id: null, agents: new Map(), max_rounds: 3 };
+  const draft = { name: "", task: "", description: "", github_repo: "", orchestrator_account_id: null, agents: new Map(), max_rounds: 3, ci_enabled: true };
   let step = 0;
   let repoOk = false;
 
@@ -218,6 +227,8 @@ async function renderWizard(main) {
       [[0, "без проверки"], [1, "1 круг доработок"], [3, "до 3 кругов (рекомендуется)"], [5, "до 5 кругов"]].map(([v, label]) =>
         h("option", { value: v, selected: v === draft.max_rounds }, label)));
     rounds.addEventListener("change", () => { draft.max_rounds = Number(rounds.value); });
+    const ci = h("input", { type: "checkbox", name: "ci_enabled", checked: draft.ci_enabled });
+    ci.addEventListener("change", () => { draft.ci_enabled = ci.checked; });
 
     async function create(start) {
       createBtn.disabled = startBtn.disabled = true;
@@ -230,6 +241,7 @@ async function renderWizard(main) {
           orchestrator_account_id: draft.orchestrator_account_id,
           assignments: [...draft.agents].map(([account_id, role]) => ({ account_id, role })),
           max_rounds: draft.max_rounds,
+          ci_enabled: draft.ci_enabled,
         });
         if (start) await api.startProject(project.id);
         toast(start ? "Проект запущен" : "Черновик сохранён");
@@ -250,7 +262,9 @@ async function renderWizard(main) {
         h("dt", {}, "Задача"), h("dd", { class: "pre" }, draft.task),
         h("dt", {}, "Оркестратор"), h("dd", {}, byId.get(draft.orchestrator_account_id)?.name),
         h("dt", {}, "Агенты"), h("dd", {}, [...draft.agents].map(([id, role]) => `${byId.get(id)?.name} — ${ROLE_LABELS[role]}`).join(", ")),
-        h("dt", {}, "Проверки"), h("dd", {}, rounds)),
+        h("dt", {}, "Проверки"), h("dd", {}, rounds),
+        h("dt", {}, "Сборка"), h("dd", {}, h("label", { class: "checkbox m-0" }, ci,
+          "Проверять через GitHub Actions: агенты добавят CI, ошибки сборки и тестов вернутся на доработку"))),
       inactive.length
         ? h("div", { class: "banner warn-banner mt-16" }, `Нужно войти в аккаунты: ${inactive.map((a) => a.name).join(", ")}. `, h("a", { href: "#/accounts" }, "К аккаунтам"))
         : h("p", { class: "small muted mt-16" }, `Сервер создаст ветку ai/project-<id>, агенты по очереди выполнят подзадачи, в конце откроется Pull Request.`),
@@ -294,13 +308,21 @@ async function renderProject(main, projectId) {
         h("section", { class: "card" }, h("div", { class: "card-head" }, h("h2", { class: "m-0" }, "События"), live), feed),
         h("section", { class: "card" }, h("h2", {}, "Переписка агентов"), chat))));
 
+  function ciBadge() {
+    if (!project.ci_status) return null;
+    const [label, cls] = CI_STATUS[project.ci_status] || [`CI: ${project.ci_status}`, "idle"];
+    const b = h("span", { class: `badge ${cls}`, "data-testid": "ci" }, label);
+    return project.ci_url ? h("a", { href: project.ci_url, target: "_blank", rel: "noopener noreferrer", class: "badge-link" }, b) : b;
+  }
+
   function renderHead() {
     head.replaceChildren(
       h("a", { href: "#/projects", class: "small" }, "← Проекты"),
       h("h1", {}, project.name),
       h("div", { class: "meta mt-8" }, projectBadge(project.status), repoLink(project.github_repo),
         project.work_branch ? repoLink(project.github_repo, `/tree/${project.work_branch}`, `ветка ${project.work_branch}`) : null,
-        project.pr_url ? h("a", { href: project.pr_url, target: "_blank", rel: "noopener noreferrer", class: "ok-text", "data-testid": "pr-link" }, "Pull Request") : null));
+        project.pr_url ? h("a", { href: project.pr_url, target: "_blank", rel: "noopener noreferrer", class: "ok-text", "data-testid": "pr-link" }, "Pull Request") : null,
+        ciBadge()));
     const running = project.status === "running";
     actions.replaceChildren(...[
       running ? h("button", { class: "danger", onclick: stop }, "Остановить")
@@ -427,6 +449,8 @@ async function renderProject(main, projectId) {
     agent_message: (e) => [`✉ ${e.from} → ${e.to}: ${e.text.slice(0, 120)}`, "info"],
     review_round: (e) => [`Оркестратор отправил на доработку: ${e.message.match(/\d+ fix/) ? e.message.match(/(\d+) fix/)[1] + " задач(и)" : ""}`, "info"],
     review_done: () => ["Оркестратор принял работу", "ok"],
+    ci_waiting: () => ["Ждём проверку сборки (GitHub Actions)…", "info"],
+    ci_result: (e) => [(CI_STATUS[e.ci_status] || [`CI: ${e.ci_status}`])[0], e.ci_status === "passed" ? "ok" : e.ci_status === "failed" ? "danger" : ""],
   };
   let ws = null;
   let closed = false;

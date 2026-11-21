@@ -53,6 +53,9 @@ await page.waitForSelector(".round-title:has-text('Доработки — кру
 console.log("✓ orchestrator review created a fix round");
 await page.waitForSelector("[data-testid=project-status]:has-text('Завершён')", { timeout: 120000 });
 assert.ok(await page.locator("[data-testid=messages] li:has-text('Good, one fix needed')").count() === 1);
+await page.waitForSelector("[data-testid=ci]:has-text('CI: проходит')");
+assert.ok(await page.locator("[data-testid=feed] li:has-text('Ждём проверку сборки')").count() >= 1);
+console.log("✓ CI: agents added a workflow, GitHub Actions passed, badge + feed events");
 assert.equal(await page.locator("[data-testid=task-status]:has-text('Готово')").count(), 4);
 assert.ok(!/\bnull\b|undefined/.test(await page.textContent("main")), "no null/undefined rendered");
 if (SHOTS) await page.screenshot({ path: `${SHOTS}/s7-done.png`, fullPage: true });

@@ -35,7 +35,8 @@ export async function render(main) {
       h("ol", { class: "steps" },
         h("li", {}, "Откройте ", h("a", { href: TOKEN_URL, target: "_blank", rel: "noopener noreferrer" }, "создание fine-grained токена"), "."),
         h("li", {}, "Repository access → ", h("b", {}, "Only select repositories"), " → выберите рабочий репозиторий."),
-        h("li", {}, "Permissions → Repository: ", h("b", {}, "Contents"), " и ", h("b", {}, "Pull requests"), " — Read and write."),
+        h("li", {}, "Permissions → Repository: ", h("b", {}, "Contents"), ", ", h("b", {}, "Pull requests"), " и ",
+          h("b", {}, "Workflows"), " — Read and write; ", h("b", {}, "Actions"), " — Read-only (для проверки сборки, CI)."),
         h("li", {}, "Скопируйте токен и вставьте сюда. Он хранится на сервере в зашифрованном виде.")),
       h("label", { class: "field" }, "Токен", token),
       error,
@@ -101,6 +102,9 @@ export async function render(main) {
           h("span", { class: `badge ${r.ok ? "ok" : "danger"}` }, r.ok ? "Готово к работе" : "Есть проблема"),
           h("p", { class: "small mt-8" }, translate(r.message)),
           r.default_branch ? h("p", { class: "small muted" }, `Основная ветка: ${r.default_branch}`) : null,
+          r.ok ? h("p", { class: "small", "data-testid": "ci-access" }, r.actions
+            ? "✓ Проверка сборки (GitHub Actions) доступна"
+            : "⚠ Для проверки сборки добавьте токену право Actions: Read-only (и Workflows: Read and write)") : null,
         ].filter(Boolean));
       } catch (err) {
         result.replaceChildren(h("span", { class: "badge danger" }, "Ошибка"), h("p", { class: "small mt-8" }, errorText(err)));
@@ -116,6 +120,7 @@ export async function render(main) {
 
 function translate(message) {
   const map = [
+    [/^OK for commits/, "Сервер может коммитить в этот репозиторий."],
     [/^OK/, "Сервер может коммитить в этот репозиторий."],
     [/^Read-only/, "Доступ только на чтение: дайте токену Contents и Pull requests — Read and write."],
     [/empty/, "Репозиторий пустой: создайте в нём README (любой первый коммит)."],
