@@ -190,7 +190,7 @@ def test_pipeline_commits_files_and_opens_pr() -> None:
 
     async def wait_response(page, timeout=600):
         if page.startswith(f"project-{p}-task-"):
-            prompt = adapter.prompts[-1][1]
+            prompt = next(t for pg, t in adapter.prompts if pg == page)  # the chat's first message (the task)
             who = "coder" if "You are the Coder" in prompt else "reviewer"
             assert "You are the Coder" in prompt or "You are the Tester" in prompt
             return replies[who].pop(0)
@@ -220,6 +220,9 @@ def test_pipeline_commits_files_and_opens_pr() -> None:
     agent_prompts = [t for page, t in adapter.prompts if page.startswith(f"project-{p}-task-")]
     assert len(agent_prompts) == 3  # coder, coder retry, reviewer
     assert "could not be processed" in agent_prompts[1] and "OUTPUT FORMAT" in agent_prompts[1]
+    assert "Do not start over" in agent_prompts[1] and "You are the" not in agent_prompts[1]  # same chat, short
+    coder_page = next(pg for pg, t in adapter.prompts if "You are the Coder" in t)
+    assert [pg for pg, _ in adapter.prompts].count(coder_page) == 2  # the retry went to the SAME chat
     # the reviewer sees the coder's file content and summary
     assert "<h1>Hello</h1>" in agent_prompts[2] and "Added index.html" in agent_prompts[2]
     assert "README.md" in adapter.prompts[0][1]  # split prompt lists repo files

@@ -101,6 +101,10 @@ def _strip_fences(lines: list[str]) -> str:
         lines.pop(0)
     while lines and not lines[-1].strip():
         lines.pop()
+    # A rendered code block may leave its language label right above the fence.
+    if len(lines) >= 2 and not _FENCE_RE.match(lines[0]) and _FENCE_RE.match(lines[1]) \
+            and re.fullmatch(r"[A-Za-z0-9+#.\-]{1,20}", lines[0].strip()):
+        lines = lines[1:]
     if lines and _FENCE_RE.match(lines[0]):
         fence = _FENCE_RE.match(lines[0]).group(1)
         closing = next(

@@ -329,66 +329,99 @@ def _is_retryable(exc: BaseException) -> bool:
     )
 
 
-async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, notify=None, should_continue=None) -> str:
-    """One adapter round-trip: open chat, send prompt, wait for the reply.
+class _Chat:
+    """One conversation in the service. The first ask() opens a new chat (with
+    retries on transient errors); later asks - e.g. «resend in the required
+    format» - go to the SAME chat, so the agent keeps its context. close()
+    closes the tab (the conversation stays on the service)."""
 
-    open_chat + send_message are retried with exponential backoff
-    (ADAPTER_MAX_RETRIES) on transient errors; wait_response is NOT retried
-    to avoid sending the same prompt twice if the service already received it.
-    """
-    settings = get_settings()
-    last_exc: BaseException | None = None
+    def __init__(self, adapter, context, *, chat_ref: str, timeout: int, notify=None, should_continue=None) -> None:
+        self.adapter, self.context, self.chat_ref, self.timeout = adapter, context, chat_ref, timeout
+        self.page = None
+        if hasattr(adapter, "on_attention"):
+            adapter.on_attention = notify
+        self.pausable = hasattr(adapter, "should_continue")
+        if self.pausable:
+            adapter.should_continue = should_continue
 
-    if hasattr(adapter, "on_attention"):
-        adapter.on_attention = notify
-    pausable = hasattr(adapter, "should_continue")
-    if pausable:
-        adapter.should_continue = should_continue
-    for attempt in range(1, settings.ADAPTER_MAX_RETRIES + 1):
-        page = None
+    async def _wait(self, page) -> str:
+        if self.pausable:
+            # The adapter enforces its own deadline, extended while a task is
+            # paused for a human (captcha / pop-up / login) - no outer cap.
+            reply = await self.adapter.wait_response(page, timeout=self.timeout)
+        else:
+            # Belt-and-braces: never let a hung adapter hang the worker forever.
+            reply = await asyncio.wait_for(self.adapter.wait_response(page, timeout=self.timeout),
+                                           timeout=self.timeout + 60)
+        if hasattr(self.adapter, "after_reply"):
+            await self.adapter.after_reply(page)
+        return reply
+
+    async def ask(self, prompt: str) -> str:
+        if self.page is not None:  # follow-up in the same chat
+            await self.adapter.send_message(self.page, prompt)
+            return await self._wait(self.page)
+
+        settings = get_settings()
+        last_exc: BaseException | None = None
+        for attempt in range(1, settings.ADAPTER_MAX_RETRIES + 1):
+            page = None
+            try:
+                page = await self.adapter.open_chat(self.context, self.chat_ref)
+                await self.adapter.send_message(page, prompt)
+                reply = await self._wait(page)
+                self.page, page = page, None  # keep the chat open for follow-ups
+                return reply
+            except TimeoutError:
+                # wait_response timeout: the message may already be with the
+                # service - retrying could duplicate it, so fail fast.
+                raise
+            except RuntimeError as exc:
+                msg = str(exc)
+                if any(k in msg.lower() for k in ("login", "captcha", "pop-up", "stopped by the user")):
+                    raise  # retrying cannot help and could duplicate the message
+                last_exc = exc
+            except Exception as exc:  # noqa: BLE001 - transient browser/network error
+                last_exc = exc
+            finally:
+                await _close_page(page)
+            if attempt < settings.ADAPTER_MAX_RETRIES:
+                await _retryable_sleep(attempt, settings)
+        raise RuntimeError(f"Adapter failed after {settings.ADAPTER_MAX_RETRIES} attempts: {last_exc}") from last_exc
+
+    async def close(self) -> None:
+        await _close_page(self.page)
+        self.page = None
+
+
+async def _close_page(page) -> None:
+    close = getattr(page, "close", None)
+    if close is not None:
         try:
-            page = await adapter.open_chat(context, chat_ref)
-            await adapter.send_message(page, prompt)
-            if pausable:
-                # The adapter enforces its own deadline, extended while a task is
-                # paused for a human (captcha / pop-up / login) - no outer cap.
-                reply = await adapter.wait_response(page, timeout=timeout)
-            else:
-                # Belt-and-braces: never let a hung adapter hang the worker forever.
-                reply = await asyncio.wait_for(
-                    adapter.wait_response(page, timeout=timeout), timeout=timeout + 60
-                )
-            if hasattr(adapter, "after_reply"):
-                await adapter.after_reply(page)
-            return reply
-        except TimeoutError as exc:
-            # wait_response timeout: message may already be with the service -
-            # retrying could duplicate it, so fail fast.
-            raise
-        except RuntimeError as exc:
-            # login_required / service error: retrying won't help without
-            # re-login, so fail fast.
-            msg = str(exc)
-            if any(k in msg.lower() for k in ("login", "captcha", "pop-up", "stopped by the user")):
-                raise  # retrying cannot help and could duplicate the message
-            last_exc = exc
-        except Exception as exc:  # noqa: BLE001 - transient browser/network error
-            last_exc = exc
-        finally:
-            # One tab per message: close it, the conversation stays on the service.
-            close = getattr(page, "close", None)
-            if close is not None:
-                try:
-                    await close()
-                except Exception:
-                    pass
+            await close()
+        except Exception:
+            pass
 
-        if attempt < settings.ADAPTER_MAX_RETRIES:
-            await _retryable_sleep(attempt, settings)
 
-    raise RuntimeError(
-        f"Adapter failed after {settings.ADAPTER_MAX_RETRIES} attempts: {last_exc}"
-    ) from last_exc
+async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, notify=None, should_continue=None) -> str:
+    """One-shot question in a new chat (the tab is closed afterwards)."""
+    chat = _Chat(adapter, context, chat_ref=chat_ref, timeout=timeout, notify=notify, should_continue=should_continue)
+    try:
+        return await chat.ask(prompt)
+    finally:
+        await chat.close()
+
+
+def _save_reply(project_id: int, name: str, text: str) -> None:
+    """Keep an unparsable reply on the server for troubleshooting (never sent anywhere)."""
+    try:
+        from app.config import DATA_DIR
+
+        folder = DATA_DIR / "replies"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"project-{project_id}-{name}.txt").write_text(text or "", encoding="utf-8")
+    except OSError:
+        logger.warning("Could not save the raw reply", exc_info=True)
 
 
 def _notifier(ws, *, user_id: int, project_id: int, account, session_factory=None, task_id: int | None = None):
@@ -677,28 +710,34 @@ class _Run:
             inbox=await self.inbox_for(agent),
         )
         adapter = self.make_adapter()  # one adapter per task: callbacks must not be shared
+        chat = _Chat(
+            adapter, agent_context, chat_ref=f"project-{self.project_id}-task-{task_id}",
+            timeout=self.settings.AGENT_TIMEOUT_SECONDS,
+            notify=_notifier(ws, user_id=self.snapshot["user_id"], project_id=self.project_id, account=agent,
+                             session_factory=sf, task_id=task_id),
+            should_continue=lambda: _project_still_running(sf, self.project_id),
+        )
         output, prompt, last_error = None, agent_prompt, ""
-        for attempt in range(1, AGENT_FORMAT_ATTEMPTS + 1):
-            try:
-                reply = await _ask(
-                    adapter, agent_context, chat_ref=f"project-{self.project_id}-task-{task_id}", prompt=prompt,
-                    timeout=self.settings.AGENT_TIMEOUT_SECONDS,
-                    notify=_notifier(ws, user_id=self.snapshot["user_id"], project_id=self.project_id, account=agent,
-                                     session_factory=sf, task_id=task_id),
-                    should_continue=lambda: _project_still_running(sf, self.project_id),
-                )
-            except Exception as exc:
-                await _set_task_status(sf, task_id, "failed", ws_manager=ws, project_id=self.project_id)
-                return _explain(exc, f"Agent for task {task_id} ({agent.name})")
-            try:
-                output = parse_agent_output(reply)
-                if output.status == "DONE":
-                    check_scope(output, scope)
-                break
-            except AgentOutputError as exc:
-                output, last_error = None, str(exc)
-                logger.info("Task %s: reply rejected (attempt %d): %s", task_id, attempt, last_error)
-                prompt = prompts.build_fix_prompt(last_error) + "\n\nTHE ORIGINAL TASK:\n\n" + agent_prompt
+        try:
+            for attempt in range(1, AGENT_FORMAT_ATTEMPTS + 1):
+                try:
+                    reply = await chat.ask(prompt)
+                except Exception as exc:
+                    await _set_task_status(sf, task_id, "failed", ws_manager=ws, project_id=self.project_id)
+                    return _explain(exc, f"Agent for task {task_id} ({agent.name})")
+                try:
+                    output = parse_agent_output(reply)
+                    if output.status == "DONE":
+                        check_scope(output, scope)
+                    break
+                except AgentOutputError as exc:
+                    output, last_error = None, str(exc)
+                    _save_reply(self.project_id, f"task-{task_id}-attempt-{attempt}", reply)
+                    logger.info("Task %s: reply rejected (attempt %d): %s", task_id, attempt, last_error)
+                    # Ask in the SAME chat: the agent keeps its work and just resends it.
+                    prompt = prompts.build_fix_prompt(last_error)
+        finally:
+            await chat.close()
         if output is None:
             await _set_task_status(sf, task_id, "failed", ws_manager=ws, project_id=self.project_id)
             return f"Task {task_id}: the agent's reply did not follow the required format ({last_error})."
@@ -885,16 +924,16 @@ async def run_project_logic(
         repo_files=repo_files,
         ci=project_snapshot["ci"],
     )
+    plan_chat = _Chat(
+        adapter, orchestrator_context, chat_ref=f"project-{project_id}",
+        timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
+        notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
+        should_continue=lambda: _project_still_running(session_factory, project_id),
+    )
     try:
-        raw_plan = await _ask(
-            adapter, orchestrator_context,
-            chat_ref=f"project-{project_id}",
-            prompt=split_prompt,
-            timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
-            notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
-            should_continue=lambda: _project_still_running(session_factory, project_id),
-        )
+        raw_plan = await plan_chat.ask(split_prompt)
     except Exception as exc:
+        await plan_chat.close()
         return await _fail_project(
             session_factory, project_id,
             _explain(exc, "Orchestrator"),
@@ -912,22 +951,21 @@ async def run_project_logic(
             break
         except ValueError as exc:
             if attempt == PLAN_FORMAT_ATTEMPTS:
+                await plan_chat.close()
+                _save_reply(project_id, f"plan-attempt-{attempt}", raw_plan)
                 return await _fail_project(
                     session_factory, project_id,
                     f"Could not parse orchestrator plan: {exc}. Raw reply (truncated): {raw_plan[:500]}",
                     ws_manager=ws,
                 )
             logger.info("Project %s: plan not parsed (attempt %d): %s", project_id, attempt, exc)
+            _save_reply(project_id, f"plan-attempt-{attempt}", raw_plan)
             try:
-                raw_plan = await _ask(
-                    adapter, orchestrator_context, chat_ref=f"project-{project_id}",
-                    prompt=prompts.build_json_fix_prompt(str(exc)) + "\n\nTHE ORIGINAL REQUEST:\n\n" + split_prompt,
-                    timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
-                    notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
-                    should_continue=lambda: _project_still_running(session_factory, project_id),
-                )
+                raw_plan = await plan_chat.ask(prompts.build_json_fix_prompt(str(exc)))
             except Exception as ask_exc:
+                await plan_chat.close()
                 return await _fail_project(session_factory, project_id, _explain(ask_exc, "Orchestrator"), ws_manager=ws)
+    await plan_chat.close()
     for item in plan:
         if item.assign_to_account_id in project_roles and project_roles[item.assign_to_account_id] in AGENT_ROLES:
             item.role = project_roles[item.assign_to_account_id]

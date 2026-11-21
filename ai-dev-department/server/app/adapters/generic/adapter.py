@@ -52,6 +52,57 @@ _BLOCKED_MESSAGES = {
     "login": "Service requires login: the account session has expired",
 }
 
+_MESSAGE_TEXT_JS = r"""
+(root) => {
+  // Rebuild the message as markdown-ish text: code blocks become fenced blocks
+  // with ONLY their code (no language label / copy button), hidden parts and
+  // buttons are skipped, block elements end lines.
+  const BLOCK = new Set(["P", "DIV", "LI", "UL", "OL", "H1", "H2", "H3", "H4", "H5", "H6", "TABLE", "TR",
+                         "BLOCKQUOTE", "SECTION", "ARTICLE", "HEADER", "FOOTER", "DETAILS", "SUMMARY"]);
+  const SKIP = new Set(["BUTTON", "SVG", "STYLE", "SCRIPT", "NOSCRIPT", "TEXTAREA", "INPUT"]);
+  let out = "";
+  const nl = () => { if (out && !out.endsWith("\n")) out += "\n"; };
+  const hidden = (el) => { const cs = getComputedStyle(el); return cs.display === "none" || cs.visibility === "hidden"; };
+  function walk(n) {
+    if (n.nodeType === 3) {  // skip layout indentation, keep spaces between words
+      if (n.nodeValue.trim() || !n.nodeValue.includes("\n")) out += n.nodeValue;
+      return;
+    }
+    if (n.nodeType !== 1) return;
+    const tag = n.tagName.toUpperCase();
+    if (SKIP.has(tag) || n.hasAttribute("data-aidd-skip") || hidden(n)) return;
+    if (tag === "PRE") {
+      const code = n.querySelector("code") || n;
+      const lang = ((code.className || "").match(/language-([\w+#.-]+)/) || [])[1] || "";
+      nl();
+      out += "FENCE" + lang + "\n" + code.textContent.replace(/\n$/, "") + "\nFENCE\n";
+      return;
+    }
+    if (tag === "BR") { out += "\n"; return; }
+    const block = BLOCK.has(tag);
+    if (block) nl();
+    for (const c of n.childNodes) walk(c);
+    if (block) nl();
+  }
+  // Code-block chrome: short header siblings of a <pre> (language label, copy button).
+  const marked = [];
+  for (const pre of root.querySelectorAll("pre")) {
+    const wrap = pre.parentElement;
+    if (!wrap || wrap === root) continue;
+    for (const sib of wrap.children) {
+      if (sib === pre || sib.contains(pre) || /^(P|H[1-6]|UL|OL|LI|TABLE|BLOCKQUOTE)$/.test(sib.tagName)) continue;
+      if (sib.querySelector("pre, p") || (sib.textContent || "").trim().length > 40) continue;
+      sib.setAttribute("data-aidd-skip", "1");
+      marked.push(sib);
+    }
+  }
+  walk(root);
+  for (const m of marked) m.removeAttribute("data-aidd-skip");
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+""".replace("FENCE", "```")
+
+
 _DIALOG_JS = """
 () => [...document.querySelectorAll("[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open]")].some((d) => {
   const r = d.getBoundingClientRect();
@@ -176,6 +227,12 @@ class Adapter:
         if not els:
             return ""
         last = els[-1]
+        try:
+            text = await last.evaluate(_MESSAGE_TEXT_JS)
+        except Exception:
+            text = None
+        if text is not None:
+            return (text or "").strip()
         try:
             text = await last.inner_text()
         except Exception:

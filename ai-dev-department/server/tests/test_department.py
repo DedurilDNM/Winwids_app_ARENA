@@ -85,14 +85,15 @@ class TeamAdapter:
         if "-review-" in page:
             self.reviews += 1
             return self.review(self.reviews, prompt)
-        task_id = re.search(r"YOUR TASK \(task (\d+)\)", prompt).group(1)
-        role = re.search(r"You are the (\w+)", prompt).group(1)
-        area = re.search(r"you may only write these paths: (\S+)", prompt).group(1).rstrip(",")
+        first = self.prompts[page][0]  # follow-ups in the same chat are short
+        task_id = re.search(r"YOUR TASK \(task (\d+)\)", first).group(1)
+        role = re.search(r"You are the (\w+)", first).group(1)
+        area = re.search(r"you may only write these paths: (\S+)", first).group(1).rstrip(",")
         start = time.monotonic()
         await asyncio.sleep(self.delay)
         self.timeline[task_id] = (start, time.monotonic())
         if self.agent_reply:
-            custom = self.agent_reply(role, task_id, area, prompt)
+            custom = self.agent_reply(role, task_id, area, first)
             if custom:
                 return custom
         path = area if not area.endswith("/") else f"{area}part{task_id}.py"
