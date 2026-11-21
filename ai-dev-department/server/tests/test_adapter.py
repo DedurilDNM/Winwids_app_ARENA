@@ -383,3 +383,85 @@ def test_captcha_that_clears_by_itself_is_fine():
         await task
 
     asyncio.run(_run(flow()))
+
+
+def test_popup_blocking_send_notifies_and_sends_after_user_closes_it():
+    """A pop-up stays open and our text is still in the input: the adapter
+    asks for a human, waits, and sends once the pop-up is gone."""
+    state = {"dialog": True, "pending": True}
+    events = []
+
+    class El(_StubEl):
+        async def evaluate(self, script, *args):
+            if "isContentEditable" in script:
+                return False  # a plain textarea
+            return 1 if state["pending"] else 0
+
+        async def fill(self, text):
+            state["pending"] = True
+
+    page = StubPage()
+
+    async def evaluate(script, *args):
+        if "dialog" in script:
+            return state["dialog"]
+        return False  # no captcha
+
+    async def query(selector):
+        if "textarea" in selector or "contenteditable" in selector:
+            return [El()]
+        return await StubPage.query_selector_all(page, selector)
+
+    async def click(selector, timeout=None):
+        page.clicked.append(selector)
+        if not state["dialog"]:
+            state["pending"] = False  # sending works only once the pop-up is gone
+
+    page.evaluate, page.query_selector_all, page.click = evaluate, query, click
+    a = _adapter(ADAPTER_CAPTCHA_WAIT_SECONDS=30)
+
+    async def on_attention(kind, active):
+        events.append((kind, active))
+
+    a.on_attention = on_attention
+
+    async def flow():
+        async def user_closes_popup():
+            await asyncio.sleep(2.5)
+            state["dialog"] = False
+
+        task = asyncio.create_task(user_closes_popup())
+        await a.send_message(page, "hello")
+        await task
+
+    state["pending"] = True
+    page.click = click
+    asyncio.run(_run(flow()))
+    assert events == [("dialog", True), ("dialog", False)]
+    assert state["pending"] is False
+
+
+def test_after_reply_presses_escape_and_clicks_dismiss():
+    class Keyboard:
+        def __init__(self):
+            self.keys = []
+
+        async def press(self, key):
+            self.keys.append(key)
+
+    clicked = []
+
+    class Btn(_StubEl):
+        async def click(self):
+            clicked.append("x")
+
+    page = StubPage()
+    page.keyboard = Keyboard()
+
+    async def query(selector):
+        return [Btn()] if "close-feedback" in selector else []
+
+    page.query_selector_all = query
+    a = _adapter(ADAPTER_DISMISS_SELECTOR="[data-x=close-feedback]")
+    asyncio.run(_run(a.after_reply(page)))
+    assert page.keyboard.keys == ["Escape"] and clicked == ["x"]

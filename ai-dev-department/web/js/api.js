@@ -182,6 +182,8 @@ export const api = {
   githubDisconnect: () => request("DELETE", "/api/github"),
   githubRepoCheck: (repo) => request("GET", `/api/github/repo-check?repo=${encodeURIComponent(repo)}`),
 
+  attention: () => request("GET", "/api/attention"),
+
   listProjects: () => request("GET", "/api/projects"),
   getProject: (id) => request("GET", `/api/projects/${id}`),
   createProject: (data) => request("POST", "/api/projects", data),

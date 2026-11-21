@@ -33,6 +33,19 @@ if (location.search.includes("editor=ce")) {
 }
 const val = () => (box.value !== undefined ? box.value : box.innerText) || "";
 const clear = () => { if (box.value !== undefined) box.value = ""; else box.innerText = ""; };
+function projectReply(t) {
+  // Plays the orchestrator and the agents of a real project run.
+  if (t.includes("Split the project task")) {
+    const ids = [...t.matchAll(/account_id=(\\d+) name='[^']*' role=(\\w+)/g)];
+    return JSON.stringify(ids.map((m, n) => ({ role: m[2], task: `Part ${n + 1}`, assign_to_account_id: Number(m[1]) })));
+  }
+  const task = t.match(/YOUR TASK \\(task (\\d+)\\)/);
+  if (task) {
+    return `FILE: src/task-${task[1]}.txt\n\`\`\`\ntask ${task[1]} done\n\`\`\`\nSTATUS: DONE\nSUMMARY: did task ${task[1]}`;
+  }
+  if (t.includes("All agent tasks are complete")) return "## Summary\\nAll done.";
+  return "";
+}
 function add(role, text) {
   const d = document.createElement("div"); d.className = "msg msg-" + role; d.dataset.role = role;
   const p = document.createElement("p"); p.textContent = text; d.append(p); messages.append(d);
@@ -48,7 +61,20 @@ mode.addEventListener("click", () => {
   document.body.append(list);
 });
 box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send.click(); } });
+let captchaUntil = 0;
 send.addEventListener("click", () => {
+  // ?captcha=1: the first send shows a captcha frame for 12 s; the message
+  // stays in the input until it clears (like an invisible check)
+  if (location.search.includes("captcha=1") && !sessionStorage.getItem("captcha_done")) {
+    if (!captchaUntil) {
+      captchaUntil = Date.now() + 12000;
+      const f = document.createElement("iframe");
+      f.src = "about:blank#recaptcha"; f.style.cssText = "width:300px;height:80px;border:1px solid red";
+      document.body.append(f);
+      setTimeout(() => { f.remove(); sessionStorage.setItem("captcha_done", "1"); }, 12000);
+    }
+    return;
+  }
   // ?terms=1: a one-time agreement pop-up on the first send (blocks the page)
   if (location.search.includes("terms=1") && !sessionStorage.getItem("terms_ok")) {
     const dlg = document.createElement("div");
@@ -69,7 +95,7 @@ send.addEventListener("click", () => {
     const f = t.match(/(FILE: [\\s\\S]*SUMMARY: \\w+)/);
     // ?agent=1: answers only in Agent mode (like a service with a mode switch)
     const needAgent = location.search.includes("agent=1") && mode.textContent !== "Agent";
-    add("assistant", needAgent ? "Switch to Agent mode" : w ? w[1] : f ? f[1] : "ok"); messages.setAttribute("aria-busy", "false"); stop.remove();
+    add("assistant", needAgent ? "Switch to Agent mode" : w ? w[1] : f ? f[1] : projectReply(t) || "ok"); messages.setAttribute("aria-busy", "false"); stop.remove();
   }, 2000);
 });
 </script>

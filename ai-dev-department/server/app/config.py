@@ -171,6 +171,10 @@ class Settings(BaseSettings):
     # (invisible checks usually pass by themselves; a human can solve a visible
     # one through «Смотреть агента»). Then the task stops with a clear message.
     ADAPTER_CAPTCHA_WAIT_SECONDS: float = 300.0
+    # After each reply: press Escape (closes rating/feedback panels) and click
+    # ADAPTER_DISMISS_SELECTOR if it is visible.
+    ADAPTER_AFTER_REPLY_ESCAPE: bool = True
+    ADAPTER_DISMISS_SELECTOR: str = ""
     # Timing / resilience
     ADAPTER_POLL_INTERVAL_SECONDS: float = 2.0
     ADAPTER_NAVIGATE_TIMEOUT_SECONDS: float = 30.0

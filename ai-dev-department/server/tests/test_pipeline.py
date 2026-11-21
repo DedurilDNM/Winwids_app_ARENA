@@ -47,15 +47,29 @@ def test_parser_rejects(reply: str, error: str) -> None:
 # --------------------------------------------------------------- fakes
 
 
+class FakePage(str):
+    """chat_ref string that also records being closed."""
+
+    closed: list = []
+
+    async def close(self):
+        FakePage.closed.append(str(self))
+
+
 class FakeAdapter:
     """Replies by chat: the orchestrator plans, agents return files."""
 
     def __init__(self, replies: dict[str, list[str]]) -> None:
         self.replies = replies  # chat_ref prefix -> queue of replies
         self.prompts: list[tuple[str, str]] = []
+        self.on_attention = None
+        self.escaped = 0
 
     async def open_chat(self, context, chat_ref):
-        return chat_ref
+        return FakePage(chat_ref)
+
+    async def after_reply(self, page):
+        self.escaped += 1
 
     async def send_message(self, page, text):
         self.prompts.append((page, text))
@@ -248,3 +262,47 @@ def _by_prefix(adapter: FakeAdapter, project_id: int, agent_reply: str):
         return await original(page, timeout)
 
     return wait_response
+
+
+def test_attention_events_reach_the_app_and_tabs_are_closed() -> None:
+    from fastapi.testclient import TestClient as _TC
+
+    from app.services.attention import list_attention
+
+    ids = _setup()
+    p = ids["project"]
+    gh = FakeGitHub()
+    adapter = FakeAdapter({f"project-{p}": [_plan(ids), "Summary"]})
+    seen_during = []
+    uid = _user_of(ids)
+
+    async def wait_response(page, timeout=600):
+        if page.startswith(f"project-{p}-task-"):
+            await adapter.on_attention("captcha", True)  # e.g. a captcha shown after sending
+            seen_during.append([i["kind"] for i in list_attention(uid)])
+            await adapter.on_attention("captcha", False)
+            return "FILE: a.txt\nhi\nSTATUS: DONE\nSUMMARY: ok"
+        return adapter.replies[page].pop(0)
+
+    adapter.wait_response = wait_response
+    FakePage.closed = []
+    status, ws = _run(ids, adapter, gh)
+    assert status == "completed", _load(ids)[0].result
+    types = [e["type"] for e in ws.events]
+    assert types.count("attention_needed") == 2 and types.count("attention_resolved") == 2
+    needed = next(e for e in ws.events if e["type"] == "attention_needed")
+    assert needed["kind"] == "captcha" and needed["account_name"] in ("coder", "rev")
+    assert seen_during == [["captcha"], ["captcha"]]
+    assert list_attention(_user_of(ids)) == []
+    assert len(FakePage.closed) == 4 and adapter.escaped == 4  # plan + 2 tasks + summary
+
+
+def _user_of(ids: dict) -> int:
+    async def go():
+        from app.db import SessionLocal
+        from app.models import Project
+
+        async with SessionLocal() as s:
+            return (await s.get(Project, ids["project"])).user_id
+
+    return asyncio.run(go())

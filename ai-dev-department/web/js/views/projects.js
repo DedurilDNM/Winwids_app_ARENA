@@ -7,6 +7,7 @@ import { accessTokenForWs, api } from "../api.js";
 import { openBrowser } from "../browser.js";
 import { confirmDialog, emptyState, errorText, fmtDate, h, icon, markdown, toast } from "../ui.js";
 import { ROLES, ROLE_LABELS, statusBadge } from "./accounts.js";
+import { attentionText } from "../attention.js";
 
 export const PROJECT_STATUS = {
   draft: ["Черновик", "idle"],
@@ -378,6 +379,8 @@ async function renderProject(main, projectId) {
     project_failed: (e) => [`Проект остановлен: ${e.message}`, "danger"],
     session_lost: (e) => [`Аккаунт #${e.account_id}: сессия потеряна — нужен повторный вход`, "danger"],
     session_relogged: (e) => [`Аккаунт #${e.account_id}: сессия восстановлена`, "ok"],
+    attention_needed: (e) => [`⚠ ${e.account_name || "Агент"}: ${attentionText(e.kind)}`, "danger"],
+    attention_resolved: () => ["Проверка пройдена, агент продолжает", "ok"],
   };
   let ws = null;
   let closed = false;

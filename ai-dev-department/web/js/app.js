@@ -2,6 +2,7 @@
 
 import { api, auth, refreshSession } from "./api.js";
 import { h, icon } from "./ui.js";
+import { startAttention, stopAttention } from "./attention.js";
 import * as loginView from "./views/login.js";
 import * as accountsView from "./views/accounts.js";
 import * as githubView from "./views/github.js";
@@ -38,7 +39,9 @@ function renderShell() {
     h("div", { class: "brand" }, h("img", { src: "icon.svg", alt: "" }), "AI Dev Department"),
     nav);
   const main = h("main", { class: "main", id: "main" });
-  root.replaceChildren(h("div", { class: "shell" }, sidebar, main));
+  const bar = h("div", { class: "attention-bar", hidden: true, role: "alert" });
+  root.replaceChildren(h("div", { class: "shell" }, sidebar, bar, main));
+  startAttention(bar);
 }
 
 async function route() {
@@ -73,6 +76,7 @@ async function start() {
 }
 
 auth.onLogout(() => {
+  stopAttention();
   if (typeof state.cleanup === "function") state.cleanup();
   state.cleanup = null;
   renderLogin();

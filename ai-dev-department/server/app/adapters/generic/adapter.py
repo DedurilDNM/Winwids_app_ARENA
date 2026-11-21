@@ -46,6 +46,13 @@ _CAPTCHA_JS = """
 })
 """
 
+_DIALOG_JS = """
+() => [...document.querySelectorAll("[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open]")].some((d) => {
+  const r = d.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+})
+"""
+
 _PASTE_JS = """
 (el, text) => {
   el.focus();
@@ -75,7 +82,9 @@ class Adapter:
     def __init__(self, settings=None) -> None:
         self.settings = settings or get_settings()
         self._last_sent: dict[int, str] = {}  # id(page) -> last prompt (echo filter)
-        self._before: dict[int, tuple[int, str]] = {}  # id(page) -> chat snapshot taken before sending
+        self._before: dict[int, tuple[int, str]] = {}
+        # async (kind: "captcha" | "dialog", active: bool) -> None; set by the orchestrator
+        self.on_attention = None  # id(page) -> chat snapshot taken before sending
 
     # ------------------------------------------------------------------ config
 
@@ -250,7 +259,7 @@ class Adapter:
                     f"Could not send message (no working send selector: {send_sel})"
                 ) from exc
         await self._accept_dialog_and_resend(page)
-        await self._wait_captcha(page)
+        await self._wait_blockers(page)
         logger.debug("Message sent to service (len=%d)", len(text))
 
     async def _captcha_visible(self, page) -> bool:
@@ -259,23 +268,82 @@ class Adapter:
         except Exception:
             return False
 
-    async def _wait_captcha(self, page) -> None:
-        """If the service shows a captcha after sending, wait for it to clear.
+    async def _input_pending(self, page) -> bool:
+        """True if text is still sitting in the chat input (not sent)."""
+        el = await self._first_visible(page, self._selectors["input"])
+        if el is None:
+            return False
+        try:
+            return bool(await el.evaluate("(e) => ((e.value !== undefined ? e.value : e.innerText) || '').trim().length"))
+        except Exception:
+            return False
 
-        Never resends (that would duplicate the task). Raises a RuntimeError
-        containing "captcha" when it does not clear in time."""
+    async def _blocker(self, page) -> str | None:
+        """"captcha" | "dialog" (a pop-up while our message is still unsent) | None."""
+        if await self._captcha_visible(page):
+            return "captcha"
+        try:
+            dialog = bool(await page.evaluate(_DIALOG_JS))
+        except Exception:
+            dialog = False
+        if dialog and await self._input_pending(page):
+            return "dialog"
+        return None
+
+    async def _attention(self, kind: str, active: bool) -> None:
+        cb = self.on_attention
+        if cb is None:
+            return
+        try:
+            await cb(kind, active)
+        except Exception:
+            logger.warning("attention callback failed", exc_info=True)
+
+    async def _wait_blockers(self, page) -> None:
+        """A captcha or a pop-up after sending: tell the user (on_attention) and
+        wait for them to clear it in the agent's browser, then send the message
+        if it is still in the input. Never resends a delivered message."""
         await asyncio.sleep(1.0)
-        if not await self._captcha_visible(page):
+        kind = await self._blocker(page)
+        if kind is None:
             return
         limit = float(getattr(self.settings, "ADAPTER_CAPTCHA_WAIT_SECONDS", 300.0))
-        logger.warning("Captcha shown after sending; waiting up to %.0fs for it to clear", limit)
-        deadline = _MONOTONIC() + limit
-        while _MONOTONIC() < deadline:
-            await asyncio.sleep(2.0)
-            if not await self._captcha_visible(page):
-                logger.info("Captcha cleared")
-                return
-        raise RuntimeError("Service is showing a captcha that did not clear by itself")
+        logger.warning("Service shows a %s after sending; waiting up to %.0fs", kind, limit)
+        await self._attention(kind, True)
+        try:
+            deadline = _MONOTONIC() + limit
+            while _MONOTONIC() < deadline:
+                await asyncio.sleep(2.0)
+                if await self._blocker(page) is None:
+                    logger.info("%s cleared", kind)
+                    if await self._input_pending(page):
+                        try:
+                            await page.click(self._selectors["send"], timeout=5_000)
+                        except Exception:
+                            await page.keyboard.press("Enter")
+                    return
+            if kind == "captcha":
+                raise RuntimeError("Service is showing a captcha that did not clear by itself")
+            raise RuntimeError("Service is showing a pop-up window that blocks sending")
+        finally:
+            await self._attention(kind, False)
+
+    async def after_reply(self, page) -> None:
+        """Close what services show after an answer (rating / feedback panels):
+        press Escape, and click ADAPTER_DISMISS_SELECTOR if configured."""
+        if getattr(self.settings, "ADAPTER_AFTER_REPLY_ESCAPE", True):
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+        dismiss = getattr(self.settings, "ADAPTER_DISMISS_SELECTOR", "") or ""
+        if dismiss:
+            el = await self._first_visible(page, dismiss)
+            if el is not None:
+                try:
+                    await el.click()
+                except Exception:
+                    pass
 
     async def _write_input(self, page, text: str) -> None:
         """Put `text` into the first VISIBLE chat input (a selector may also

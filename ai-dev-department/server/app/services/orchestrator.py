@@ -205,7 +205,7 @@ def _is_retryable(exc: BaseException) -> bool:
     )
 
 
-async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int) -> str:
+async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, notify=None) -> str:
     """One adapter round-trip: open chat, send prompt, wait for the reply.
 
     open_chat + send_message are retried with exponential backoff
@@ -215,14 +215,20 @@ async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int) ->
     settings = get_settings()
     last_exc: BaseException | None = None
 
+    if hasattr(adapter, "on_attention"):
+        adapter.on_attention = notify
     for attempt in range(1, settings.ADAPTER_MAX_RETRIES + 1):
+        page = None
         try:
             page = await adapter.open_chat(context, chat_ref)
             await adapter.send_message(page, prompt)
             # Belt-and-braces: never let a hung adapter hang the worker forever.
-            return await asyncio.wait_for(
+            reply = await asyncio.wait_for(
                 adapter.wait_response(page, timeout=timeout), timeout=timeout + 60
             )
+            if hasattr(adapter, "after_reply"):
+                await adapter.after_reply(page)
+            return reply
         except TimeoutError as exc:
             # wait_response timeout: message may already be with the service -
             # retrying could duplicate it, so fail fast.
@@ -231,11 +237,19 @@ async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int) ->
             # login_required / service error: retrying won't help without
             # re-login, so fail fast.
             msg = str(exc)
-            if "login" in msg.lower() or "captcha" in msg.lower():
+            if any(k in msg.lower() for k in ("login", "captcha", "pop-up")):
                 raise  # retrying cannot help and could duplicate the message
             last_exc = exc
         except Exception as exc:  # noqa: BLE001 - transient browser/network error
             last_exc = exc
+        finally:
+            # One tab per message: close it, the conversation stays on the service.
+            close = getattr(page, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    pass
 
         if attempt < settings.ADAPTER_MAX_RETRIES:
             await _retryable_sleep(attempt, settings)
@@ -245,12 +259,37 @@ async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int) ->
     ) from last_exc
 
 
+def _notifier(ws, *, user_id: int, project_id: int, account):
+    """Adapter callback: a captcha / pop-up needs the user -> attention list + WS event."""
+    from app.services.attention import raise_attention, resolve_attention
+
+    async def notify(kind: str, active: bool) -> None:
+        if active:
+            item = raise_attention(user_id, account_id=account.id, account_name=account.name,
+                                   project_id=project_id, kind=kind)
+            await ws.send_to_project(project_id, _event(
+                "attention_needed", project_id, account_id=account.id, status=kind,
+                message=f"{account.name}: {item['message']}", extra={"kind": kind, "account_name": account.name},
+            ))
+        else:
+            resolve_attention(user_id, account_id=account.id, kind=kind)
+            await ws.send_to_project(project_id, _event(
+                "attention_resolved", project_id, account_id=account.id, status=kind,
+                message=f"{account.name}: resolved", extra={"kind": kind},
+            ))
+
+    return notify
+
+
 def _explain(exc: BaseException, who: str) -> str:
     """User-facing reason for an adapter failure."""
     msg = str(exc)
     if "captcha" in msg.lower():
         return (f"{who}: the service is asking for a captcha. Open «Смотреть агента», "
                 "solve it in the browser and start the project again.")
+    if "pop-up" in msg.lower():
+        return (f"{who}: a pop-up window in the service blocks sending. Open «Смотреть агента», "
+                "close it and start the project again.")
     if "login" in msg.lower():
         return f"{who}: the account is logged out. Log in again (Аккаунты → «Перелогиниться») and restart."
     return f"{who} did not respond: {type(exc).__name__}: {msg}"
@@ -431,6 +470,7 @@ async def run_project_logic(
             chat_ref=f"project-{project_id}",
             prompt=split_prompt,
             timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
+            notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
         )
     except Exception as exc:
         return await _fail_project(
@@ -550,6 +590,7 @@ async def run_project_logic(
                     chat_ref=f"project-{project_id}-task-{task_id}",
                     prompt=prompt,
                     timeout=settings.AGENT_TIMEOUT_SECONDS,
+                    notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=agent),
                 )
             except Exception as exc:
                 await _set_task_status(session_factory, task_id, "failed", ws_manager=ws, project_id=project_id)
@@ -619,6 +660,7 @@ async def run_project_logic(
             chat_ref=f"project-{project_id}",
             prompt=final_prompt,
             timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
+            notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
         )
     except Exception as exc:
         return await _fail_project(

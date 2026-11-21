@@ -38,6 +38,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg);
@@ -313,3 +314,14 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.45; }
   background: var(--surface-2); padding: 10px 12px; border-radius: 8px; max-height: 50vh; overflow: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* ---------- attention (a human is needed) ---------- */
+.attention-bar {
+  position: sticky; top: 0; z-index: 30; display: grid; gap: 8px;
+  padding: 10px 16px; background: var(--danger); color: #fff;
+}
+@media (min-width: 800px) { .attention-bar { margin-left: var(--side-w); } }
+.attention-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.attention-text { font-size: 14px; }
+.attention-bar button { min-height: 34px; padding: 4px 12px; }
+.attention-bar button.primary { background: #fff; color: var(--danger); border-color: #fff; }

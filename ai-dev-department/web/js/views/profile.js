@@ -30,6 +30,15 @@ export async function render(main, { me }) {
         h("dt", {}, "С нами с"), h("dd", {}, fmtDate(me?.created_at))),
       h("div", { class: "actions" },
         installBtn,
+        "Notification" in window && Notification.permission !== "granted"
+          ? h("button", {
+              onclick: async (e) => {
+                const r = await Notification.requestPermission();
+                e.target.textContent = r === "granted" ? "Уведомления включены" : "Уведомления запрещены в браузере";
+                e.target.disabled = true;
+              },
+            }, "Включить уведомления")
+          : null,
         h("button", { class: "danger", onclick: () => auth.logout() }, "Выйти"))),
     h("p", { class: "muted small mt-16" },
       "На телефоне: меню браузера → «Добавить на главный экран», чтобы открыть как приложение."));
