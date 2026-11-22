@@ -73,6 +73,9 @@ async def create_account(
         default_role=data.default_role,
         github_repos=data.github_repos,
         status="pending_login",
+        login_email=(data.login_email or "").strip() or None,
+        model=(data.model or "").strip() or None,
+        login_password_encrypted=encrypt_bytes(data.login_password.encode()) if data.login_password else None,
     )
     db.add(account)
     await db.commit()
@@ -128,6 +131,12 @@ async def update_account(
         account.default_role = data.default_role
     if data.github_repos is not None:
         account.github_repos = data.github_repos
+    if data.login_email is not None:
+        account.login_email = data.login_email.strip() or None
+    if data.model is not None:
+        account.model = data.model.strip() or None
+    if data.login_password is not None:
+        account.login_password_encrypted = encrypt_bytes(data.login_password.encode()) if data.login_password else None
     if data.status is not None:
         if data.status == "active":
             raise HTTPException(status_code=400, detail="Status 'active' is set via confirm-login only")

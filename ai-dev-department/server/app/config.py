@@ -161,6 +161,24 @@ class Settings(BaseSettings):
     ADAPTER_MESSAGE_SELECTOR: str = "[role='article'], .message, .chat-message"
     ADAPTER_STATE_SELECTOR: str = "[aria-busy='true'], .generating, .loading, .error"
     ADAPTER_LOGIN_SELECTOR: str = "input[type='password'], [aria-label*='login' i]"
+    # Auto-login (accounts with a login e-mail + password): the button that opens
+    # the login form, the e-mail and password fields, the buttons that submit a
+    # step (tried in order, "||"-separated; Enter is pressed first anyway).
+    ADAPTER_LOGIN_OPEN_SELECTOR: str = ('button:text-is("Log in") || a:text-is("Log in") || '
+                                        'button:has-text("Log in") || a:has-text("Log in")')
+    ADAPTER_LOGIN_EMAIL_SELECTOR: str = ('input[type="email"], input[name="email"], input[autocomplete="email"], '
+                                         'input[autocomplete="username"]')
+    ADAPTER_LOGIN_PASSWORD_SELECTOR: str = 'input[type="password"]'
+    ADAPTER_LOGIN_SUBMIT_SELECTOR: str = ('[role="dialog"] button[type="submit"] || button[type="submit"] || '
+                                          'button:text-is("Continue") || [role="dialog"] button:text-is("Log in") || '
+                                          'button:text-is("Log in")')
+    # At most this many auto-login attempts per account per hour (then: ask a human).
+    ADAPTER_AUTO_LOGIN_PER_HOUR: int = 2
+    # Model check (accounts with a model set): before each task the model button
+    # must show the model's name. ADAPTER_MODEL_CLICKS ("||"-separated, {model}
+    # = the name) picks it; empty = the user picks it once in the account's browser.
+    ADAPTER_MODEL_CHECK: bool = True
+    ADAPTER_MODEL_CLICKS: str = ""
     # Extra selector that must appear before the chat is considered ready
     # (empty = skip this check).
     ADAPTER_READY_SELECTOR: str = ""

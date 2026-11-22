@@ -49,9 +49,10 @@ class Invite(Base):
 class Account(Base):
     """An account on the external AI service.
 
-    We never store the account's password. Only the encrypted (Fernet)
-    `storage_state` blob (cookies + localStorage + IndexedDB) captured after
-    a manual VNC login.
+    The session is the encrypted (Fernet) `storage_state` blob (cookies +
+    localStorage + IndexedDB) captured after a login. Optional login
+    credentials (email + Fernet-encrypted password) let the server log in by
+    itself when the service logs the account out. Never logged or returned.
     """
 
     __tablename__ = "accounts"
@@ -67,6 +68,15 @@ class Account(Base):
     storage_state_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     last_health_check: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Auto-login (optional). Empty email -> the first e-mail address in service_note.
+    login_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    login_password_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # The service model this account's chat must use (checked before each task). Empty = any.
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+    @property
+    def has_login_password(self) -> bool:
+        return bool(self.login_password_encrypted)
 
 
 class Project(Base):

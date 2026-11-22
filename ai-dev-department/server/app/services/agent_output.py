@@ -178,7 +178,12 @@ def parse_agent_output(reply: str) -> AgentOutput:
             current.append(line)
         elif section == "status":
             m_sum = _SUMMARY_RE.match(line)
-            summary_lines.append(m_sum.group(1) if m_sum else line)
+            if m_sum:
+                summary_lines.append(m_sum.group(1))
+            elif summary_lines and not line.strip():
+                section = "after"  # the summary paragraph ended: the rest is service UI («Deployed…», «Show more»)
+            else:
+                summary_lines.append(line)
     flush()
 
     if status is None:

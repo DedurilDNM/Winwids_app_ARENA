@@ -24,6 +24,7 @@ Contract (`ServiceAdapter` protocol, `app/adapters/base.py`):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -63,6 +64,7 @@ _CAPTCHA_JS = """
 """
 
 MAX_RESENDS = 5  # resends of one message after page reloads
+_AUTO_LOGINS: dict[str, list[float]] = {}  # sha256(email) -> recent auto-login attempt times
 
 _BLOCKED_MESSAGES = {
     "captcha": "Service is showing a captcha that did not clear by itself",
@@ -169,6 +171,12 @@ class Adapter:
         self._before: dict[int, tuple[int, str]] = {}
         # Optional: reply text -> bool "looks finished" (set per task by the orchestrator).
         self.reply_complete = None
+        # Optional auto-login: (email, password) of this account, and an async
+        # callback run after a successful auto-login (saves the session).
+        self.login_credentials: tuple[str, str] | None = None
+        # Optional: the model name the account's chat must use (Account.model).
+        self.expected_model: str | None = None
+        self.on_logged_in = None
         self._marks: dict[int, str] = {}  # id(page) -> reload marker
         # async (kind: "captcha" | "dialog" | "login", active: bool) -> None; set by the orchestrator
         self.on_attention = None
@@ -321,12 +329,42 @@ class Adapter:
             except Exception:
                 logger.warning("Setup click not possible: %s", selector)
                 results.append((selector, False))
+        await self._ensure_model(page)
         return results
+
+    def _model_selector(self, model: str) -> str:
+        m = model.replace("\\", "").replace('"', "")
+        return (f'button:has-text("{m}"), [role="button"]:has-text("{m}"), [role="combobox"]:has-text("{m}"), '
+                f'[aria-haspopup]:has-text("{m}")')
+
+    async def _ensure_model(self, page) -> None:
+        """If the account has a model set: make sure the chat uses it (the
+        model button shows its name). ADAPTER_MODEL_CLICKS ({model} = the name)
+        can pick it; otherwise the user picks it once in the account's browser."""
+        model = (self.expected_model or "").strip()
+        if not model or not getattr(self.settings, "ADAPTER_MODEL_CHECK", True):
+            return
+        sel = self._model_selector(model)
+        if await self._wait_visible(page, sel, 10) is not None:
+            return
+        clicks = (getattr(self.settings, "ADAPTER_MODEL_CLICKS", "") or "").replace("{model}", model.replace('"', ""))
+        for selector in [part.strip() for part in clicks.split("||") if part.strip()]:
+            try:
+                await page.click(selector, timeout=5_000)
+                await asyncio.sleep(0.5)
+            except Exception:
+                logger.warning("Model click not possible: %s", selector)
+        if clicks and await self._wait_visible(page, sel, 5) is not None:
+            logger.info("Model selected: %s", model)
+            return
+        raise RuntimeError(
+            f"Model «{model}» is not selected in this account's chat: open the account's browser and pick it "
+            "once (the service remembers it), or set ADAPTER_MODEL_CLICKS")
 
     async def send_message(self, page, text: str) -> None:
         """Type `text` into the chat input and send it."""
         if await self._is_login_required(page):
-            await self._pause(page, "login", self._is_login_required)
+            await self._handle_login(page)
             await self._reopen(page)  # logging in may have navigated away from a new chat
         input_sel = self._selectors["input"]
         send_sel = self._selectors["send"]
@@ -374,6 +412,104 @@ class Adapter:
         if dialog and await self._input_pending(page):
             return "dialog"
         return None
+
+    async def _handle_login(self, page) -> None:
+        """Logged out: log in by ourselves if the account has credentials,
+        otherwise (or if that fails) pause until a human logs in."""
+        if await self.auto_login(page):
+            return
+        await self._pause(page, "login", self._is_login_required)
+
+    async def auto_login(self, page) -> bool:
+        """Do what a human does: «Log in» -> e-mail -> password. Never logs the
+        e-mail or the password. Returns True when the page is logged in."""
+        creds = self.login_credentials
+        if not creds:
+            return False
+        email, password = creds
+        per_hour = int(getattr(self.settings, "ADAPTER_AUTO_LOGIN_PER_HOUR", 2) or 0)
+        key = hashlib.sha256(email.lower().encode()).hexdigest()
+        now = _MONOTONIC()
+        recent = [t for t in _AUTO_LOGINS.get(key, []) if now - t < 3600]
+        if len(recent) >= per_hour:
+            logger.warning("Auto-login: limit of %d attempts per hour reached; asking a human", per_hour)
+            return False
+        _AUTO_LOGINS[key] = recent + [now]
+        s = self.settings
+        email_sel, pw_sel = s.ADAPTER_LOGIN_EMAIL_SELECTOR, s.ADAPTER_LOGIN_PASSWORD_SELECTOR
+        step = "open the login form"
+        try:
+            field = await self._first_visible(page, email_sel)
+            if field is None and await self._first_visible(page, pw_sel) is None:
+                if not await self._click_first(page, s.ADAPTER_LOGIN_OPEN_SELECTOR):
+                    raise LookupError
+                field = await self._wait_visible(page, email_sel, 15)
+            if field is not None:
+                step = "e-mail"
+                await field.fill(email)
+                await field.press("Enter")
+                if await self._wait_visible(page, pw_sel, 6) is None:
+                    await self._click_first(page, s.ADAPTER_LOGIN_SUBMIT_SELECTOR)
+            step = "password"
+            field = await self._wait_visible(page, pw_sel, 20)
+            if field is None:
+                raise LookupError
+            await field.fill(password)
+            await field.press("Enter")
+            await asyncio.sleep(2.0)
+            if await self._first_visible(page, pw_sel) is not None:
+                await self._click_first(page, s.ADAPTER_LOGIN_SUBMIT_SELECTOR)
+            step = "wait for the chat"
+            for second in range(30):
+                await asyncio.sleep(1.0)
+                still_pw = await self._first_visible(page, pw_sel) is not None
+                if still_pw and second >= 8:
+                    break  # the password form stays: wrong password or an extra check
+                if not await self._is_login_required(page) and not still_pw:
+                    logger.info("Auto-login: logged in")
+                    if self.on_logged_in is not None:
+                        try:
+                            await self.on_logged_in()
+                        except Exception:
+                            logger.warning("Auto-login: could not save the session", exc_info=True)
+                    return True
+                if await self._captcha_visible(page):
+                    break  # a human has to solve it: the login pause takes over
+            raise LookupError
+        except Exception as exc:
+            # Only the step name and error type: messages may contain page details.
+            logger.warning("Auto-login failed at step «%s» (%s); asking a human", step, type(exc).__name__)
+            return False
+
+    async def _click_first(self, page, selectors: str) -> bool:
+        """Click the first visible element of "||"-separated selectors (in that order)."""
+        for selector in [part.strip() for part in (selectors or "").split("||") if part.strip()]:
+            el = await self._first_visible(page, selector)
+            if el is not None and await self._is_social_button(el):
+                continue  # never «Continue with Google/Apple/...»: the account logs in by e-mail
+            if el is not None:
+                try:
+                    await el.click(timeout=10_000)
+                except TypeError:
+                    await el.click()
+                return True
+        return False
+
+    @staticmethod
+    async def _is_social_button(el) -> bool:
+        try:
+            text = (await el.inner_text() or "").lower()
+        except Exception:
+            return False
+        return any(w in text for w in ("google", "apple", "microsoft", "github", "facebook"))
+
+    async def _wait_visible(self, page, selector: str, seconds: float):
+        deadline = _MONOTONIC() + seconds
+        while True:
+            el = await self._first_visible(page, selector)
+            if el is not None or _MONOTONIC() >= deadline:
+                return el
+            await asyncio.sleep(0.5)
 
     async def _attention(self, kind: str, active: bool) -> None:
         cb = self.on_attention
@@ -678,7 +814,7 @@ class Adapter:
             if state == "error":
                 raise RuntimeError("Service entered an error state")
             if state == "login_required":
-                await self._pause(page, "login", self._is_login_required)
+                await self._handle_login(page)
                 # The reply (if any) was lost with the session: let the caller resend.
                 raise RuntimeError("Session restored during the reply; the message must be sent again")
             if await self._captcha_visible(page):

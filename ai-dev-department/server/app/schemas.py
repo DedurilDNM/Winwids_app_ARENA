@@ -78,6 +78,10 @@ class AccountCreate(BaseModel):
     service_note: str = Field(default="", max_length=255)
     default_role: RoleName = "Coder"
     github_repos: list[str] = Field(default_factory=list, max_length=20)
+    # Auto-login credentials (write-only password; never returned).
+    login_email: str | None = Field(default=None, max_length=255)
+    login_password: str | None = Field(default=None, max_length=256)
+    model: str | None = Field(default=None, max_length=120)
 
     @field_validator("github_repos")
     @classmethod
@@ -99,6 +103,9 @@ class AccountUpdate(BaseModel):
     default_role: RoleName | None = None
     github_repos: list[str] | None = Field(default=None, max_length=20)
     status: AccountStatus | None = None
+    login_email: str | None = Field(default=None, max_length=255)  # "" clears
+    login_password: str | None = Field(default=None, max_length=256)  # None = keep, "" = delete
+    model: str | None = Field(default=None, max_length=120)  # "" clears
 
     @field_validator("github_repos")
     @classmethod
@@ -119,6 +126,9 @@ class AccountOut(BaseModel):
     status: str
     last_health_check: datetime | None
     created_at: datetime
+    login_email: str | None = None
+    has_login_password: bool = False
+    model: str | None = None
 
 
 class AccountCreateResponse(AccountOut):

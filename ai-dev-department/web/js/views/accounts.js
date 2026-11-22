@@ -28,6 +28,10 @@ function parseRepos(text) {
   return text.split(/[\s,;]+/).map((r) => r.trim()).filter(Boolean);
 }
 
+// Suggestions for the model field (the user can type any name the service shows).
+const MODELS = ["claude-sonnet-5-5-high", "gemini-4-argon-high", "gpt-6-luna-max", "qwen3.8-max",
+  "deepseek-v4.1-flash-max"];
+
 function roleSelect(value) {
   return h("select", { name: "role" },
     ROLES.map((r) => h("option", { value: r, selected: r === value }, ROLE_LABELS[r])));
@@ -40,12 +44,30 @@ function accountForm(title, initial = {}, submitLabel = "Сохранить") {
     const role = roleSelect(initial.default_role || "Coder");
     const repos = h("input", { name: "repos", value: (initial.github_repos || []).join(", "), placeholder: "owner/repo (необязательно)" });
     const note = h("input", { name: "note", maxLength: 255, value: initial.service_note || "", placeholder: "Заметка (необязательно)" });
+    const model = h("input", { name: "model", maxLength: 120, list: "aidd-models", autocomplete: "off",
+      value: initial.model || "", placeholder: "Например: claude-sonnet-5-5-high (пусто — не проверять)" });
+    const models = h("datalist", { id: "aidd-models" },
+      MODELS.map((m) => h("option", { value: m })));
+    const email = h("input", { name: "login_email", type: "email", maxLength: 255, autocomplete: "off",
+      value: initial.login_email || "", placeholder: "Если пусто — почта из заметки" });
+    const password = h("input", { name: "login_password", type: "password", maxLength: 256, autocomplete: "new-password",
+      placeholder: initial.has_login_password ? "Сохранён — оставьте пустым, чтобы не менять" : "Пароль от аккаунта сервиса" });
+    const forget = h("input", { type: "checkbox", name: "forget_password" });
     const error = h("div", { class: "form-error", role: "alert" });
     const form = h("form", {},
       h("label", { class: "field" }, "Название", name),
       h("label", { class: "field" }, "Роль", role),
       h("label", { class: "field" }, "GitHub-репозитории", repos),
       h("label", { class: "field" }, "Заметка", note),
+      h("label", { class: "field" }, "Модель в чате сервиса", model), models,
+      h("fieldset", { class: "fieldset" },
+        h("legend", {}, "Автовход (если сервис выкинет из аккаунта)"),
+        h("label", { class: "field" }, "Почта для входа", email),
+        h("label", { class: "field" }, "Пароль", password),
+        initial.has_login_password
+          ? h("label", { class: "checkbox" }, forget, "Удалить сохранённый пароль")
+          : null,
+        h("p", { class: "small muted" }, "Пароль хранится на сервере в зашифрованном виде и никогда не показывается.")),
       error,
       h("div", { class: "modal-actions" },
         h("button", { type: "button", onclick: () => close(undefined) }, "Отмена"),
@@ -56,7 +78,11 @@ function accountForm(title, initial = {}, submitLabel = "Сохранить") {
       if (!name.value.trim()) return (error.textContent = "Укажите название");
       const bad = list.filter((r) => !/^[\w.-]+\/[\w.-]+$/.test(r));
       if (bad.length) return (error.textContent = `Формат репозитория owner/name: ${bad.join(", ")}`);
-      close({ name: name.value.trim(), default_role: role.value, github_repos: list, service_note: note.value.trim() });
+      const data = { name: name.value.trim(), default_role: role.value, github_repos: list, service_note: note.value.trim(),
+        login_email: email.value.trim(), model: model.value.trim() };
+      if (password.value) data.login_password = password.value;
+      else if (forget.checked) data.login_password = "";
+      close(data);
     });
     return form;
   });
@@ -105,6 +131,10 @@ export async function render(main) {
         h("span", {}, acc.github_repos?.length ? `GitHub: ${acc.github_repos.join(", ")}` : "GitHub не задан"),
         h("span", {}, `Проверка: ${fmtDate(acc.last_health_check)}`)),
       acc.service_note ? h("p", { class: "small muted mt-8" }, acc.service_note) : null,
+      acc.model ? h("p", { class: "small muted", "data-testid": "model" }, `Модель: ${acc.model}`) : null,
+      acc.has_login_password
+        ? h("p", { class: "small muted", "data-testid": "auto-login" }, "Автовход: включён")
+        : null,
       h("div", { class: "actions" },
         primary,
         h("button", { onclick: () => edit(acc) }, "Изменить"),

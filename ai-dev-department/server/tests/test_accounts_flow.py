@@ -291,3 +291,32 @@ def test_stale_x_display_files_are_detected_and_cleared(tmp_path, monkeypatch):
         srv.close()
         sock_path.unlink(missing_ok=True)
         lock_path.unlink(missing_ok=True)
+
+
+def test_login_credentials_are_write_only_and_encrypted(api):
+    token = _login_admin(api)
+    account = _create_account(api, token, name="cred-1")
+    assert account["has_login_password"] is False and account["login_email"] is None
+
+    resp = api.patch(f"/api/accounts/{account['id']}", headers=_auth(token),
+                     json={"login_password": "Sup3r-Secret!", "service_note": "почта: bot.one@example.com"})
+    body = resp.json()
+    assert resp.status_code == 200 and body["has_login_password"] is True
+    assert "Sup3r-Secret!" not in resp.text and "login_password" not in body
+    raw = sqlite3.connect(TEST_DB).execute(
+        "SELECT login_password_encrypted FROM accounts WHERE id = ?", (account["id"],)).fetchone()[0]
+    assert raw and b"Sup3r-Secret!" not in raw
+
+    from app.models import Account
+    from app.services.credentials import login_credentials
+
+    row = Account(service_note="почта: bot.one@example.com", login_password_encrypted=raw)
+    assert login_credentials(row) == ("bot.one@example.com", "Sup3r-Secret!")  # e-mail from the note
+    row.login_email = "explicit@example.com"
+    assert login_credentials(row)[0] == "explicit@example.com"
+
+    # omitted password = unchanged; "" = deleted
+    assert api.patch(f"/api/accounts/{account['id']}", headers=_auth(token),
+                     json={"login_email": "x@example.com"}).json()["has_login_password"] is True
+    body = api.patch(f"/api/accounts/{account['id']}", headers=_auth(token), json={"login_password": ""}).json()
+    assert body["has_login_password"] is False and body["login_email"] == "x@example.com"

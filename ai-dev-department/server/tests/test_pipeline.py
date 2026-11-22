@@ -521,3 +521,11 @@ def test_blocked_after_a_resend_request_gets_the_whole_task_again() -> None:
     coder = [t for pg, t in adapter.prompts if pg.startswith(f"project-{p}-task-")][:3]
     assert "Do not start over" in coder[1]
     assert "did not receive your work" in coder[2] and "You are the Coder" in coder[2]
+
+
+def test_service_ui_text_after_the_summary_is_ignored() -> None:
+    from app.services.agent_output import parse_agent_output
+
+    out = parse_agent_output("FILE: a.txt\n```\nx\n```\n\nSTATUS: DONE\nSUMMARY: Made a.txt\nwith care.\n\n"
+                             "Deployed the project\n\nShow More")
+    assert out.summary == "Made a.txt\nwith care."

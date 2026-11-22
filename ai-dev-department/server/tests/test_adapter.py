@@ -809,3 +809,106 @@ def test_covered_chat_input_is_freed_with_escape():
     a = _adapter()
     asyncio.run(_run(a.send_message(page, "hello world")))
     assert state["pasted"] == "hello world" and not state["covered"]
+
+
+class LoginFlowPage(StubPage):
+    """Logged out: a «Log in» button opens a dialog with an e-mail field; Enter
+    shows the password field; the right password logs in."""
+
+    def __init__(self, password="secret-pass"):
+        super().__init__(login_required=True)
+        self.password = password
+        self.stage = "out"  # out -> email -> password -> in
+        self.typed: dict[str, str] = {}
+        page = self
+
+        class Field(_StubEl):
+            def __init__(self, kind):
+                super().__init__()
+                self.kind = kind
+
+            async def fill(self, text):
+                page.typed[self.kind] = text
+
+            async def press(self, key):
+                if key != "Enter":
+                    return
+                if self.kind == "email" and page.typed.get("email"):
+                    page.stage = "password"
+                elif self.kind == "password":
+                    if page.typed.get("password") == page.password:
+                        page.stage, page.login_required = "in", False
+
+        class Button(_StubEl):
+            async def click(self, timeout=None):
+                page.stage = "email"
+
+        self.email_field, self.pw_field, self.button = Field("email"), Field("password"), Button()
+
+    async def query_selector_all(self, selector):
+        if "Log in" in selector and self.stage == "out" and "dialog" not in selector:
+            return [self.button]
+        if 'type="email"' in selector:
+            return [self.email_field] if self.stage == "email" else []
+        if 'type="password"' in selector:
+            return [self.pw_field] if self.stage == "password" else []
+        if "password" in selector or "login" in selector.lower():
+            return [_StubEl()] if self.login_required else []
+        return await super().query_selector_all(selector)
+
+
+def _login_adapter(**kw):
+    return _adapter(ADAPTER_LOGIN_OPEN_SELECTOR='button:has-text("Log in")',
+                    ADAPTER_LOGIN_EMAIL_SELECTOR='input[type="email"]',
+                    ADAPTER_LOGIN_PASSWORD_SELECTOR='input[type="password"]',
+                    ADAPTER_LOGIN_SUBMIT_SELECTOR='button[type="submit"]',
+                    ADAPTER_AUTO_LOGIN_PER_HOUR=2, **kw)
+
+
+def test_auto_login_types_email_then_password_and_then_sends():
+    import app.adapters.generic.adapter as mod
+
+    mod._AUTO_LOGINS.clear()
+    page = LoginFlowPage()
+    a = _login_adapter()
+    a.login_credentials = ("bot1@example.com", "secret-pass")
+    saved, events = [], []
+
+    async def on_logged_in():
+        saved.append(True)
+
+    async def on_attention(kind, active):
+        events.append((kind, active))
+
+    a.on_logged_in, a.on_attention = on_logged_in, on_attention
+    asyncio.run(_run(a.send_message(page, "hello")))
+    assert page.typed == {"email": "bot1@example.com", "password": "secret-pass"}
+    assert page.stage == "in" and saved == [True]
+    assert events == []  # nobody was disturbed
+    assert page.filled[DEFAULT_INPUT] == "hello"
+
+
+def test_wrong_password_falls_back_to_asking_a_human(caplog):
+    import app.adapters.generic.adapter as mod
+
+    mod._AUTO_LOGINS.clear()
+    page = LoginFlowPage(password="the-real-one")
+    a = _login_adapter(ADAPTER_CAPTCHA_WAIT_SECONDS=0.5)
+    a.login_credentials = ("bot1@example.com", "wrong-pass")
+    with caplog.at_level("INFO"):
+        with pytest.raises(RuntimeError, match="login"):
+            asyncio.run(_run(a.send_message(page, "hello")))
+    logs = caplog.text
+    assert "Auto-login failed" in logs
+    assert "wrong-pass" not in logs and "bot1@example.com" not in logs  # never logged
+
+
+def test_auto_login_is_limited_per_hour():
+    import app.adapters.generic.adapter as mod
+
+    mod._AUTO_LOGINS.clear()
+    a = _login_adapter()
+    a.login_credentials = ("bot2@example.com", "x")
+    a.settings.ADAPTER_AUTO_LOGIN_PER_HOUR = 1
+    mod._AUTO_LOGINS[__import__("hashlib").sha256(b"bot2@example.com").hexdigest()] = [mod._MONOTONIC()]
+    assert asyncio.run(_run(a.auto_login(LoginFlowPage()))) is False

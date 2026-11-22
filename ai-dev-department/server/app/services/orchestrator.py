@@ -319,6 +319,33 @@ async def _ensure_context(account: Account, *, session_factory, browser_manager)
         return None
 
 
+def _wire_auto_login(adapter, account, *, session_factory, browser_manager) -> None:
+    """Give the adapter the account's login (if set) and a callback that saves
+    the new session after a successful auto-login."""
+    if not hasattr(adapter, "login_credentials"):
+        return
+    from app.services.credentials import login_credentials
+
+    adapter.login_credentials = login_credentials(account)
+    if hasattr(adapter, "expected_model"):
+        adapter.expected_model = getattr(account, "model", None)
+    account_id = account.id
+
+    async def save_session() -> None:
+        from app.security import encrypt_bytes
+
+        state = await browser_manager.export_storage_state(account_id)
+        async with session_factory() as session:
+            row = await session.get(Account, account_id)
+            if row is not None:
+                row.storage_state_encrypted = encrypt_bytes(json.dumps(state, default=str).encode("utf-8"))
+                if row.status == "relogin_needed":
+                    row.status = "active"
+                await session.commit()
+
+    adapter.on_logged_in = save_session
+
+
 async def _retryable_sleep(attempt: int, settings) -> None:
     """Exponential backoff before a retry: backoff * 2^(attempt-1)."""
     delay = settings.ADAPTER_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
@@ -336,7 +363,7 @@ def _is_retryable(exc: BaseException) -> bool:
     )
 
 
-_PERMANENT = ("is BLOCKED", "Stopped by", "Workflows", "no assigned account", "captcha", "pop-up",
+_PERMANENT = ("is not selected in this account", "is BLOCKED", "Stopped by", "Workflows", "no assigned account", "captcha", "pop-up",
               "logged out", "Log in again", "no live browser session", "cannot write")
 
 
@@ -444,7 +471,7 @@ class _Chat:
                 raise
             except RuntimeError as exc:
                 msg = str(exc)
-                if any(k in msg.lower() for k in ("login", "captcha", "pop-up", "stopped by the user")):
+                if any(k in msg.lower() for k in ("login", "captcha", "pop-up", "stopped by the user", "is not selected")):
                     raise  # retrying cannot help and could duplicate the message
                 last_exc = exc
             except Exception as exc:  # noqa: BLE001 - transient browser/network error
@@ -802,6 +829,7 @@ class _Run:
             inbox=await self.inbox_for(agent),
         )
         adapter = self.make_adapter()  # one adapter per task: callbacks must not be shared
+        _wire_auto_login(adapter, agent, session_factory=sf, browser_manager=self.browser_manager)
         chat = _Chat(
             adapter, agent_context, chat_ref=f"project-{self.project_id}-task-{task_id}",
             timeout=self.settings.AGENT_TIMEOUT_SECONDS,
@@ -1006,6 +1034,7 @@ async def run_project_logic(
 
     # ---- orchestrator: split the task ------------------------------------
     orchestrator_context = await _ensure_context(orchestrator, session_factory=session_factory, browser_manager=browser_manager)
+    _wire_auto_login(adapter, orchestrator, session_factory=session_factory, browser_manager=browser_manager)
     if orchestrator_context is None:
         await ws.send_to_project(
             project_id,
