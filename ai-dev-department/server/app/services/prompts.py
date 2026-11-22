@@ -252,8 +252,9 @@ double quote character (use «» or single quotes) and no backslashes."""
 def build_restart_prompt(task_prompt: str) -> str:
     """The agent's reply had no files (the work never reached the server, or the
     agent lost it): give it the whole task again."""
-    return ("The server did not receive your work: your last reply had no FILE blocks. If you no longer have "
-            "your previous work, that is fine - do the task again now, completely, from the description below.\n\n"
+    return ("The server did not receive your work (it only sees FILE blocks in the text of your reply). If you no "
+            "longer have your previous work, that is fine - do the task again now, completely, from the "
+            "description below. Do not answer BLOCKED because of the lost work.\n\n"
             + task_prompt)
 
 
@@ -263,6 +264,8 @@ def build_fix_prompt(error: str) -> str:
 
 Do not start over: send the SAME work again, complete, strictly in the required format (all FILE blocks
 with the full content, then the STATUS and SUMMARY lines at the very end).
+If you no longer have that work, do NOT answer BLOCKED: do the task again from the task description
+earlier in this chat.
 
 {OUTPUT_CONTRACT}
 """

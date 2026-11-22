@@ -812,6 +812,7 @@ class _Run:
             complete=_agent_reply_finished,
         )
         output, prompt, last_error = None, agent_prompt, ""
+        restarted = False
         try:
             for attempt in range(1, AGENT_FORMAT_ATTEMPTS + 1):
                 try:
@@ -823,6 +824,15 @@ class _Run:
                     output = parse_agent_output(reply)
                     if output.status == "DONE":
                         check_scope(output, scope)
+                    if (output.status == "BLOCKED" and prompt is not agent_prompt and not restarted
+                            and attempt < AGENT_FORMAT_ATTEMPTS):
+                        # BLOCKED right after «resend your work» usually means the agent
+                        # lost that work («I can't reproduce the previous reply»): give it
+                        # the whole task again instead of stopping the project.
+                        logger.info("Task %s: BLOCKED after a resend request; sending the whole task again", task_id)
+                        _save_reply(self.project_id, f"task-{task_id}-attempt-{attempt}", reply)
+                        prompt, restarted, output = prompts.build_restart_prompt(agent_prompt), True, None
+                        continue
                     break
                 except AgentOutputError as exc:
                     output, last_error = None, str(exc)
@@ -831,8 +841,10 @@ class _Run:
                     # Ask in the SAME chat: the agent keeps its work and just resends it.
                     # A reply without any file means the work never reached us (or the
                     # agent lost it): send the whole task again instead.
-                    prompt = (prompts.build_fix_prompt(last_error) if _has_file_blocks(reply)
-                              else prompts.build_restart_prompt(agent_prompt))
+                    if _has_file_blocks(reply) or restarted:
+                        prompt = prompts.build_fix_prompt(last_error)
+                    else:
+                        prompt, restarted = prompts.build_restart_prompt(agent_prompt), True
         finally:
             await chat.close()
         if output is None:

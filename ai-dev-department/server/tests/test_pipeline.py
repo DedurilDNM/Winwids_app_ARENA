@@ -492,3 +492,32 @@ def test_agent_reply_finished_needs_the_status_line() -> None:
     assert orchestrator._agent_reply_finished("FILE: a\n```\nx\n```\nSTATUS: DONE\nSUMMARY: ok")
     assert orchestrator._agent_reply_finished("**STATUS:** BLOCKED")
     assert not orchestrator._agent_reply_finished("Step 1: reading the files... FILE: a")
+
+
+def test_blocked_after_a_resend_request_gets_the_whole_task_again() -> None:
+    """«I can't reproduce the previous reply» given as STATUS: BLOCKED after the
+    fix prompt: the task is sent again in full, the project does not stop."""
+    ids = _setup()
+    p = ids["project"]
+    gh = FakeGitHub()
+    adapter = FakeAdapter({f"project-{p}": [_plan(ids), "## Summary\nDone."]})
+    replies = {
+        "coder": ["FILE: index.html\n```html\n<h1>Hi",  # cut off
+                  "STATUS: BLOCKED\nSUMMARY: I can't reproduce the previous reply; please resend the request.",
+                  "FILE: index.html\n```html\n<h1>Hi</h1>\n```\nSTATUS: DONE\nSUMMARY: Added index.html"],
+        "reviewer": ["FILE: reviews/r.md\n```\nok\n```\nSTATUS: DONE\nSUMMARY: ok"],
+    }
+    original_wait = adapter.wait_response
+
+    async def wait_response(page, timeout=600):
+        if page.startswith(f"project-{p}-task-"):
+            prompt = next(t for pg, t in adapter.prompts if pg == page)
+            return replies["coder" if "You are the Coder" in prompt else "reviewer"].pop(0)
+        return await original_wait(page, timeout)
+
+    adapter.wait_response = wait_response
+    status, _ = _run(ids, adapter, gh)
+    assert status == "completed", _load(ids)[0].result
+    coder = [t for pg, t in adapter.prompts if pg.startswith(f"project-{p}-task-")][:3]
+    assert "Do not start over" in coder[1]
+    assert "did not receive your work" in coder[2] and "You are the Coder" in coder[2]
