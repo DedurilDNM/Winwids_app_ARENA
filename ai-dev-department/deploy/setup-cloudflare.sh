@@ -85,7 +85,7 @@ systemctl enable -q caddy
 systemctl restart caddy
 
 echo "== 4. Tunnel service"
-pkill -f "cloudflared tunnel --url" 2>/dev/null || true   # old quick tunnels
+pkill -f "cloudflared tunnel .*--url" 2>/dev/null || true   # old quick tunnels
 cat > /etc/systemd/system/cloudflared-aidd.service <<EOF
 [Unit]
 Description=Cloudflare Tunnel (AI Dev Department)
