@@ -31,7 +31,7 @@ MY_IP="$(curl -fsS --max-time 10 https://api.ipify.org || true)"
 DNS_IP="$(getent ahostsv4 "$DOMAIN" | awk 'NR==1{print $1}' || true)"
 echo "   this server: ${MY_IP:-unknown}, $DOMAIN -> ${DNS_IP:-not found}"
 if [ -z "$DNS_IP" ] || { [ -n "$MY_IP" ] && [ "$DNS_IP" != "$MY_IP" ]; }; then
-  echo "   The domain must point to this server: on duckdns.org set its IP to ${MY_IP:-this server's public IP}, wait a minute, run again."
+  echo "   The domain must point to this server: on duckdns.org set its IP to ${MY_IP:-the public IP of this server}, wait a minute, run again."
   exit 1
 fi
 

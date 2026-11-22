@@ -1,5 +1,21 @@
 # Deployment (Debian 13)
 
+## Quick: permanent HTTPS address on your own domain (no Cloudflare)
+
+The domain (e.g. a DuckDNS name) must point to the server's public IP, and TCP
+ports 80 and 443 must be open. Then, once:
+
+```bash
+sudo bash deploy/setup-domain.sh <your-domain>
+```
+
+It installs Caddy (automatic Let's Encrypt certificate), proxies `/` to the app
+and `/novnc/` to the agents' browsers viewer, sets `NOVNC_PUBLIC_BASE_URL`, and
+runs the app as the systemd service `aidd`. Updates afterwards:
+`git pull && sudo systemctl restart aidd`.
+
+## Full install
+
 | File | Purpose |
 |------|---------|
 | `install.sh` | System packages (Xvfb, x11vnc, noVNC, websockify, Redis), venv, `.env` |
