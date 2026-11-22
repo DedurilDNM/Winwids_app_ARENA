@@ -29,6 +29,7 @@ from app.api import accounts as accounts_api
 from app.api import auth as auth_api
 from app.api import attention as attention_api
 from app.api import github as github_api
+from app.api import calibrate as calibrate_api
 from app.api import probe as probe_api
 from app.api import projects as projects_api
 from app.api import vnc as vnc_api
@@ -269,6 +270,7 @@ app.include_router(projects_api.router)
 app.include_router(github_api.router)
 app.include_router(attention_api.router)
 app.include_router(probe_api.router)
+app.include_router(calibrate_api.router)
 app.include_router(ws_api.router)
 
 

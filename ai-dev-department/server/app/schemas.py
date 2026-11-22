@@ -128,6 +128,7 @@ class AccountOut(BaseModel):
     created_at: datetime
     login_email: str | None = None
     has_login_password: bool = False
+    calibration: dict | None = None
     model: str | None = None
 
 

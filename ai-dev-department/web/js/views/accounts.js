@@ -88,6 +88,39 @@ function accountForm(title, initial = {}, submitLabel = "Сохранить") {
   });
 }
 
+const STEP_LABELS = {
+  starting: "запуск",
+  "opening a new chat": "открываю новый чат",
+  "sending the test message": "отправляю тестовое сообщение",
+  "waiting for the answer": "жду ответ",
+  "finding the answer on the page": "ищу ответ на странице",
+  "checking that the answer is read correctly": "проверяю, что ответ читается",
+};
+
+/** One line on the account card: is the account calibrated for the current chat mode? */
+function calibrationLine(c) {
+  if (!c) return h("p", { class: "small muted", "data-testid": "calibration" }, "Калибровка: не выполнена");
+  const when = c.checked_at ? fmtDate(c.checked_at) : "";
+  return h("p", { class: `small ${c.ok ? "muted" : "danger-text"}`, "data-testid": "calibration" },
+    c.ok ? `Калибровка: ✓ ${when}${c.modality && c.modality !== "default" ? ` (${c.modality})` : ""}`
+      : "Калибровка: не удалась — запустите ещё раз");
+}
+
+function calibrationDetails(res) {
+  if (!res) return h("p", { class: "small" }, "Нет результата");
+  const row = (ok, text) => h("li", {}, `${ok ? "✓" : "✗"} ${text}`);
+  const checks = res.checks || {};
+  return h("ul", { class: "checklist" },
+    row(res.ok, res.ok
+      ? (res.reader === "selector" ? "Ответ читается (найден устойчивый признак сообщения)"
+        : "Ответ читается (по соседству с вашим сообщением)")
+      : `Ответ не прочитан${res.reason ? `: ${res.reason}` : ""}`),
+    row(checks.code_block, "Блоки кода сохраняются"),
+    row(res.busy_found, res.busy_found ? "Найден индикатор «сервис пишет»"
+      : "Индикатор «пишет» не найден — сервер ждёт, пока текст перестанет меняться"),
+    res.reply_seconds != null ? h("li", {}, `⏱ ответ начался через ${res.reply_seconds} с`) : null);
+}
+
 export async function render(main) {
   let accounts = [];
   const list = h("div", { class: "grid", "data-testid": "accounts" });
@@ -135,9 +168,11 @@ export async function render(main) {
       acc.has_login_password
         ? h("p", { class: "small muted", "data-testid": "auto-login" }, "Автовход: включён")
         : null,
+      calibrationLine(acc.calibration),
       h("div", { class: "actions" },
         primary,
         h("button", { onclick: () => edit(acc) }, "Изменить"),
+        h("button", { onclick: () => calibrateAccount(acc), disabled, title: "Сервер сам изучит, как этот сайт показывает ответы (1 тестовое сообщение)" }, "Калибровка"),
         h("button", { onclick: () => diagnose(acc), disabled, title: "Проверить, что адаптер умеет отправлять сообщения и читать ответы" }, "Диагностика"),
         h("button", { onclick: () => toggle(acc) }, disabled ? "Включить" : "Отключить"),
         h("button", { class: "danger", onclick: () => remove(acc) }, "Удалить")));
@@ -190,6 +225,51 @@ export async function render(main) {
     } catch (err) {
       toast(`Не удалось сохранить: ${errorText(err)}`, { error: true });
     }
+  }
+
+  async function calibrateAccount(acc) {
+    await modal(`Калибровка: ${acc.name}`, (close) => {
+      let stopped = false;
+      const status = h("p", { class: "small muted" },
+        "Сервер откроет новый чат, отправит одно тестовое сообщение и сам найдёт, где на странице ответ "
+        + "и как видно, что сервис ещё пишет. Текст страницы никуда не передаётся. Обычно 1–3 минуты.");
+      const result = h("div", { "data-testid": "calibration-result" });
+      const runBtn = h("button", { class: "primary" }, "Запустить");
+      const closeBtn = h("button", { onclick: () => { stopped = true; close(); load(); } }, "Закрыть");
+      const show = (res) => {
+        runBtn.disabled = false;
+        runBtn.textContent = "Запустить ещё раз";
+        status.textContent = res && res.ok ? "Готово: настройки сохранены для этого аккаунта." : "Не получилось.";
+        result.replaceChildren(calibrationDetails(res));
+      };
+      async function poll() {
+        while (!stopped) {
+          await new Promise((r) => setTimeout(r, 2000));
+          if (stopped) return;
+          try {
+            const st = await api.calibrateStatus(acc.id);
+            if (!st.running) return show(st.result);
+            status.textContent = `Идёт калибровка: ${STEP_LABELS[st.step] || st.step || "…"}`;
+          } catch (err) {
+            return show({ ok: false, reason: errorText(err) });
+          }
+        }
+      }
+      runBtn.addEventListener("click", async () => {
+        runBtn.disabled = true;
+        result.replaceChildren();
+        status.textContent = "Идёт калибровка…";
+        try {
+          const st = await api.calibrateStart(acc.id);
+          if (!st.running) return show(st.result);
+          poll();
+        } catch (err) {
+          runBtn.disabled = false;
+          status.textContent = `Не удалось запустить: ${errorText(err)}`;
+        }
+      });
+      return h("div", {}, status, result, h("div", { class: "modal-actions" }, closeBtn, runBtn));
+    });
   }
 
   async function diagnose(acc) {

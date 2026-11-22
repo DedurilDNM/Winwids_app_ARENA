@@ -320,3 +320,39 @@ def test_login_credentials_are_write_only_and_encrypted(api):
                      json={"login_email": "x@example.com"}).json()["has_login_password"] is True
     body = api.patch(f"/api/accounts/{account['id']}", headers=_auth(token), json={"login_password": ""}).json()
     assert body["has_login_password"] is False and body["login_email"] == "x@example.com"
+
+
+def test_calibration_api_runs_in_background_and_shows_booleans_only(api, monkeypatch):
+    import time as _time
+
+    import app.api.calibrate as cal
+
+    token = _login_admin(api)
+    account = _create_account(api, token, name="cal-1")
+    secret_selector = 'div[data-author="assistant"]'
+
+    async def fake_run(acc, progress=None):
+        if progress:
+            await progress("waiting for the answer")
+        from app.adapters.generic.calibrate import apply_profile
+        from app.db import SessionLocal
+
+        profile = {"ok": True, "reader": "selector", "message": secret_selector, "busy": "button.stop",
+                   "checks": {"markers": True, "code_block": True}, "modality": "default", "checked_at": "2026-11-22T20:00:00",
+                   "seconds": 9.1}
+        await apply_profile(SessionLocal, acc.id, profile)
+        return profile
+
+    monkeypatch.setattr(cal, "run_calibration", fake_run)
+    resp = api.post(f"/api/accounts/{account['id']}/calibrate", headers=_auth(token))
+    assert resp.status_code == 202 and resp.json()["running"] is True
+    for _ in range(50):
+        st = api.get(f"/api/accounts/{account['id']}/calibrate", headers=_auth(token)).json()
+        if not st["running"]:
+            break
+        _time.sleep(0.1)
+    assert st["result"]["ok"] is True and st["result"]["busy_found"] is True
+    assert secret_selector not in str(st)  # selectors never leave the server
+    card = next(a for a in api.get("/api/accounts", headers=_auth(token)).json() if a["id"] == account["id"])
+    assert card["calibration"]["ok"] is True and card["calibration"]["reader"] == "selector"
+    assert secret_selector not in str(card)

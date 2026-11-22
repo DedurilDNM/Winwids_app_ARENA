@@ -376,6 +376,9 @@ class Adapter:
         self.login_credentials: tuple[str, str] | None = None
         # Optional: the model name the account's chat must use (Account.model).
         self.expected_model: str | None = None
+        # Optional: what calibration learned about this account's page (see calibrate.py):
+        # {"reader": "selector"|"anchor", "message": css, "busy": css, "input": css}
+        self.profile: dict | None = None
         self.on_logged_in = None
         self._marks: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # page -> reload marker
         # async (kind: "captcha" | "dialog" | "login", active: bool) -> None; set by the orchestrator
@@ -388,11 +391,17 @@ class Adapter:
     @property
     def _selectors(self) -> dict[str, str]:
         s = self.settings
+        p = self.profile or {}
+        message = s.ADAPTER_MESSAGE_SELECTOR
+        if p.get("reader") == "selector" and p.get("message"):
+            message = p["message"]
+        elif p.get("reader") == "anchor":
+            message = ""  # read the blocks after our own message
         return {
-            "input": s.ADAPTER_INPUT_SELECTOR,
+            "input": p.get("input") or s.ADAPTER_INPUT_SELECTOR,
             "send": s.ADAPTER_SEND_SELECTOR,
-            "message": s.ADAPTER_MESSAGE_SELECTOR,
-            "state": s.ADAPTER_STATE_SELECTOR,
+            "message": message,
+            "state": p["busy"] if "busy" in p else s.ADAPTER_STATE_SELECTOR,
             "login": s.ADAPTER_LOGIN_SELECTOR,
             "ready": s.ADAPTER_READY_SELECTOR,
             "dialog_accept": getattr(s, "ADAPTER_DIALOG_ACCEPT_SELECTOR", ""),
@@ -456,12 +465,12 @@ class Adapter:
     async def _last_message_text(self, page) -> str:
         """Return the text of the last visible message, or ""."""
         msg_sel = self._selectors["message"]
-        if not msg_sel:
-            return ""
-        try:
-            els = await page.query_selector_all(msg_sel)
-        except Exception:
-            return ""
+        els = []
+        if msg_sel:
+            try:
+                els = await page.query_selector_all(msg_sel)
+            except Exception:
+                els = []
         if not els:
             fallback = await self._fallback_reply(page)
             return fallback[1] if fallback else ""

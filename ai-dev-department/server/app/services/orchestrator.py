@@ -329,6 +329,11 @@ def _wire_auto_login(adapter, account, *, session_factory, browser_manager) -> N
     adapter.login_credentials = login_credentials(account)
     if hasattr(adapter, "expected_model"):
         adapter.expected_model = getattr(account, "model", None)
+    if hasattr(adapter, "profile"):
+        from app.adapters.generic.calibrate import profile_key
+
+        profile = (getattr(account, "adapter_profile", None) or {}).get(profile_key(adapter.settings))
+        adapter.profile = profile if profile and profile.get("ok") else None
     account_id = account.id
 
     async def save_session() -> None:

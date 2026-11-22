@@ -73,10 +73,22 @@ class Account(Base):
     login_password_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     # The service model this account's chat must use (checked before each task). Empty = any.
     model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # What calibration learned about the service page, per chat modality:
+    # {"Text": {"ok": true, "reader": "selector", "message": "...", "busy": "...", ...}}
+    adapter_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     @property
     def has_login_password(self) -> bool:
         return bool(self.login_password_encrypted)
+
+    @property
+    def calibration(self) -> dict | None:
+        """The saved calibration for the current chat modality (booleans only)."""
+        from app.adapters.generic.calibrate import profile_key
+        from app.api.calibrate import public_result
+        from app.config import get_settings
+
+        return public_result((self.adapter_profile or {}).get(profile_key(get_settings())))
 
 
 class Project(Base):

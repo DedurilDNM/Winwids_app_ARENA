@@ -176,6 +176,8 @@ export const api = {
   vncInfo: (id) => request("GET", `/api/accounts/${id}/vnc`),
   probeStart: (id) => request("POST", `/api/accounts/${id}/probe`),
   probeStatus: (id) => request("GET", `/api/accounts/${id}/probe`),
+  calibrateStart: (id) => request("POST", `/api/accounts/${id}/calibrate`),
+  calibrateStatus: (id) => request("GET", `/api/accounts/${id}/calibrate`),
 
   githubStatus: () => request("GET", "/api/github"),
   githubConnect: (token) => request("PUT", "/api/github", { token }),
