@@ -97,7 +97,8 @@ Type=notify
 DynamicUser=yes
 # the token is read from the environment, so it is not visible in the process list
 EnvironmentFile=/etc/cloudflared/ai-dept.env
-ExecStart=$CF --no-autoupdate tunnel run
+# http2 over TCP: QUIC (UDP) through NAT can stall requests at random
+ExecStart=$CF --no-autoupdate tunnel --protocol http2 run
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=0
