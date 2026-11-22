@@ -100,7 +100,7 @@ if curl -fsS --max-time 60 "https://$DOMAIN/health" >/dev/null 2>&1; then
   echo "   https://$DOMAIN : OK"
   echo
   echo "Done. Open https://$DOMAIN/app/  (install it as an app from the browser menu)."
-  echo "Quick tunnels (cloudflared --url) are not needed any more: pkill -f "cloudflared tunnel .*--url""
+  echo "Quick tunnels (cloudflared --url) are not needed any more: pkill -f 'cloudflared tunnel .*--url'"
 else
   echo "   https://$DOMAIN : not reachable yet. Usually ports 80/443 are closed in the cloud firewall"
   echo "   (open TCP 80 and 443 to 0.0.0.0/0), then: sudo systemctl restart caddy ; journalctl -u caddy -n 30"
