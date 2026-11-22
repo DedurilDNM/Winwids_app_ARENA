@@ -346,3 +346,56 @@ def test_empty_model_list_is_fixed_by_opening_a_chat_and_a_new_one_in_the_app():
 
     state = asyncio.run(go())
     assert state == {"mode": "Chat", "modality": "Code", "model": "gemini-4-argon-high", "navigated": True, "path": "/"}
+
+
+TEXT_MODE_CHAT = """<meta charset="utf-8">
+<main><div id="list"></div></main>
+<textarea id="box"></textarea><button id="send">Send</button>
+<footer><p>AI can make mistakes. Check important info.</p></footer>
+<script>
+  const list = document.getElementById("list");
+  document.getElementById("send").onclick = () => {
+    const text = document.getElementById("box").value; document.getElementById("box").value = "";
+    const user = document.createElement("div"); user.className = "row";
+    user.innerHTML = "<div class='bubble'><p></p></div>"; user.querySelector("p").textContent = text;
+    list.append(user);
+    setTimeout(() => {
+      const reply = document.createElement("div"); reply.className = "row";
+      reply.innerHTML = "<div class='head'><span>gemini-4-argon-high</span><small>Thought for 2 seconds</small></div>"
+        + "<div class='body'><div class='code'><div class='hdr'><span>JSON</span><button>Copy</button></div>"
+        + "<pre><code>{\\"tasks\\": [{\\"id\\": \\"t1\\"}]}</code></pre></div></div>"
+        + "<div class='actions'><button>👍</button></div>";
+      list.append(reply);
+    }, 1200);
+  };
+</script>
+"""
+
+
+def test_reply_is_found_next_to_our_message_when_the_selector_finds_nothing():
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic import adapter as mod
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            page = await browser.new_page()
+            await page.set_content(TEXT_MODE_CHAT)
+            a = mod.Adapter(settings=_login_settings(ADAPTER_POLL_INTERVAL_SECONDS=0.2, ADAPTER_SETTLE_SECONDS=1))
+            await a.send_message(page, "You are the ORCHESTRATOR of a software project. Split the project task.")
+            text = await a.wait_response(page, timeout=20)
+            # a follow-up in the same chat: the new reply, not the old one
+            await page.evaluate("""() => { document.getElementById('send').onclick = () => {
+                const t = document.getElementById('box').value; document.getElementById('box').value = '';
+                const u = document.createElement('div'); u.textContent = t; list.append(u);
+                setTimeout(() => { const r = document.createElement('div'); r.innerHTML = '<p>second answer here</p>';
+                  list.append(r); }, 800); }; }""")
+            await a.send_message(page, "Your previous reply could not be read by the server: please resend it.")
+            second = await a.wait_response(page, timeout=20)
+            await browser.close()
+            return text, second
+
+    text, second = asyncio.run(go())
+    assert '{"tasks": [{"id": "t1"}]}' in text and "Copy" not in text and "mistakes" not in text
+    assert second.strip() == "second answer here"

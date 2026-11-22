@@ -222,6 +222,9 @@ class Settings(BaseSettings):
     # A reply that shows no new text for this long («thinking» forever): reload
     # the chat in place and read it again (the answer is often already there). 0 = off.
     ADAPTER_STUCK_REFRESH_SECONDS: float = 300
+    # No message matches ADAPTER_MESSAGE_SELECTOR (e.g. another chat mode): read
+    # the blocks right after our own sent message as the reply.
+    ADAPTER_REPLY_FALLBACK: bool = True
     # After each reply: press Escape (closes rating/feedback panels) and click
     # ADAPTER_DISMISS_SELECTOR if it is visible.
     ADAPTER_AFTER_REPLY_ESCAPE: bool = True

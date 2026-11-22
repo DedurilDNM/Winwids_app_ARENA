@@ -124,6 +124,39 @@ _MESSAGE_TEXT_JS = r"""
 """.replace("FENCE", "```")
 
 
+# Reply without a message selector match (e.g. another chat mode renders other
+# markup): anchor on OUR sent message (its first words) and take the blocks right
+# after it as the reply. Elements present before sending are marked and ignored,
+# so a footer or a hint below the chat is never taken for a reply.
+_REPLY_FALLBACK_JS = r"""
+(args) => {
+  const msgText = __MESSAGE_TEXT__;
+  if (args.mark) { document.querySelectorAll('body *').forEach((e) => e.setAttribute('data-aidd-seen', '')); return null; }
+  const norm = (t) => (t || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9\u0430-\u044f\u0451]/g, '');
+  const head = norm(args.head).slice(0, 80);
+  if (head.length < 12) return { count: 0, text: '' };
+  const skip = (e) => e.closest('textarea, input, [contenteditable="true"], script, style');
+  const hits = [...document.querySelectorAll('body *')].filter((e) => !skip(e) && norm(e.textContent).includes(head));
+  const deep = hits.filter((e) => ![...e.children].some((c) => norm(c.textContent).includes(head)));
+  if (!deep.length) return { count: 0, text: '' };
+  const bubble = deep[deep.length - 1];  // the latest copy of our message
+  const top = bubble.getBoundingClientRect().top;
+  let row = bubble;
+  for (let up = 0; up < 8 && row.parentElement && row.parentElement !== document.body; up++) {
+    const parent = row.parentElement;
+    const sibs = [...parent.children];
+    const after = sibs.slice(sibs.indexOf(row) + 1).filter((x) => !x.hasAttribute('data-aidd-seen')
+      && !x.querySelector('textarea, input, [contenteditable="true"]') && !norm(x.textContent).includes(head)
+      && (x.innerText || '').trim().length > 0 && x.getBoundingClientRect().top >= top);
+    if (after.length) {
+      return { count: sibs.length, text: after.map((x) => msgText(x)).filter(Boolean).join('\n\n').trim() };
+    }
+    row = parent;
+  }
+  return { count: 0, text: '' };
+}
+""".replace("__MESSAGE_TEXT__", _MESSAGE_TEXT_JS.strip())
+
 # Chat setup (mode / modality / model) by visible labels. Marks the element to
 # click with data-aidd-pick; returns a boolean only (no page text leaves the page).
 _PICK_TOGGLE_JS = r"""
@@ -420,7 +453,8 @@ class Adapter:
         except Exception:
             return ""
         if not els:
-            return ""
+            fallback = await self._fallback_reply(page)
+            return fallback[1] if fallback else ""
         last = els[-1]
         try:
             text = await last.evaluate(_MESSAGE_TEXT_JS)
@@ -439,12 +473,37 @@ class Adapter:
 
     async def _message_count(self, page) -> int:
         msg_sel = self._selectors["message"]
-        if not msg_sel:
-            return 0
+        count = 0
+        if msg_sel:
+            try:
+                count = len(await page.query_selector_all(msg_sel))
+            except Exception:
+                count = 0
+        if count == 0:
+            fallback = await self._fallback_reply(page)
+            return fallback[0] if fallback else 0
+        return count
+
+    async def _fallback_reply(self, page) -> tuple[int, str] | None:
+        """(count, text) found next to our own last sent message, or None."""
+        sent = self._last_sent.get(id(page), "")
+        if not sent or not getattr(self.settings, "ADAPTER_REPLY_FALLBACK", True):
+            return None
         try:
-            return len(await page.query_selector_all(msg_sel))
+            result = await page.evaluate(_REPLY_FALLBACK_JS, {"head": sent[:400]})
         except Exception:
-            return 0
+            return None
+        if not isinstance(result, dict):
+            return None
+        return int(result.get("count") or 0), str(result.get("text") or "")
+
+    async def _mark_seen(self, page) -> None:
+        if not hasattr(page, "evaluate"):
+            return
+        try:
+            await page.evaluate(_REPLY_FALLBACK_JS, {"mark": True})
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- protocol
 
@@ -732,6 +791,7 @@ class Adapter:
 
         # Snapshot BEFORE sending: a fast reply must not end up in "before".
         self._before[id(page)] = (await self._message_count(page), await self._last_message_text(page))
+        await self._mark_seen(page)  # what is on the page now can never be the new reply
         self._last_sent[id(page)] = text
         await self._submit(page, text)
         logger.debug("Message sent to service (len=%d)", len(text))
