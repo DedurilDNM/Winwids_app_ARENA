@@ -219,6 +219,9 @@ class Settings(BaseSettings):
     # A reply that stopped changing but does not look finished (an agent between
     # steps: no STATUS line yet) is taken only after this many seconds unchanged.
     ADAPTER_INCOMPLETE_SETTLE_SECONDS: float = 120
+    # A reply that shows no new text for this long («thinking» forever): reload
+    # the chat in place and read it again (the answer is often already there). 0 = off.
+    ADAPTER_STUCK_REFRESH_SECONDS: float = 300
     # After each reply: press Escape (closes rating/feedback panels) and click
     # ADAPTER_DISMISS_SELECTOR if it is visible.
     ADAPTER_AFTER_REPLY_ESCAPE: bool = True

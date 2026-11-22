@@ -28,6 +28,7 @@ import hashlib
 import logging
 import re
 import time
+from urllib.parse import urlsplit
 from typing import Literal
 
 from app.config import get_settings
@@ -993,6 +994,27 @@ class Adapter:
             await self.prepare_page(page)  # a reload resets things like the chat mode
             await self._submit(page, text, depth + 1)
 
+    async def _refresh_chat(self, page) -> bool:
+        """Reload the current chat in place. Never on the bare start page (the chat
+        would be lost); our own reload is re-marked, so nothing is sent again."""
+        try:
+            path = urlsplit(page.url).path
+        except Exception:
+            path = ""
+        if path in ("", "/"):
+            logger.info("Chat looks stuck, but it has no own address yet: not refreshing")
+            return False
+        logger.info("Chat looks stuck (no new text for a while): refreshing the page")
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=self._timeout_ms(
+                self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS))
+        except Exception:
+            logger.warning("Chat refresh failed", exc_info=True)
+            return False
+        await self._wait_ready(page)
+        await self._mark(page)  # our own reload: not a reason to send the message again
+        return True
+
     async def _wait_ready(self, page) -> None:
         """After a reload: wait until the page has loaded and shows the chat input."""
         try:
@@ -1161,6 +1183,8 @@ class Adapter:
         before_count, before_text = snapshot
         candidate, candidate_since = "", 0.0
         seen = snapshot
+        stuck_after = float(getattr(self.settings, "ADAPTER_STUCK_REFRESH_SECONDS", 300) or 0)
+        last_change = start  # last time the reply TEXT changed (a busy indicator alone does not count)
         resends = 0
 
         def paused(seconds: float) -> None:
@@ -1198,8 +1222,17 @@ class Adapter:
             now = _MONOTONIC()
             after_count = await self._message_count(page)
             after_text = await self._last_message_text(page)
+            if (after_count, after_text) != seen:
+                last_change = now
             if state == "generating" or (after_count, after_text) != seen:
                 last_progress, seen = now, (after_count, after_text)  # the service is working
+            if stuck_after and now - last_change >= stuck_after:
+                # «thinking» forever with nothing new on screen: the answer is often already
+                # there - reload THIS chat (same tab, same URL) and read it again
+                last_change = now
+                if await self._refresh_chat(page):
+                    candidate = ""
+                    continue
 
             fresh = bool(
                 state != "generating"

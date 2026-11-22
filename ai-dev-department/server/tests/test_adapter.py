@@ -912,3 +912,54 @@ def test_auto_login_is_limited_per_hour():
     a.settings.ADAPTER_AUTO_LOGIN_PER_HOUR = 1
     mod._AUTO_LOGINS[__import__("hashlib").sha256(b"bot2@example.com").hexdigest()] = [mod._MONOTONIC()]
     assert asyncio.run(_run(a.auto_login(LoginFlowPage()))) is False
+
+
+class StuckThinkingPage(StubPage):
+    """«Thinking» forever on screen; the answer is visible only after a reload."""
+
+    def __init__(self, url):
+        super().__init__(state="generating")
+        self.url, self.reloads, self.mark = url, 0, None
+
+    async def evaluate(self, script, *args):
+        if "__aiddMark = t" in script:
+            self.mark = args[0]
+            return None
+        if "__aiddMark ||" in script:
+            return self.mark
+        return False
+
+    async def reload(self, **kw):
+        self.reloads += 1
+        self.mark = None
+        self.state = "idle"
+        self.messages.append(_StubEl(text="FILE: a.txt ... STATUS: DONE"))
+
+    async def wait_for_load_state(self, *a, **kw):
+        pass
+
+
+def test_stuck_chat_is_refreshed_in_place_and_the_reply_read():
+    page = StuckThinkingPage("https://service.example.com/c/0aa1b2c3-d4e5")
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.05, ADAPTER_SETTLE_SECONDS=0.1, ADAPTER_STUCK_REFRESH_SECONDS=0.5)
+
+    async def flow():
+        await a.send_message(page, "build it")
+        return await a.wait_response(page, timeout=10)
+
+    assert asyncio.run(_run(flow())) == "FILE: a.txt ... STATUS: DONE"
+    assert page.reloads == 1
+    assert page.filled[DEFAULT_INPUT] == "build it"  # typed once: our own reload is not a reason to resend
+
+
+def test_stuck_chat_without_its_own_address_is_not_refreshed():
+    page = StuckThinkingPage("https://service.example.com/")
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.05, ADAPTER_STUCK_REFRESH_SECONDS=0.3, ADAPTER_MAX_REPLY_SECONDS=1.2)
+
+    async def flow():
+        await a.send_message(page, "build it")
+        await a.wait_response(page, timeout=0.5)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(_run(flow()))
+    assert page.reloads == 0
