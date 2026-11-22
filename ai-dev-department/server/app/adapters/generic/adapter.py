@@ -169,6 +169,42 @@ _PICK_OPTION_JS = r"""
 }
 """
 
+# In-app navigation (no page reload): the sidebar toggle, the most recent chat in
+# the history list, the «new chat» control. Marks the target with data-aidd-nav.
+_NAV_JS = r"""
+(args) => {
+  const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const meta = (e) => [e.getAttribute('aria-label'), e.getAttribute('title'), e.getAttribute('data-testid')].join(' ');
+  document.querySelectorAll('[data-aidd-nav]').forEach((e) => e.removeAttribute('data-aidd-nav'));
+  let el = null;
+  if (args.selector) {
+    el = [...document.querySelectorAll(args.selector)].find(vis) || null;
+  } else if (args.kind === 'history') {
+    el = [...document.querySelectorAll('a[href]')].filter(vis).find((a) => {
+      try {
+        const u = new URL(a.href, location.href);
+        return u.origin === location.origin && u.pathname !== location.pathname
+          && /[0-9a-f]{8}-[0-9a-f]{4}|[0-9a-z_-]{16,}/i.test(u.pathname.split('/').pop() || '');
+      } catch (e) { return false; }
+    }) || null;
+  } else if (args.kind === 'sidebar') {
+    const btns = [...document.querySelectorAll('button, [role="button"]')].filter(vis);
+    el = btns.find((b) => /sidebar|side bar|history|menu|panel|navigation/i.test(meta(b)))
+      || btns.filter((b) => { const r = b.getBoundingClientRect(); return r.left < 90 && r.top < 90 && !(b.innerText || '').trim(); })[0]
+      || null;
+  } else if (args.kind === 'new') {
+    const c = [...document.querySelectorAll('a, button, [role="button"]')].filter(vis);
+    el = c.find((b) => /new (chat|thread|conversation|task)/i.test(meta(b) + ' ' + (b.innerText || '')))
+      || c.find((b) => { try { return b.tagName === 'A' && new URL(b.href, location.href).pathname === '/'; } catch (e) { return false; } })
+      || null;
+  }
+  if (!el) return false;
+  el.setAttribute('data-aidd-nav', '1');
+  return true;
+}
+"""
+
 _DIALOG_JS = """
 () => [...document.querySelectorAll("[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open]")].some((d) => {
   const r = d.getBoundingClientRect();
@@ -457,6 +493,35 @@ class Adapter:
             logger.warning("Model picker: could not pick the model", exc_info=True)
         return False
 
+    async def _nav(self, page, kind: str) -> bool:
+        """Click a navigation control found by _NAV_JS (or by an ADAPTER_*_SELECTOR)."""
+        setting = {"sidebar": "ADAPTER_SIDEBAR_SELECTOR", "history": "ADAPTER_HISTORY_LINK_SELECTOR",
+                   "new": "ADAPTER_NEW_CHAT_SELECTOR"}[kind]
+        selector = (getattr(self.settings, setting, "") or "").strip()
+        try:
+            if not await page.evaluate(_NAV_JS, {"kind": kind, "selector": selector}):
+                return False
+            await page.click("[data-aidd-nav]", timeout=5_000)
+            await asyncio.sleep(2.0)
+            return True
+        except Exception:
+            return False
+
+    async def _new_chat_in_app(self, page) -> bool:
+        """Some services fill the model list only after in-app navigation: open the
+        most recent chat (opening the sidebar if needed), then a new chat - without
+        reloading the page."""
+        if not await self._nav(page, "history"):
+            if await self._nav(page, "sidebar"):
+                await self._nav(page, "history")
+        opened = await self._nav(page, "new")
+        if not opened and await self._nav(page, "sidebar"):  # the sidebar may have closed again
+            opened = await self._nav(page, "new")
+        logger.info("Model list workaround: new chat opened in the app: %s", opened)
+        if opened:
+            await self._wait_ready(page)
+        return opened
+
     async def _ensure_model(self, page) -> None:
         """If the account has a model set: make sure the chat uses it (the
         model button shows its name). ADAPTER_MODEL_CLICKS ({model} = the name)
@@ -470,6 +535,15 @@ class Adapter:
         if await self._auto_pick_model(page, model) and await self._wait_visible(page, sel, 5) is not None:
             logger.info("Model selected: %s", model)
             return
+        if getattr(self.settings, "ADAPTER_MODEL_AUTO", True) and await self._new_chat_in_app(page):
+            try:
+                await self._setup_chat(page)
+            except Exception:
+                logger.warning("Chat setup failed", exc_info=True)
+            if await self._wait_visible(page, sel, 3) is not None or (
+                    await self._auto_pick_model(page, model) and await self._wait_visible(page, sel, 5) is not None):
+                logger.info("Model selected after the in-app new chat: %s", model)
+                return
         clicks = (getattr(self.settings, "ADAPTER_MODEL_CLICKS", "") or "").replace("{model}", model.replace('"', ""))
         for selector in [part.strip() for part in clicks.split("||") if part.strip()]:
             try:

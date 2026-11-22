@@ -188,6 +188,11 @@ class Settings(BaseSettings):
     ADAPTER_CHAT_MODE: str = ""
     ADAPTER_CHAT_MODES: str = "Chat,Agent"
     ADAPTER_MODALITY: str = ""
+    # If the model list is empty on a fresh page: open the latest chat and a new
+    # one inside the app. Found automatically; these override the search.
+    ADAPTER_SIDEBAR_SELECTOR: str = ""
+    ADAPTER_HISTORY_LINK_SELECTOR: str = ""
+    ADAPTER_NEW_CHAT_SELECTOR: str = ""
     ADAPTER_MODEL_CLICKS: str = ""
     # Extra selector that must appear before the chat is considered ready
     # (empty = skip this check).

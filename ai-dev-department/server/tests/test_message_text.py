@@ -287,3 +287,44 @@ def test_chat_toolbar_setup_picks_mode_modality_and_model():
     first, second = asyncio.run(go())
     want = {"mode": "Chat", "modality": "Code", "model": "gemini-4-argon-high"}
     assert first == want and second == want
+
+
+EMPTY_MODELS_SPA = TOOLBAR.replace("<div id=\"layer\"></div>", """<div id="layer"></div>
+<button id="toggle" aria-label="Open sidebar" style="position:fixed;left:4px;top:4px">=</button>
+<nav id="side" style="display:none">
+  <a id="newchat" href="/">New chat</a>
+  <a class="hist" href="/c/0aa1b2c3-d4e5-4f60-8a9b-0c1d2e3f4a5b">Older chat</a>
+</nav>""").replace("const state = {", """window.navigated = false;
+  const go = (e, path) => { e.preventDefault(); history.pushState({}, "", path); window.navigated = true; };
+  document.getElementById("toggle").onclick = () => { document.getElementById("side").style.display = ""; };
+  document.querySelector(".hist").onclick = (e) => go(e, "/c/0aa1b2c3-d4e5-4f60-8a9b-0c1d2e3f4a5b");
+  document.getElementById("newchat").onclick = (e) => go(e, "/");
+  const state = {""").replace(
+    '[["Max", "Router"], ["claude-sonnet-5-5-high", ""], ["gemini-4-argon-high", ""]]',
+    'window.navigated ? [["Max", "Router"], ["claude-sonnet-5-5-high", ""], ["gemini-4-argon-high", ""]] : []')
+
+
+def test_empty_model_list_is_fixed_by_opening_a_chat_and_a_new_one_in_the_app():
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic import adapter as mod
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            page = await browser.new_page()
+
+            async def serve(route):
+                await route.fulfill(status=200, content_type="text/html", body=EMPTY_MODELS_SPA)
+
+            await page.route("https://service.example.com/**", serve)
+            await page.goto("https://service.example.com/")
+            a = mod.Adapter(settings=_login_settings(ADAPTER_CHAT_MODE="Chat", ADAPTER_MODALITY="Code"))
+            a.expected_model = "gemini-4-argon-high"
+            await a.prepare_page(page)
+            state = await page.evaluate("({...window.state, navigated: window.navigated, path: location.pathname})")
+            await browser.close()
+            return state
+
+    state = asyncio.run(go())
+    assert state == {"mode": "Chat", "modality": "Code", "model": "gemini-4-argon-high", "navigated": True, "path": "/"}
