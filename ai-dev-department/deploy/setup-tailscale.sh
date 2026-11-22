@@ -43,7 +43,8 @@ if ! command -v caddy >/dev/null; then
 fi
 cat > /etc/caddy/Caddyfile <<EOF
 # Local only: Tailscale serves it with HTTPS (deploy/setup-tailscale.sh).
-http://127.0.0.1:$LOCAL_PORT {
+# any Host name (Tailscale passes the public one); listens on 127.0.0.1 only
+http://:$LOCAL_PORT {
 	bind 127.0.0.1
 	encode gzip
 	# agents' browsers (noVNC + websocket); prefix stripped for websockify

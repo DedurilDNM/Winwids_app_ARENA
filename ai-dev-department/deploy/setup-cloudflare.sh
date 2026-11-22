@@ -68,7 +68,8 @@ if ! command -v caddy >/dev/null; then
 fi
 cat > /etc/caddy/Caddyfile <<EOF
 # Local only: the Cloudflare Tunnel publishes it with HTTPS (deploy/setup-cloudflare.sh).
-http://127.0.0.1:$LOCAL_PORT, http://localhost:$LOCAL_PORT {
+# any Host name (the tunnel passes the public one); listens on 127.0.0.1 only
+http://:$LOCAL_PORT {
 	bind 127.0.0.1
 	encode gzip
 	# agents' browsers (noVNC + websocket); prefix stripped for websockify
@@ -132,7 +133,7 @@ curl -fsS http://127.0.0.1:$LOCAL_PORT/health >/dev/null && echo "   app via Cad
 systemctl is-active -q cloudflared-aidd && echo "   tunnel service: running" || echo "   tunnel service: NOT running (journalctl -u cloudflared-aidd -n 30)"
 OK=0
 for i in $(seq 1 12); do
-  if curl -fsS --max-time 10 "https://$HOST/health" >/dev/null 2>&1; then OK=1; break; fi
+  if curl -fsS --max-time 10 "https://$HOST/health" 2>/dev/null | grep -q "\"ok\""; then OK=1; break; fi
   sleep 5
 done
 if [ "$OK" = 1 ]; then
