@@ -135,3 +135,86 @@ def test_profile_selectors_override_the_env_ones():
     assert a._selectors["input"] == "#box"
     a.profile = {"ok": True, "reader": "anchor", "message": "", "busy": "button.x"}
     assert a._selectors["message"] == "" and a._selectors["state"] == "button.x"
+
+
+# ------------------------------------------------------------- preflight
+
+
+class _WS:
+    def __init__(self):
+        self.events = []
+
+    async def send_to_project(self, project_id, event):
+        self.events.append(event)
+
+
+def _account(i, **kw):
+    from types import SimpleNamespace
+
+    base = dict(id=i, name=f"acc-{i}", adapter_profile=None, model=None, login_email=None, service_note="",
+                login_password_encrypted=None, storage_state_encrypted=None)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_preflight_calibrates_new_accounts_checks_calibrated_ones_and_reports_problems():
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic.adapter import Adapter
+    from app.adapters.generic.calibrate import _now_iso
+    from app.db import SessionLocal
+    from app.services import orchestrator
+
+    fresh = {"default": {"ok": True, "reader": "selector", "message": 'div[data-author="assistant"]', "busy": "",
+                         "input": "", "checked_at": _now_iso(), "modality": "default"}}
+    new_acc, calibrated, wrong_model, no_browser = (
+        _account(901), _account(902, adapter_profile=fresh), _account(903, adapter_profile=fresh, model="no-such-model-9"),
+        _account(904))
+
+    async def go():
+        from app.db import init_db
+
+        await init_db()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            contexts = {}
+            for acc in (new_acc, calibrated, wrong_model):
+                ctx = await browser.new_context()
+
+                async def serve(route):
+                    await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=_page("data"))
+
+                await ctx.route("https://service.example.com/**", serve)
+                contexts[acc.id] = ctx
+
+            class BM:
+                def get_context(self, account_id):
+                    return contexts.get(account_id)
+
+            ws = _WS()
+            settings = _settings(ADAPTER_MODEL_AUTO=False)
+            problems = await orchestrator._preflight(
+                [new_acc, calibrated, wrong_model, no_browser], project_id=1, user_id=1, settings=settings,
+                session_factory=SessionLocal, browser_manager=BM(), make_adapter=lambda: Adapter(settings=settings), ws=ws)
+            await browser.close()
+            return problems, ws.events
+
+    problems, events = asyncio.run(go())
+    steps = {}
+    for e in events:
+        steps.setdefault(e["account_id"], []).append(e["status"])
+    assert steps[901] == ["checking", "calibrating", "ok"] and new_acc.adapter_profile["default"]["ok"]
+    assert steps[902] == ["checking", "ok"]  # fresh calibration: quick check, no test message
+    assert steps[903][-1] == "problem" and steps[904][-1] == "problem"
+    assert len(problems) == 2
+    assert any("no-such-model-9" in p for p in problems) and any("no browser session" in p for p in problems)
+
+
+def test_old_calibration_is_not_fresh():
+    from app.services.orchestrator import _calibration_fresh
+
+    s = _settings(PREFLIGHT_CALIBRATION_MAX_AGE_HOURS=72)
+    assert _calibration_fresh({"ok": True, "checked_at": "2099-01-01T00:00:00"}, s)
+    assert not _calibration_fresh({"ok": True, "checked_at": "2000-01-01T00:00:00"}, s)
+    assert not _calibration_fresh({"ok": False, "checked_at": "2099-01-01T00:00:00"}, s)
+    assert not _calibration_fresh(None, s)

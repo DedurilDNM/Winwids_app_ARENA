@@ -480,6 +480,14 @@ async function renderProject(main, projectId) {
     review_done: () => ["Оркестратор принял работу", "ok"],
     task_retry: (e) => [`Задача #${e.task_id}: временный сбой, повторяю автоматически`, "info"],
     project_resumed: () => ["Проект продолжен с места остановки", "ok"],
+    preflight: (e) => {
+      const who = `Аккаунт «${e.account_name || e.account_id}»`;
+      if (e.status === "checking") return [`${who}: проверка перед запуском…`, "info"];
+      if (e.status === "calibrating") return [`${who}: калибровка (одно тестовое сообщение)…`, "info"];
+      if (e.status === "ok") return [`${who}: готов к работе`, "ok"];
+      return [`${who}: ${e.message}`, "danger"];
+    },
+    orchestrator_retry: () => ["Оркестратор не ответил — пробую в новом чате", "info"],
     ci_waiting: () => ["Ждём проверку сборки (GitHub Actions)…", "info"],
     ci_result: (e) => [(CI_STATUS[e.ci_status] || [`CI: ${e.ci_status}`])[0], e.ci_status === "passed" ? "ok" : e.ci_status === "failed" ? "danger" : ""],
   };

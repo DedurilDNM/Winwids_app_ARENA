@@ -39,6 +39,9 @@ if (location.search.includes("editor=ce")) {
 const val = () => (box.value !== undefined ? box.value : box.innerText) || "";
 const clear = () => { if (box.value !== undefined) box.value = ""; else box.innerText = ""; };
 function projectReply(t) {
+  // The server's calibration message: answer it like a model (compute the sums).
+  const sums = [...t.matchAll(/sum of (\\d+) and (\\d+)/g)].map((m) => Number(m[1]) + Number(m[2]));
+  if (sums.length === 2) return "QX" + sums[0] + "\\n```\\nZW" + sums[1] + "\\n```\\nSTATUS: DONE";
   // Plays the orchestrator and the agents of a real project run.
   if (t.includes("Split the project task")) {
     const ids = [...t.matchAll(/account_id=(\\d+) name='[^']*' role=(\\w+)/g)];

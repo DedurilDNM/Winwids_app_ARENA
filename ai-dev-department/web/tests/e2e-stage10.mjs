@@ -44,7 +44,8 @@ const deadline = Date.now() + 240000;
 while (Date.now() < deadline) {
   const status = await page.textContent("[data-testid=project-status]");
   if (/Завершён|ошибка/.test(status)) break;
-  if (await page.locator("[data-testid=attention]").count()) {
+  const pending = await page.locator("[data-testid=attention]").count();
+  if (pending) {
     // «нужна помощь» -> open the agent's browser -> F5 inside the remote browser
     await page.click("[data-testid=attention] button:has-text('Открыть браузер')");
     await page.waitForFunction(() => document.querySelector(".browser-status")?.textContent.includes("Подключено"), null, { timeout: 30000 });
@@ -56,8 +57,9 @@ while (Date.now() < deadline) {
     await page.waitForTimeout(3000);
     await page.click(".browser-overlay button[aria-label='Закрыть']");
     helped += 1;
-    await page.waitForSelector("[data-testid=attention]", { state: "detached", timeout: 60000 });
-    console.log(`✓ captcha #${helped}: pressed F5 in the agent's browser through VNC, the banner cleared`);
+    // several agents may need help at once (parallel preflight): one item less is enough
+    await page.waitForFunction((n) => document.querySelectorAll("[data-testid=attention]").length < n, pending, { timeout: 60000 });
+    console.log(`✓ captcha #${helped}: pressed F5 in the agent's browser through VNC, the banner item cleared`);
   }
   await page.waitForTimeout(1000);
 }

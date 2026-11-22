@@ -609,3 +609,12 @@ def test_orchestrator_plan_timeout_is_retried_in_a_new_chat_and_summary_failure_
     assert len(plan_asks) == 2  # timed out once, asked again in a new chat
     assert "could not write the final summary" in project.result and "Added index.html" in project.result
     assert any(e["type"] == "orchestrator_retry" for e in ws.events)
+
+
+def test_unrelated_error_mentioning_login_is_not_a_logout() -> None:
+    class DBError(Exception):
+        pass
+
+    reason = orchestrator._explain(DBError("no such column: accounts.login_email"), "acc")
+    assert "logged out" not in reason and reason.kind == "unknown"
+    assert "logged out" in orchestrator._explain(RuntimeError("Service requires login"), "acc")

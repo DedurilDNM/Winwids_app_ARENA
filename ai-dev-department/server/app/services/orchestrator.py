@@ -351,6 +351,84 @@ def _wire_auto_login(adapter, account, *, session_factory, browser_manager) -> N
     adapter.on_logged_in = save_session
 
 
+def _calibration_fresh(profile: dict | None, settings) -> bool:
+    if not profile or not profile.get("ok"):
+        return False
+    max_age = float(getattr(settings, "PREFLIGHT_CALIBRATION_MAX_AGE_HOURS", 72) or 0)
+    if not max_age:
+        return True
+    try:
+        checked = datetime.fromisoformat(profile.get("checked_at") or "")
+    except ValueError:
+        return False
+    return (_utc_naive() - checked).total_seconds() < max_age * 3600
+
+
+async def _preflight(accounts: list, *, project_id: int, user_id: int, settings, session_factory, browser_manager,
+                     make_adapter, ws) -> list[str]:
+    """Check every account of the project in parallel BEFORE the project starts:
+    browser alive, logged in (auto-login), chat mode / modality / model set, chat
+    input present; accounts without a fresh calibration are calibrated (one test
+    message). Returns the problems (empty = all good). Adapters that cannot be
+    checked (scripted test adapters) pass."""
+    probe = make_adapter()
+    if not all(hasattr(probe, name) for name in ("profile", "open_chat", "_first_visible", "_is_login_required")):
+        return []
+    from app.adapters.generic.calibrate import apply_profile, calibrate, profile_key
+
+    async def check(account) -> str | None:
+        async def emit(step: str, reason: str = "") -> None:
+            await ws.send_to_project(project_id, _event(
+                "preflight", project_id, account_id=account.id, status=step, message=reason,
+                extra={"account_name": account.name}))
+
+        await emit("checking")
+        page = None
+        try:
+            context = await _ensure_context(account, session_factory=session_factory, browser_manager=browser_manager)
+            if context is None:
+                reason = f"{account.name}: no browser session - open the account's browser and log in"
+                await emit("problem", reason)
+                return reason
+            adapter = make_adapter()
+            _wire_auto_login(adapter, account, session_factory=session_factory, browser_manager=browser_manager)
+            adapter.on_attention = _notifier(ws, user_id=user_id, project_id=project_id, account=account)
+            adapter.should_continue = lambda: _project_still_running(session_factory, project_id)
+            key = profile_key(adapter.settings)
+            if not _calibration_fresh((account.adapter_profile or {}).get(key), settings):
+                await emit("calibrating")
+                adapter.profile = None
+                profile = await calibrate(adapter, context)
+                if not profile.get("ok"):
+                    reason = f"{account.name}: calibration failed ({profile.get('reason') or 'answer not read'})"
+                    await emit("problem", reason)
+                    return reason
+                account.adapter_profile = {**(account.adapter_profile or {}), key: profile}  # this run uses it too
+                try:
+                    await apply_profile(session_factory, account.id, profile)
+                except Exception:
+                    logger.warning("Could not save the calibration of account %s", account.id, exc_info=True)
+            else:
+                page = await adapter.open_chat(context, f"preflight-{project_id}")  # mode, modality, model
+                if await adapter._is_login_required(page):
+                    await adapter._handle_login(page)
+                    await adapter._reopen(page)
+                if await adapter._first_visible(page, adapter._selectors["input"]) is None:
+                    reason = f"{account.name}: the chat input is not on the page - run «Калибровка»"
+                    await emit("problem", reason)
+                    return reason
+            await emit("ok")
+            return None
+        except Exception as exc:
+            reason = str(_explain(exc, account.name))
+            await emit("problem", reason)
+            return reason
+        finally:
+            await _close_page(page)
+
+    return [p for p in await asyncio.gather(*(check(a) for a in accounts)) if p]
+
+
 async def _retryable_sleep(attempt: int, settings) -> None:
     """Exponential backoff before a retry: backoff * 2^(attempt-1)."""
     delay = settings.ADAPTER_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1))
@@ -614,15 +692,18 @@ def _explain(exc: BaseException, who: str) -> "Failure":
 
     msg = str(exc)
     kind = error_kind(exc)
-    if kind == "stopped" or "stopped by" in msg.lower():
+    # word matching only for the adapter's own errors (RuntimeError): an unrelated error
+    # (e.g. a database one quoting a «login_email» column) must not read as «logged out»
+    words = msg.lower() if isinstance(exc, (RuntimeError, TimeoutError)) else ""
+    if kind == "stopped" or "stopped by" in words:
         return Failure(f"{who}: stopped by the user", "stopped")
-    if "captcha" in msg.lower():
+    if "captcha" in words:
         return Failure(f"{who}: the service is asking for a captcha. Open «Смотреть агента», "
                        "solve it in the browser and start the project again.", "human")
-    if "pop-up" in msg.lower():
+    if "pop-up" in words:
         return Failure(f"{who}: a pop-up window in the service blocks sending. Open «Смотреть агента», "
                        "close it and start the project again.", "human")
-    if kind == "human" or "login" in msg.lower():
+    if kind == "human" or "login" in words:
         return Failure(f"{who}: the account is logged out. Log in again (Аккаунты → «Перелогиниться») "
                        "and restart.", "human")
     if kind == "config":
@@ -1099,6 +1180,19 @@ async def run_project_logic(
         if project is not None:
             project.work_branch = work_branch
             await session.commit()
+
+    # ---- preflight: every account can work BEFORE anything starts ----------
+    if getattr(settings, "PREFLIGHT_ENABLED", True):
+        people = {orchestrator.id: orchestrator, **assignment_accounts}
+        problems = await _preflight(
+            list(people.values()), project_id=project_id, user_id=project_snapshot["user_id"], settings=settings,
+            session_factory=session_factory, browser_manager=browser_manager,
+            make_adapter=adapter_factory or load_adapter, ws=ws)
+        if problems:
+            return await _fail_project(
+                session_factory, project_id,
+                "Preflight check failed - fix these accounts and start again:\n" + "\n".join(f"- {p}" for p in problems),
+                ws_manager=ws)
 
     # ---- orchestrator: split the task ------------------------------------
     orchestrator_context = await _ensure_context(orchestrator, session_factory=session_factory, browser_manager=browser_manager)

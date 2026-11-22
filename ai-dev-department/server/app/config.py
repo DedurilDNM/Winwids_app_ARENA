@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     # after a restart (finished tasks are kept). false = mark them failed.
     AUTO_RESUME_INTERRUPTED: bool = True
     AUTO_RESUME_DELAY_SECONDS: float = 20
+    # Before a project starts / continues: check every account (browser, login,
+    # chat setup, input) and calibrate the ones without a fresh calibration.
+    PREFLIGHT_ENABLED: bool = True
+    PREFLIGHT_CALIBRATION_MAX_AGE_HOURS: float = 72
 
     # CI (GitHub Actions) after every round: wait for the run of the latest commit
     CI_TIMEOUT_SECONDS: float = 1200
