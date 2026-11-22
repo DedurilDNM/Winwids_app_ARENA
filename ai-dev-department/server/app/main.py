@@ -9,6 +9,7 @@ one-time password printed to stdout.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -162,11 +163,51 @@ async def fail_interrupted_projects() -> int:
     return len(rows)
 
 
+async def handle_interrupted_projects() -> list[int]:
+    """Projects left "running" by a previous process: with AUTO_RESUME_INTERRUPTED
+    they stay "running" and are continued after startup (returns their ids);
+    otherwise they are marked failed."""
+    from app.models import Project, Task
+
+    if settings.PROJECT_RUNNER == "arq":
+        return []
+    if not settings.AUTO_RESUME_INTERRUPTED:
+        await fail_interrupted_projects()
+        return []
+    async with SessionLocal() as session:
+        rows = (await session.scalars(select(Project).where(Project.status == "running"))).all()
+        for project in rows:
+            project.result = "Interrupted by a server restart: continuing automatically"
+            await session.execute(
+                Task.__table__.update()
+                .where(Task.project_id == project.id, Task.status.in_(("running", "paused")))
+                .values(status="pending")
+            )
+        await session.commit()
+        ids = [p.id for p in rows]
+    if ids:
+        logger.warning("%d project(s) were interrupted by the restart; they will continue: %s", len(ids), ids)
+    return ids
+
+
+async def resume_interrupted_later(project_ids: list[int], delay: float) -> None:
+    """After startup (browsers restored): continue interrupted projects."""
+    from app.workers.run_project import enqueue_run_project
+
+    await asyncio.sleep(delay)
+    for project_id in project_ids:
+        try:
+            await enqueue_run_project(project_id, resume=True)
+            logger.info("Project %s: continued after the restart", project_id)
+        except Exception:
+            logger.exception("Project %s: could not continue after the restart", project_id)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     await seed_admin()
-    await fail_interrupted_projects()
+    interrupted = await handle_interrupted_projects()
 
     # Phase 2: relaunch browsers for all active accounts so they open logged-in
     # sessions without a fresh VNC login. Failures never block startup.
@@ -182,7 +223,12 @@ async def lifespan(app: FastAPI):
         logger.warning("Active account restore failed: %s", exc)
 
     logger.info("AI Dev Department API started (env=%s, service=%s)", settings.ENVIRONMENT, settings.SERVICE_DISPLAY_NAME)
+    resume_task = None
+    if interrupted:
+        resume_task = asyncio.create_task(resume_interrupted_later(interrupted, settings.AUTO_RESUME_DELAY_SECONDS))
     yield
+    if resume_task is not None and not resume_task.done():
+        resume_task.cancel()
 
     # Shutdown: stop browsers, Xvfb displays and websockify.
     try:

@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     # agents work over VNC. "arq": a separate worker process (no live events,
     # separate headless browsers) - only for multi-server setups.
     PROJECT_RUNNER: str = "api"
+    # Projects that were running when the server stopped continue by themselves
+    # after a restart (finished tasks are kept). false = mark them failed.
+    AUTO_RESUME_INTERRUPTED: bool = True
+    AUTO_RESUME_DELAY_SECONDS: float = 20
 
     # CI (GitHub Actions) after every round: wait for the run of the latest commit
     CI_TIMEOUT_SECONDS: float = 1200

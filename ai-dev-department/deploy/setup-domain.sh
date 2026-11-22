@@ -63,35 +63,8 @@ set_env NOVNC_PUBLIC_BASE_URL "https://$DOMAIN/novnc"
 set_env CORS_ORIGINS "https://$DOMAIN"
 echo "   NOVNC_PUBLIC_BASE_URL=https://$DOMAIN/novnc"
 
-echo "== 4. systemd service aidd (user: $RUN_USER)"
-cat > /etc/systemd/system/aidd.service <<EOF
-[Unit]
-Description=AI Dev Department (web app + agents)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=$RUN_USER
-WorkingDirectory=$SERVER_DIR
-Environment=HOME=$RUN_HOME
-Environment=PYTHONUNBUFFERED=1
-# exactly ONE worker: browsers and VNC sessions live in this process
-ExecStart=$SERVER_DIR/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
-StandardOutput=append:$SERVER_DIR/data/uvicorn.log
-StandardError=append:$SERVER_DIR/data/uvicorn.log
-KillMode=mixed
-TimeoutStopSec=30
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-# the app started by hand (nohup) must not hold port 8000
-pkill -u "$RUN_USER" -f "uvicorn app.main:app" || true
-sleep 2
-systemctl daemon-reload
-systemctl enable -q --now aidd
+echo "== 4. systemd service aidd + log rotation"
+bash "$(dirname "$0")/install-service.sh"
 
 echo "== 5. Check"
 for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1 && break; sleep 1; done

@@ -547,3 +547,65 @@ def test_contract_tells_agents_to_use_tilde_fences_inside_markdown() -> None:
     from app.services.prompts import OUTPUT_CONTRACT
 
     assert "~~~" in OUTPUT_CONTRACT and "Do NOT build" in OUTPUT_CONTRACT
+
+
+# ------------------------------------------------- stage 1: errors and retries
+
+
+def test_failure_kinds_decide_retries() -> None:
+    from app.adapters.errors import ConfigAdapterError, NeedsHumanError, ReplyTimeoutError, TransientAdapterError
+
+    ex = orchestrator._explain
+    assert orchestrator._retryable(ex(ReplyTimeoutError("no reply"), "Agent"))
+    assert orchestrator._retryable(ex(TransientAdapterError("page not ready"), "Agent"))
+    assert not orchestrator._retryable(ex(NeedsHumanError("captcha did not clear"), "Agent"))
+    assert not orchestrator._retryable(ex(ConfigAdapterError("Model «x» is not selected"), "Agent"))
+    assert not orchestrator._retryable("Task 3 (Coder) is BLOCKED: no designs")  # plain strings still work
+    assert orchestrator._retryable("Agent did not respond: TimeoutError")
+
+
+class _FlakyAdapter(FakeAdapter):
+    """The first orchestrator chat times out; later chats answer."""
+
+    def __init__(self, replies):
+        super().__init__(replies)
+        self.timeouts_left = 1
+        self.expected_model = None
+        self.login_credentials = None
+        self.models_seen = []
+
+    async def wait_response(self, page, timeout=600):
+        self.models_seen.append((page, self.expected_model))
+        if page.startswith("project-") and "-task-" not in page and "-review-" not in page and self.timeouts_left:
+            self.timeouts_left -= 1
+            from app.adapters.errors import ReplyTimeoutError
+
+            raise ReplyTimeoutError("No response from service within 600s (no activity)")
+        return await super().wait_response(page, timeout)
+
+
+def test_orchestrator_plan_timeout_is_retried_in_a_new_chat_and_summary_failure_does_not_fail() -> None:
+    ids = _setup()
+    p = ids["project"]
+    gh = FakeGitHub()
+    adapter = _FlakyAdapter({f"project-{p}": [_plan(ids)]})  # no reply left for the final summary
+    replies = {"coder": ["FILE: index.html\n```\n<h1>Hi</h1>\n```\nSTATUS: DONE\nSUMMARY: Added index.html"],
+               "reviewer": ["FILE: reviews/r.md\n```\nok\n```\nSTATUS: DONE\nSUMMARY: Reviewed"]}
+    original_wait = adapter.wait_response
+
+    async def wait_response(page, timeout=600):
+        if page.startswith(f"project-{p}-task-"):
+            prompt = next(t for pg, t in adapter.prompts if pg == page)
+            return replies["coder" if "You are the Coder" in prompt else "reviewer"].pop(0)
+        if page == f"project-{p}" and adapter.timeouts_left == 0 and not adapter.replies[page]:
+            raise RuntimeError("Target page, context or browser has been closed")  # summary chat breaks
+        return await original_wait(page, timeout)
+
+    adapter.wait_response = wait_response
+    status, ws = _run(ids, adapter, gh)
+    project, tasks = _load(ids)
+    assert status == "completed", project.result
+    plan_asks = [t for pg, t in adapter.prompts if pg == f"project-{p}" and "Split the project task" in t]
+    assert len(plan_asks) == 2  # timed out once, asked again in a new chat
+    assert "could not write the final summary" in project.result and "Added index.html" in project.result
+    assert any(e["type"] == "orchestrator_retry" for e in ws.events)

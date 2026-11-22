@@ -70,11 +70,7 @@ set_env() {  # set_env KEY VALUE (replace or append)
 }
 set_env NOVNC_PUBLIC_BASE_URL "https://$NAME/novnc"
 set_env CORS_ORIGINS "https://$NAME"
-if systemctl cat aidd >/dev/null 2>&1; then
-  systemctl restart aidd
-else
-  echo "   Restart the app yourself so it reads the new .env (service aidd not found)."
-fi
+bash "$(dirname "$0")/install-service.sh"   # (re)creates the aidd service + log rotation, restarts it
 
 echo "== 5. Check"
 for i in $(seq 1 30); do curl -fsS http://127.0.0.1:$LOCAL_PORT/health >/dev/null 2>&1 && break; sleep 1; done

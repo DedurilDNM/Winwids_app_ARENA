@@ -363,6 +363,20 @@ def _is_retryable(exc: BaseException) -> bool:
     )
 
 
+class Failure(str):
+    """A task/step failure reason (shown to the user) that remembers its kind:
+    transient | timeout | human | config | stopped | format | unknown."""
+
+    kind = "unknown"
+
+    def __new__(cls, text: str, kind: str = "unknown"):
+        obj = super().__new__(cls, text)
+        obj.kind = kind
+        return obj
+
+
+_RETRY_KINDS = {"transient", "timeout", "format", "unknown"}
+
 _PERMANENT = ("is not selected in this account", "is BLOCKED", "Stopped by", "Workflows", "no assigned account", "captcha", "pop-up",
               "logged out", "Log in again", "no live browser session", "cannot write")
 
@@ -370,6 +384,8 @@ _PERMANENT = ("is not selected in this account", "is BLOCKED", "Stopped by", "Wo
 def _retryable(reason: str) -> bool:
     """Temporary failures (no reply, browser/network/GitHub hiccup, unusable
     reply) are retried; a human or a permission is needed for the rest."""
+    if isinstance(reason, Failure) and reason.kind != "unknown":
+        return reason.kind in _RETRY_KINDS
     return not any(marker.lower() in reason.lower() for marker in _PERMANENT)
 
 
@@ -407,6 +423,36 @@ def _real_browser_manager():
 
 
 _STATUS_LINE = re.compile(r"^\s*\**\s*STATUS\s*\**\s*:\s*\**\s*(DONE|BLOCKED)\b", re.I | re.M)
+
+
+REPLIES_KEEP = 300  # raw unparsable replies kept in data/replies for troubleshooting
+ORCHESTRATOR_ATTEMPTS = 2  # plan / review / summary: a failed chat is retried once in a new chat
+
+
+def _orchestrator_retryable(exc: BaseException) -> bool:
+    """Timeouts and transient browser errors: worth one more try in a new chat."""
+    from app.adapters.errors import error_kind
+
+    msg = str(exc).lower()
+    if any(k in msg for k in ("captcha", "pop-up", "login", "stopped by", "is not selected")):
+        return False
+    return error_kind(exc) in ("transient", "timeout", "unknown")
+
+
+def _json_reply_finished(text: str) -> bool:
+    """An orchestrator reply (plan / review) is finished once it holds readable JSON
+    (a reply cut off mid-way, or a «thinking» step, does not)."""
+    try:
+        _extract_json(text or "")
+        return True
+    except ValueError:
+        return False
+
+
+def _fallback_summary(completed: list[dict], reason: str) -> str:
+    lines = "\n".join(f"- {t.get('role', '')}: {t.get('summary') or str(t.get('task', ''))[:160]}" for t in completed)
+    return (f"## Summary\n\nThe orchestrator could not write the final summary ({reason}); "
+            f"this list was made by the server.\n\n{lines or '- (no tasks)'}")
 
 
 def _agent_reply_finished(text: str) -> bool:
@@ -467,11 +513,14 @@ class _Chat:
                 return reply
             except TimeoutError:
                 # wait_response timeout: the message may already be with the
-                # service - retrying could duplicate it, so fail fast.
+                # service - retrying here could duplicate it; the caller decides.
                 raise
             except RuntimeError as exc:
+                from app.adapters.errors import error_kind
+
                 msg = str(exc)
-                if any(k in msg.lower() for k in ("login", "captcha", "pop-up", "stopped by the user", "is not selected")):
+                if error_kind(exc) in ("human", "config", "stopped") or any(
+                        k in msg.lower() for k in ("login", "captcha", "pop-up", "stopped by the user", "is not selected")):
                     raise  # retrying cannot help and could duplicate the message
                 last_exc = exc
             except Exception as exc:  # noqa: BLE001 - transient browser/network error
@@ -501,9 +550,11 @@ async def _close_page(page) -> None:
             pass
 
 
-async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, notify=None, should_continue=None) -> str:
+async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, notify=None, should_continue=None,
+               refresh_context=None, complete=None) -> str:
     """One-shot question in a new chat (the tab is closed afterwards)."""
-    chat = _Chat(adapter, context, chat_ref=chat_ref, timeout=timeout, notify=notify, should_continue=should_continue)
+    chat = _Chat(adapter, context, chat_ref=chat_ref, timeout=timeout, notify=notify, should_continue=should_continue,
+                 refresh_context=refresh_context, complete=complete)
     try:
         return await chat.ask(prompt)
     finally:
@@ -518,6 +569,10 @@ def _save_reply(project_id: int, name: str, text: str) -> None:
         folder = DATA_DIR / "replies"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"project-{project_id}-{name}.txt").write_text(text or "", encoding="utf-8")
+        # keep the newest REPLIES_KEEP files only (the folder must not grow forever)
+        files = sorted(folder.glob("*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for old in files[REPLIES_KEEP:]:
+            old.unlink(missing_ok=True)
     except OSError:
         logger.warning("Could not save the raw reply", exc_info=True)
 
@@ -548,18 +603,26 @@ def _notifier(ws, *, user_id: int, project_id: int, account, session_factory=Non
     return notify
 
 
-def _explain(exc: BaseException, who: str) -> str:
-    """User-facing reason for an adapter failure."""
+def _explain(exc: BaseException, who: str) -> "Failure":
+    """User-facing reason for an adapter failure (a Failure that keeps the error kind)."""
+    from app.adapters.errors import error_kind
+
     msg = str(exc)
+    kind = error_kind(exc)
+    if kind == "stopped" or "stopped by" in msg.lower():
+        return Failure(f"{who}: stopped by the user", "stopped")
     if "captcha" in msg.lower():
-        return (f"{who}: the service is asking for a captcha. Open «Смотреть агента», "
-                "solve it in the browser and start the project again.")
+        return Failure(f"{who}: the service is asking for a captcha. Open «Смотреть агента», "
+                       "solve it in the browser and start the project again.", "human")
     if "pop-up" in msg.lower():
-        return (f"{who}: a pop-up window in the service blocks sending. Open «Смотреть агента», "
-                "close it and start the project again.")
-    if "login" in msg.lower():
-        return f"{who}: the account is logged out. Log in again (Аккаунты → «Перелогиниться») and restart."
-    return f"{who} did not respond: {type(exc).__name__}: {msg}"
+        return Failure(f"{who}: a pop-up window in the service blocks sending. Open «Смотреть агента», "
+                       "close it and start the project again.", "human")
+    if kind == "human" or "login" in msg.lower():
+        return Failure(f"{who}: the account is logged out. Log in again (Аккаунты → «Перелогиниться») "
+                       "and restart.", "human")
+    if kind == "config":
+        return Failure(f"{who}: {msg}", "config")
+    return Failure(f"{who} did not respond: {type(exc).__name__}: {msg}", kind)
 
 
 async def _fail_project(session_factory, project_id: int, reason: str, *, ws_manager) -> str:
@@ -1035,6 +1098,40 @@ async def run_project_logic(
     # ---- orchestrator: split the task ------------------------------------
     orchestrator_context = await _ensure_context(orchestrator, session_factory=session_factory, browser_manager=browser_manager)
     _wire_auto_login(adapter, orchestrator, session_factory=session_factory, browser_manager=browser_manager)
+
+    def orch_adapter():
+        """A fresh adapter for an orchestrator chat, with the account's model and login."""
+        fresh = (adapter_factory or load_adapter)()
+        _wire_auto_login(fresh, orchestrator, session_factory=session_factory, browser_manager=browser_manager)
+        return fresh
+
+    def orch_refresh():
+        return _ensure_context(orchestrator, session_factory=session_factory, browser_manager=browser_manager)
+
+    async def ask_orchestrator(chat_ref: str, prompt: str, *, complete=None) -> str:
+        """One question in a new chat; a timeout / transient failure is retried once in a new chat."""
+        nonlocal orchestrator_context
+        for attempt in range(1, ORCHESTRATOR_ATTEMPTS + 1):
+            try:
+                return await _ask(
+                    orch_adapter(), orchestrator_context, chat_ref=chat_ref, prompt=prompt,
+                    timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
+                    notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
+                    should_continue=lambda: _project_still_running(session_factory, project_id),
+                    refresh_context=orch_refresh, complete=complete,
+                )
+            except Exception as exc:
+                if attempt < ORCHESTRATOR_ATTEMPTS and _orchestrator_retryable(exc) \
+                        and await _project_still_running(session_factory, project_id):
+                    logger.info("Project %s: orchestrator chat failed (%s: %s); trying a new chat",
+                                project_id, type(exc).__name__, str(exc)[:200])
+                    await ws.send_to_project(project_id, _event(
+                        "orchestrator_retry", project_id, message="Orchestrator did not answer; trying a new chat"))
+                    orchestrator_context = await orch_refresh() or orchestrator_context
+                    continue
+                raise
+        raise RuntimeError("unreachable")
+
     if orchestrator_context is None:
         await ws.send_to_project(
             project_id,
@@ -1068,21 +1165,33 @@ async def run_project_logic(
             repo_files=repo_files,
             ci=project_snapshot["ci"],
         )
-        plan_chat = _Chat(
-            adapter, orchestrator_context, chat_ref=f"project-{project_id}",
-            timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
-            notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
-            should_continue=lambda: _project_still_running(session_factory, project_id),
-        )
-        try:
-            raw_plan = await plan_chat.ask(split_prompt)
-        except Exception as exc:
-            await plan_chat.close()
-            return await _fail_project(
-                session_factory, project_id,
-                _explain(exc, "Orchestrator"),
-                ws_manager=ws,
+        raw_plan = None
+        for chat_attempt in range(1, ORCHESTRATOR_ATTEMPTS + 1):
+            plan_chat = _Chat(
+                adapter if chat_attempt == 1 else orch_adapter(), orchestrator_context, chat_ref=f"project-{project_id}",
+                timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
+                notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
+                should_continue=lambda: _project_still_running(session_factory, project_id),
+                refresh_context=orch_refresh, complete=_json_reply_finished,
             )
+            try:
+                raw_plan = await plan_chat.ask(split_prompt)
+                break
+            except Exception as exc:
+                await plan_chat.close()
+                if chat_attempt < ORCHESTRATOR_ATTEMPTS and _orchestrator_retryable(exc) \
+                        and await _project_still_running(session_factory, project_id):
+                    logger.info("Project %s: plan chat failed (%s: %s); trying a new chat",
+                                project_id, type(exc).__name__, str(exc)[:200])
+                    await ws.send_to_project(project_id, _event(
+                        "orchestrator_retry", project_id, message="Orchestrator did not answer; trying a new chat"))
+                    orchestrator_context = await orch_refresh() or orchestrator_context
+                    continue
+                return await _fail_project(
+                    session_factory, project_id,
+                    _explain(exc, "Orchestrator"),
+                    ws_manager=ws,
+                )
 
         plan = None
         for attempt in range(1, PLAN_FORMAT_ATTEMPTS + 1):
@@ -1164,27 +1273,17 @@ async def run_project_logic(
             ci_text=ci_result.for_prompt() if ci_result else "",
         )
         try:
-            raw_review = await _ask(
-                make_adapter(), orchestrator_context,
-                chat_ref=f"project-{project_id}-review-{round_no + 1}",
-                prompt=review_prompt,
-                timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
-                notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
-                should_continue=lambda: _project_still_running(session_factory, project_id),
-            )
+            raw_review = await ask_orchestrator(f"project-{project_id}-review-{round_no + 1}", review_prompt,
+                                                complete=_json_reply_finished)
             try:
                 review = parse_review(raw_review, assignments=list(assignments),
                                       orchestrator_account_id=project_snapshot["orchestrator_account_id"],
                                       round_no=round_no + 1)
             except ValueError as first:
-                raw_review = await _ask(
-                    make_adapter(), orchestrator_context,
-                    chat_ref=f"project-{project_id}-review-{round_no + 1}",
-                    prompt=prompts.build_json_fix_prompt(str(first)) + "\n\nTHE ORIGINAL REQUEST:\n\n" + review_prompt,
-                    timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
-                    notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
-                    should_continue=lambda: _project_still_running(session_factory, project_id),
-                )
+                raw_review = await ask_orchestrator(
+                    f"project-{project_id}-review-{round_no + 1}",
+                    prompts.build_json_fix_prompt(str(first)) + "\n\nTHE ORIGINAL REQUEST:\n\n" + review_prompt,
+                    complete=_json_reply_finished)
                 review = parse_review(raw_review, assignments=list(assignments),
                                       orchestrator_account_id=project_snapshot["orchestrator_account_id"],
                                       round_no=round_no + 1)
@@ -1215,20 +1314,14 @@ async def run_project_logic(
         ci_text=ci_result.for_prompt() if ci_result else "",
     )
     try:
-        summary = await _ask(
-            adapter, orchestrator_context,
-            chat_ref=f"project-{project_id}",
-            prompt=final_prompt,
-            timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
-            notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
-            should_continue=lambda: _project_still_running(session_factory, project_id),
-        )
+        summary = await ask_orchestrator(f"project-{project_id}", final_prompt)
     except Exception as exc:
-        return await _fail_project(
-            session_factory, project_id,
-            f"Orchestrator did not produce a final summary: {type(exc).__name__}: {exc}",
-            ws_manager=ws,
-        )
+        if not await _project_still_running(session_factory, project_id):
+            return await _fail_project(session_factory, project_id, "Stopped by user", ws_manager=ws)
+        # the work is done and committed: a missing summary must not fail the project
+        logger.warning("Project %s: no final summary (%s: %s); using the server's list",
+                       project_id, type(exc).__name__, exc)
+        summary = _fallback_summary(completed, f"{type(exc).__name__}: {str(exc)[:200]}")
 
     pr_url: str | None = None
     try:

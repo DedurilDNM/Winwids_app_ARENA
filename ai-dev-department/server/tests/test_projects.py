@@ -430,3 +430,39 @@ def test_interrupted_projects_marked_failed_on_startup(api):  # noqa: F811
     assert _asyncio.run(fail_interrupted_projects()) >= 1
     body = api.get(f"/api/projects/{pid}", headers=_auth(token)).json()
     assert body["status"] == "failed" and "restart" in body["result"]
+
+
+def test_interrupted_projects_continue_after_a_restart(api, monkeypatch):  # noqa: F811
+    import asyncio as _asyncio
+
+    import app.main as main
+    import app.workers.run_project as runner
+    from app.db import SessionLocal
+    from app.models import Project, Task
+
+    token = _fresh_user(api, "autoresume")
+    pid = api.post("/api/projects", json=_project_payload(), headers=_auth(token)).json()["id"]
+
+    async def mark_running():
+        async with SessionLocal() as s:
+            (await s.get(Project, pid)).status = "running"
+            s.add(Task(project_id=pid, role="Coder", task="x", status="running"))
+            await s.commit()
+
+    _asyncio.run(mark_running())
+    monkeypatch.setattr(main.settings, "AUTO_RESUME_INTERRUPTED", True)
+    ids = _asyncio.run(main.handle_interrupted_projects())
+    assert pid in ids
+    body = api.get(f"/api/projects/{pid}", headers=_auth(token)).json()
+    assert body["status"] == "running" and "continuing automatically" in body["result"]
+    assert all(t["status"] == "pending" for t in body.get("tasks", []))
+
+    started = []
+
+    async def fake_enqueue(project_id, resume=False):
+        started.append((project_id, resume))
+        return "inline"
+
+    monkeypatch.setattr(runner, "enqueue_run_project", fake_enqueue)
+    _asyncio.run(main.resume_interrupted_later(ids, 0))
+    assert (pid, True) in started

@@ -32,6 +32,8 @@ import weakref
 from urllib.parse import urlsplit
 from typing import Literal
 
+from app.adapters.errors import (ConfigAdapterError, NeedsHumanError, ReplyTimeoutError, StoppedError,
+                                 TransientAdapterError)
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -788,7 +790,7 @@ class Adapter:
         if clicks and (await self._model_is(page, model, 5) or await self._wait_visible(page, sel, 1) is not None):
             logger.info("Model selected: %s", model)
             return
-        raise RuntimeError(
+        raise ConfigAdapterError(
             f"Model «{model}» is not selected in this account's chat and could not be picked automatically: "
             "check the model name (as the service shows it) or pick it once in the account's browser")
 
@@ -974,9 +976,9 @@ class Adapter:
             clear = 0
             while clear < 2:  # the page must look clear twice in a row, fully loaded
                 if limit and _MONOTONIC() - start > limit:
-                    raise RuntimeError(_BLOCKED_MESSAGES.get(kind, f"Service is blocked by: {kind}"))
+                    raise NeedsHumanError(_BLOCKED_MESSAGES.get(kind, f"Service is blocked by: {kind}"))
                 if self.should_continue is not None and not await self.should_continue():
-                    raise RuntimeError("Stopped by the user while waiting for a human")
+                    raise StoppedError("Stopped by the user while waiting for a human")
                 if await self._page_loading(page):
                     clear = 0  # a reload in progress is not "resolved"
                 else:
@@ -1051,7 +1053,7 @@ class Adapter:
         except RuntimeError:
             raise
         except Exception as exc:
-            raise RuntimeError(f"Could not focus chat input ({input_sel}): {exc}") from exc
+            raise TransientAdapterError(f"Could not focus chat input ({input_sel}): {exc}") from exc
         await self._mark(page)
         try:
             await page.click(send_sel, timeout=10_000)
@@ -1059,7 +1061,7 @@ class Adapter:
             try:
                 await page.press(input_sel, "Enter")
             except Exception as exc:
-                raise RuntimeError(f"Could not send message (no working send selector: {send_sel})") from exc
+                raise TransientAdapterError(f"Could not send message (no working send selector: {send_sel})") from exc
         await self._accept_dialog_and_resend(page)
         resend = await self._wait_blockers(page)
         if resend and depth < MAX_RESENDS:
@@ -1140,7 +1142,7 @@ class Adapter:
             await asyncio.sleep(1.0)
             el = await self._first_visible(page, input_sel)
         if el is None:
-            raise RuntimeError(f"Could not focus chat input ({input_sel}): no visible element")
+            raise TransientAdapterError(f"Could not focus chat input ({input_sel}): no visible element")
         try:
             editable = bool(await el.evaluate("(e) => e.isContentEditable"))
         except Exception:
@@ -1196,7 +1198,7 @@ class Adapter:
         try:
             await el.evaluate("(e) => { e.scrollIntoView({block: 'center'}); e.focus(); }")
         except Exception as exc:
-            raise RuntimeError(f"Could not focus chat input ({self._selectors['input']}): {exc}") from exc
+            raise TransientAdapterError(f"Could not focus chat input ({self._selectors['input']}): {exc}") from exc
 
     async def _dialog_visible(self, page) -> bool:
         try:
@@ -1271,11 +1273,11 @@ class Adapter:
             state = await self.get_state(page)
 
             if state == "error":
-                raise RuntimeError("Service entered an error state")
+                raise TransientAdapterError("Service entered an error state")
             if state == "login_required":
                 await self._handle_login(page)
                 # The reply (if any) was lost with the session: let the caller resend.
-                raise RuntimeError("Session restored during the reply; the message must be sent again")
+                raise TransientAdapterError("Session restored during the reply; the message must be sent again")
             if await self._captcha_visible(page):
                 paused(await self._pause(page, "captcha", lambda p: self._captcha_visible(p, True)))
                 continue
@@ -1340,8 +1342,8 @@ class Adapter:
                 if candidate:
                     return candidate
                 if now >= hard_deadline:
-                    raise TimeoutError(f"No complete response from service within {hard_deadline - start:.0f}s")
-                raise TimeoutError(f"No response from service within {timeout}s (no activity)")
+                    raise ReplyTimeoutError(f"No complete response from service within {hard_deadline - start:.0f}s")
+                raise ReplyTimeoutError(f"No response from service within {timeout}s (no activity)")
 
             await asyncio.sleep(poll)
 
