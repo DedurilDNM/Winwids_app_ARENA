@@ -230,7 +230,7 @@ TOOLBAR = """
   <button>+</button>
   <button id="mode" aria-haspopup="menu">Agent <svg width="8" height="8"></svg></button>
   <button id="modality" aria-haspopup="menu"><svg width="12" height="12"></svg> <svg width="8" height="8"></svg></button>
-  <button id="model" aria-haspopup="dialog"><svg width="10" height="10"></svg> claude-sonnet-5-5-high</button>
+  <div id="model" style="cursor:pointer;display:inline-block"><svg width="10" height="10"></svg><span> claude-sonnet-5-5-high</span><svg width="8" height="8"></svg></div>
 </div>
 <div id="layer"></div>
 <script>
@@ -256,7 +256,7 @@ TOOLBAR = """
   // like the real one: a MULTI-select list (up to 2), «Deselect all», stays open until Escape
   let selected = ["claude-sonnet-5-5-high"];
   const showModel = () => { state.model = selected.join(", ") || "none";
-    document.getElementById("model").lastChild.textContent = " " + (selected.length ? selected.join(", ") : "Select model"); };
+    document.querySelector("#model span").textContent = " " + (selected.length ? selected.join(", ") : "Select model"); };
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") layer.innerHTML = ""; });
   document.getElementById("model").onclick = () => {
     const items = [["Max", "Router"], ["claude-sonnet-5-5-high", ""], ["gemini-4-argon-high", ""]];
