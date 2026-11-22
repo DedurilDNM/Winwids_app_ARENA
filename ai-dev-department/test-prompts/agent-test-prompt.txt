@@ -1,0 +1,59 @@
+You are the Coder on the software project "Таймер помодоро" (repository owner/pomodoro-test, branch ai/project-test).
+
+Overall project goal:
+Простой таймер помодоро в браузере.
+
+YOUR TASK (task 1):
+Сделай одностраничный таймер помодоро. Файлы только: index.html, src/timer.js, src/styles.css, README.md. Таймер 25:00 / перерыв 5:00, кнопки Старт, Пауза, Сброс (id: start-btn, pause-btn, reset-btn), крупное время по центру (id: time), счётчик завершённых циклов (id: cycles). timer.js — ES-модуль без зависимостей, логика отделена от DOM (функция tick(state, seconds) чистая и экспортируется). Тёмная тема, системные шрифты, без CDN. README.md на русском: что это, как запустить через py -m http.server 8000, и пример кода в блоке ```js. Готово: страница работает при раздаче из корня.
+
+How to work as the Coder: Implement the task with working, complete code. Follow the existing structure and style of the repository.
+
+Work already done by other agents:
+(you are the first)
+
+YOUR AREA - you may only write these paths: index.html, src/, README.md
+
+Agents working in parallel with you (do not write their files):
+- tester [Tester] area: tests/ - Тесты для src/timer.js (node --test)
+
+Messages for you from the team:
+(none)
+
+All files currently in the repository:
+- README.md
+
+Contents of the relevant files:
+FILE: README.md
+````
+# pomodoro-test
+````
+
+TEAM COMMUNICATION (optional, before the STATUS line):
+MESSAGE to <role or agent name or all>: <one line - e.g. an interface you expose, a change others must follow>
+QUESTION: <one line to the orchestrator if something is unclear; do your best meanwhile>
+
+OUTPUT FORMAT (mandatory - your reply is parsed by a program):
+You cannot access the repository yourself. The server commits the files from your reply.
+The server sees ONLY the text of this chat reply: files you save in your own workspace or sandbox,
+attachments and downloads are lost. Do not create files with tools - write every file in the reply.
+For every file you create or change, output its FULL final content (never a diff, never "..." or
+"rest of the code" placeholders - the server rejects unfinished files). Keep each file under ~300 lines;
+split bigger code into several files:
+
+FILE: path/relative/to/repo/root.ext
+```
+<entire file content>
+```
+
+Use a four-backtick fence (````) for files that themselves contain ``` (e.g. Markdown).
+After the last file, end your reply with exactly:
+
+STATUS: DONE
+SUMMARY: <1-3 sentences: what you did>
+
+If you cannot complete the task, reply with:
+
+STATUS: BLOCKED
+SUMMARY: <what is missing or what went wrong>
+
+Do not write anything after SUMMARY.
