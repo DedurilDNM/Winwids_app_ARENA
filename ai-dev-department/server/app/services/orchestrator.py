@@ -554,8 +554,10 @@ class _Chat:
     closes the tab (the conversation stays on the service)."""
 
     def __init__(self, adapter, context, *, chat_ref: str, timeout: int, notify=None, should_continue=None,
-                 refresh_context=None, complete=None) -> None:
+                 refresh_context=None, complete=None, progress=None) -> None:
         self.adapter, self.context, self.chat_ref, self.timeout = adapter, context, chat_ref, timeout
+        if progress is not None and hasattr(adapter, "on_progress"):
+            adapter.on_progress = progress  # the «pulse» shown in the app while waiting
         if complete is not None and hasattr(adapter, "reply_complete"):
             adapter.reply_complete = complete  # "does this settled reply look finished?"
         self.refresh_context = refresh_context  # async () -> context: the CURRENT browser of the account
@@ -634,10 +636,10 @@ async def _close_page(page) -> None:
 
 
 async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, notify=None, should_continue=None,
-               refresh_context=None, complete=None) -> str:
+               refresh_context=None, complete=None, progress=None) -> str:
     """One-shot question in a new chat (the tab is closed afterwards)."""
     chat = _Chat(adapter, context, chat_ref=chat_ref, timeout=timeout, notify=notify, should_continue=should_continue,
-                 refresh_context=refresh_context, complete=complete)
+                 refresh_context=refresh_context, complete=complete, progress=progress)
     try:
         return await chat.ask(prompt)
     finally:
@@ -658,6 +660,15 @@ def _save_reply(project_id: int, name: str, text: str) -> None:
             old.unlink(missing_ok=True)
     except OSError:
         logger.warning("Could not save the raw reply", exc_info=True)
+
+
+def _pulse(ws, project_id: int, task_id: int | None = None):
+    """Adapter progress -> a WS event for the app (numbers only)."""
+    async def send(info: dict) -> None:
+        await ws.send_to_project(project_id, _event(
+            "task_progress" if task_id is not None else "orchestrator_progress", project_id,
+            task_id=task_id, status=info.get("state"), extra={k: info.get(k) for k in ("waiting", "unchanged", "reply_len")}))
+    return send
 
 
 def _notifier(ws, *, user_id: int, project_id: int, account, session_factory=None, task_id: int | None = None):
@@ -986,7 +997,7 @@ class _Run:
                              session_factory=sf, task_id=task_id),
             should_continue=lambda: _project_still_running(sf, self.project_id),
             refresh_context=lambda: _ensure_context(agent, session_factory=sf, browser_manager=self.browser_manager),
-            complete=_agent_reply_finished,
+            complete=_agent_reply_finished, progress=_pulse(ws, self.project_id, task_id),
         )
         output, prompt, last_error = None, agent_prompt, ""
         restarted = False
@@ -1217,7 +1228,7 @@ async def run_project_logic(
                     timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
                     notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
                     should_continue=lambda: _project_still_running(session_factory, project_id),
-                    refresh_context=orch_refresh, complete=complete,
+                    refresh_context=orch_refresh, complete=complete, progress=_pulse(ws, project_id),
                 )
             except Exception as exc:
                 if attempt < ORCHESTRATOR_ATTEMPTS and _orchestrator_retryable(exc) \
@@ -1271,7 +1282,7 @@ async def run_project_logic(
                 timeout=settings.ORCHESTRATOR_TIMEOUT_SECONDS,
                 notify=_notifier(ws, user_id=project_snapshot["user_id"], project_id=project_id, account=orchestrator),
                 should_continue=lambda: _project_still_running(session_factory, project_id),
-                refresh_context=orch_refresh, complete=_json_reply_finished,
+                refresh_context=orch_refresh, complete=_json_reply_finished, progress=_pulse(ws, project_id),
             )
             try:
                 raw_plan = await plan_chat.ask(split_prompt)

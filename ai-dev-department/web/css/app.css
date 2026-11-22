@@ -345,3 +345,4 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.45; }
 .fieldset legend { padding: 0 6px; font-size: 13px; color: var(--muted); }
 .danger-text { color: var(--danger); }
 .checklist { list-style: none; padding: 0; margin: 8px 0 12px; display: grid; gap: 6px; font-size: 14px; }
+.pulse { margin: 4px 0; font-variant-numeric: tabular-nums; }

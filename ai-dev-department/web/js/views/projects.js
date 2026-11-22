@@ -40,6 +40,17 @@ function badge(map, status, testid) {
 }
 export const projectBadge = (status) => badge(PROJECT_STATUS, status, "project-status");
 
+const mmss = (s) => `${Math.floor((s || 0) / 60)}:${String((s || 0) % 60).padStart(2, "0")}`;
+
+/** «пишет · 2:31 · ответ 1 240 симв.» from a progress event (numbers only). */
+export function pulseText(p) {
+  if (!p) return "ждёт ответа…";
+  const parts = [p.status === "generating" ? "пишет" : (p.reply_len ? "ответ готовится" : "думает"), mmss(p.waiting)];
+  if (p.reply_len) parts.push(`ответ ${p.reply_len.toLocaleString("ru-RU")} симв.`);
+  if (p.unchanged >= 60) parts.push(`без изменений ${mmss(p.unchanged)}`);
+  return parts.join(" · ");
+}
+
 function repoLink(repo, path = "", label = null) {
   return h("a", { href: `https://github.com/${repo}${path}`, target: "_blank", rel: "noopener noreferrer" }, label || repo);
 }
@@ -298,6 +309,9 @@ async function renderProject(main, projectId) {
   const chat = h("ol", { class: "feed chat", "data-testid": "messages" });
   let messages = project.messages || [];
   const live = h("span", { class: "live", "data-testid": "live" }, "офлайн");
+  // «pulse» of waiting agents (numbers only): task_id -> last progress event
+  const pulses = new Map();
+  const orchPulse = h("p", { class: "small muted pulse", "data-testid": "orch-pulse", hidden: true });
 
   main.append(
     h("div", { class: "page-head" }, head, actions),
@@ -307,7 +321,7 @@ async function renderProject(main, projectId) {
         result,
         h("section", {}, h("h2", {}, "Задачи"), board)),
       h("div", { class: "stack feed-card" },
-        h("section", { class: "card" }, h("div", { class: "card-head" }, h("h2", { class: "m-0" }, "События"), live), feed),
+        h("section", { class: "card" }, h("div", { class: "card-head" }, h("h2", { class: "m-0" }, "События"), live), orchPulse, feed),
         h("section", { class: "card" }, h("h2", {}, "Переписка агентов"), chat))));
 
   function ciBadge() {
@@ -356,6 +370,7 @@ async function renderProject(main, projectId) {
       (t.scope || []).length ? h("div", { class: "chips", "data-testid": "scope" }, t.scope.map((x) => h("code", {}, x))) : null,
       h("p", { class: "small pre" }, t.task),
       t.summary ? h("p", { class: "small task-summary" }, t.summary) : null,
+      t.status === "running" ? h("p", { class: "small muted pulse", "data-pulse": t.id }, pulseText(pulses.get(t.id))) : null,
       h("div", { class: "actions" }, ...[
         t.commit_sha ? repoLink(project.github_repo, `/commit/${t.commit_sha}`, `коммит ${t.commit_sha.slice(0, 7)}`) : null,
         agent && (t.status === "running" || t.status === "paused")
@@ -515,6 +530,18 @@ async function renderProject(main, projectId) {
         renderTasks();
         return;
       }
+      if (e.type === "task_progress") {
+        pulses.set(e.task_id, e);
+        const el = board.querySelector(`[data-pulse="${e.task_id}"]`);
+        if (el) el.textContent = pulseText(e);
+        return;  // frequent: no feed line, no reload
+      }
+      if (e.type === "orchestrator_progress") {
+        orchPulse.hidden = false;
+        orchPulse.textContent = `Оркестратор: ${pulseText(e)}`;
+        return;
+      }
+      if (e.type === "project_completed" || e.type === "project_failed" || e.type === "review_done") orchPulse.hidden = true;
       const describe = EVENT_TEXT[e.type];
       if (describe) addEvent(...describe(e));
       // Events carry ids only: refetch the full state (debounced).

@@ -963,3 +963,34 @@ def test_stuck_chat_without_its_own_address_is_not_refreshed():
     with pytest.raises(TimeoutError):
         asyncio.run(_run(flow()))
     assert page.reloads == 0
+
+
+def test_progress_pulse_is_reported_while_waiting():
+    page = StubPage(auto_respond="Done.")
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.02, ADAPTER_PROGRESS_SECONDS=0.05)
+    pulses = []
+
+    async def on_progress(info):
+        pulses.append(info)
+
+    a.on_progress = on_progress
+
+    async def slow_reply():
+        page.auto_respond = None  # reply only later
+        await a.send_message(page, "build it")
+        page.state = "generating"
+
+        async def later():
+            await asyncio.sleep(0.4)
+            page.state = "idle"
+            page.messages.append(_StubEl(text="Done."))
+
+        task = asyncio.create_task(later())
+        text = await a.wait_response(page, timeout=5)
+        await task
+        return text
+
+    assert asyncio.run(_run(slow_reply())) == "Done."
+    assert pulses and set(pulses[0]) == {"waiting", "unchanged", "reply_len", "state"}
+    assert any(p["state"] == "generating" for p in pulses)
+    assert all(isinstance(v, (int, str)) for p in pulses for v in p.values())  # numbers/state only, never text

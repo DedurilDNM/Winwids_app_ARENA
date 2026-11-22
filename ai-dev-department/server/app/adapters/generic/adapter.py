@@ -376,6 +376,10 @@ class Adapter:
         self.login_credentials: tuple[str, str] | None = None
         # Optional: the model name the account's chat must use (Account.model).
         self.expected_model: str | None = None
+        # async (info: dict) -> None, about every ADAPTER_PROGRESS_SECONDS while waiting for a
+        # reply: {"waiting": s, "unchanged": s, "reply_len": n, "state": ...} (numbers only)
+        self.on_progress = None
+        self._fallback_cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
         # Optional: what calibration learned about this account's page (see calibrate.py):
         # {"reader": "selector"|"anchor", "message": css, "busy": css, "input": css}
         self.profile: dict | None = None
@@ -413,7 +417,21 @@ class Adapter:
     # ---------------------------------------------------------------- DOM helpers
 
     async def _first_visible(self, page, selector: str):
-        """Return the first visible element matching `selector`, or None."""
+        """Return the first visible element matching `selector`, or None.
+        One round trip with a visible-filtered locator (Playwright >= 1.51);
+        older versions / minimal test pages: check the matches one by one."""
+        if not selector:
+            return None
+        if hasattr(page, "locator") and not getattr(self, "_legacy_visible", False):
+            try:
+                loc = page.locator(selector).filter(visible=True).first
+                if await loc.count() == 0:
+                    return None
+                return await loc.element_handle(timeout=2_000)
+            except TypeError:
+                self._legacy_visible = True  # old Playwright: no filter(visible=...)
+            except Exception:
+                return None
         try:
             els = await page.query_selector_all(selector)
         except Exception:
@@ -507,10 +525,22 @@ class Adapter:
         return count
 
     async def _fallback_reply(self, page) -> tuple[int, str] | None:
-        """(count, text) found next to our own last sent message, or None."""
+        """(count, text) found next to our own last sent message, or None.
+        Cached for a moment: one poll asks for the count AND the text."""
         sent = self._last_sent.get(page, "")
         if not sent or not getattr(self.settings, "ADAPTER_REPLY_FALLBACK", True):
             return None
+        cached = self._fallback_cache.get(page)
+        if cached and cached[1] == sent and _MONOTONIC() - cached[0] < 0.4:
+            return cached[2]
+        result = await self._fallback_reply_now(page, sent)
+        try:
+            self._fallback_cache[page] = (_MONOTONIC(), sent, result)
+        except TypeError:
+            pass
+        return result
+
+    async def _fallback_reply_now(self, page, sent: str) -> tuple[int, str] | None:
         try:
             result = await page.evaluate(_REPLY_FALLBACK_JS, {"head": sent[:400]})
         except Exception:
@@ -520,6 +550,7 @@ class Adapter:
         return int(result.get("count") or 0), str(result.get("text") or "")
 
     async def _mark_seen(self, page) -> None:
+        self._fallback_cache.pop(page, None)
         if not hasattr(page, "evaluate"):
             return
         try:
@@ -1271,6 +1302,7 @@ class Adapter:
         stuck_after = float(getattr(self.settings, "ADAPTER_STUCK_REFRESH_SECONDS", 300) or 0)
         last_change = start  # last time the reply TEXT changed (a busy indicator alone does not count)
         last_report = start
+        last_pulse = start
         resends = 0
 
         def paused(seconds: float) -> None:
@@ -1308,6 +1340,15 @@ class Adapter:
             now = _MONOTONIC()
             after_count = await self._message_count(page)
             after_text = await self._last_message_text(page)
+            if self.on_progress is not None and now - last_pulse >= float(
+                    getattr(self.settings, "ADAPTER_PROGRESS_SECONDS", 10) or 10):
+                last_pulse = now
+                try:
+                    await self.on_progress({"waiting": round(now - start), "unchanged": round(now - last_change),
+                                            "reply_len": len(after_text or "") if (after_count > before_count) else 0,
+                                            "state": state})
+                except Exception:
+                    logger.debug("progress callback failed", exc_info=True)
             if now - last_report >= 60:  # numbers only, never the text
                 last_report = now
                 logger.info(
