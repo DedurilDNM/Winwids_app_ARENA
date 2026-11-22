@@ -130,7 +130,9 @@ class Settings(BaseSettings):
     GITHUB_POLL_INTERVAL_SECONDS: int = 15
     TASK_TIMEOUT_SECONDS: int = 3600          # max wait for one agent task
     ORCHESTRATOR_TIMEOUT_SECONDS: int = 600   # wait_response timeout for orchestrator
-    AGENT_TIMEOUT_SECONDS: int = 600          # wait_response timeout for agents
+    # Agents: give up when the service shows NO activity for this long (while it
+    # works or the reply grows, the wait goes on, up to ADAPTER_MAX_REPLY_SECONDS).
+    AGENT_TIMEOUT_SECONDS: int = 600
     # Session health cron runs every 5 minutes (arq cron in workers/settings.py).
 
     # --- VNC / noVNC (Phase 2) ---
@@ -176,6 +178,12 @@ class Settings(BaseSettings):
     # notified («нужна помощь»). 0 = wait for the human without a time limit
     # (until the project is stopped); > 0 = give up after that many seconds.
     ADAPTER_CAPTCHA_WAIT_SECONDS: float = 0
+    # Longest total wait for one reply while the service keeps working (pauses
+    # for a human do not count).
+    ADAPTER_MAX_REPLY_SECONDS: float = 3600
+    # A reply that stopped changing but does not look finished (an agent between
+    # steps: no STATUS line yet) is taken only after this many seconds unchanged.
+    ADAPTER_INCOMPLETE_SETTLE_SECONDS: float = 120
     # After each reply: press Escape (closes rating/feedback panels) and click
     # ADAPTER_DISMISS_SELECTOR if it is visible.
     ADAPTER_AFTER_REPLY_ESCAPE: bool = True

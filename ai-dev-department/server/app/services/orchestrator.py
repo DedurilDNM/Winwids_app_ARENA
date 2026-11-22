@@ -379,6 +379,18 @@ def _real_browser_manager():
     return browser_manager
 
 
+_STATUS_LINE = re.compile(r"^\s*\**\s*STATUS\s*\**\s*:\s*\**\s*(DONE|BLOCKED)\b", re.I | re.M)
+
+
+def _agent_reply_finished(text: str) -> bool:
+    """An agent reply is finished once it has its STATUS line."""
+    return bool(_STATUS_LINE.search(text or ""))
+
+
+def _has_file_blocks(text: str) -> bool:
+    return bool(re.search(r"^\s*\**\s*FILE\s*\**\s*:", text or "", re.M))
+
+
 class _Chat:
     """One conversation in the service. The first ask() opens a new chat (with
     retries on transient errors); later asks - e.g. «resend in the required
@@ -386,8 +398,10 @@ class _Chat:
     closes the tab (the conversation stays on the service)."""
 
     def __init__(self, adapter, context, *, chat_ref: str, timeout: int, notify=None, should_continue=None,
-                 refresh_context=None) -> None:
+                 refresh_context=None, complete=None) -> None:
         self.adapter, self.context, self.chat_ref, self.timeout = adapter, context, chat_ref, timeout
+        if complete is not None and hasattr(adapter, "reply_complete"):
+            adapter.reply_complete = complete  # "does this settled reply look finished?"
         self.refresh_context = refresh_context  # async () -> context: the CURRENT browser of the account
         self.page = None
         if hasattr(adapter, "on_attention"):
@@ -795,6 +809,7 @@ class _Run:
                              session_factory=sf, task_id=task_id),
             should_continue=lambda: _project_still_running(sf, self.project_id),
             refresh_context=lambda: _ensure_context(agent, session_factory=sf, browser_manager=self.browser_manager),
+            complete=_agent_reply_finished,
         )
         output, prompt, last_error = None, agent_prompt, ""
         try:
@@ -814,7 +829,10 @@ class _Run:
                     _save_reply(self.project_id, f"task-{task_id}-attempt-{attempt}", reply)
                     logger.info("Task %s: reply rejected (attempt %d): %s", task_id, attempt, last_error)
                     # Ask in the SAME chat: the agent keeps its work and just resends it.
-                    prompt = prompts.build_fix_prompt(last_error)
+                    # A reply without any file means the work never reached us (or the
+                    # agent lost it): send the whole task again instead.
+                    prompt = (prompts.build_fix_prompt(last_error) if _has_file_blocks(reply)
+                              else prompts.build_restart_prompt(agent_prompt))
         finally:
             await chat.close()
         if output is None:

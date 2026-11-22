@@ -38,6 +38,8 @@ ROLE_GUIDANCE = {
 
 OUTPUT_CONTRACT = """OUTPUT FORMAT (mandatory - your reply is parsed by a program):
 You cannot access the repository yourself. The server commits the files from your reply.
+The server sees ONLY the text of this chat reply: files you save in your own workspace or sandbox,
+attachments and downloads are lost. Do not create files with tools - write every file in the reply.
 For every file you create or change, output its FULL final content (never a diff, never "..." or
 "rest of the code" placeholders - the server rejects unfinished files). Keep each file under ~300 lines;
 split bigger code into several files:
@@ -111,6 +113,8 @@ You lead a team that works IN PARALLEL. Rules:
   parts together (entry point, configuration, README); a Tester/Reviewer comes after what they check.
 - Each subtask text must be self-contained: what to build, which interfaces from the contract to follow,
   what "done" means. 2-8 subtasks. Agents only return files; they cannot run commands.
+- Size: an agent answers in ONE chat reply, so a subtask must fit in it - at most about 6 files and 800
+  lines in total. Split bigger work (e.g. integration of many modules) into several subtasks.
 {ci_rule}
 Reply with ONLY JSON inside one ```json code block. Inside text values never use the double quote
 character (write «like this» or 'like this' instead) and do not use backslashes. Exactly this format:
@@ -243,6 +247,14 @@ def build_json_fix_prompt(error: str) -> str:
 
 Send the same answer again as valid JSON inside one ```json code block. Inside text values never use the
 double quote character (use «» or single quotes) and no backslashes."""
+
+
+def build_restart_prompt(task_prompt: str) -> str:
+    """The agent's reply had no files (the work never reached the server, or the
+    agent lost it): give it the whole task again."""
+    return ("The server did not receive your work: your last reply had no FILE blocks. If you no longer have "
+            "your previous work, that is fine - do the task again now, completely, from the description below.\n\n"
+            + task_prompt)
 
 
 def build_fix_prompt(error: str) -> str:

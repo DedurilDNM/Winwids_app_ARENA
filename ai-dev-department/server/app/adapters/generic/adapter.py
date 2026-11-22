@@ -167,6 +167,8 @@ class Adapter:
         self.settings = settings or get_settings()
         self._last_sent: dict[int, str] = {}  # id(page) -> last prompt (echo filter)
         self._before: dict[int, tuple[int, str]] = {}
+        # Optional: reply text -> bool "looks finished" (set per task by the orchestrator).
+        self.reply_complete = None
         self._marks: dict[int, str] = {}  # id(page) -> reload marker
         # async (kind: "captcha" | "dialog" | "login", active: bool) -> None; set by the orchestrator
         self.on_attention = None
@@ -560,7 +562,7 @@ class Adapter:
             return
 
         expected = len(re.sub(r"\s+", "", text))
-        await el.click()
+        await self._focus_input(page, el)
         await page.keyboard.press("Control+A")
         await page.keyboard.press("Delete")
         got = await el.evaluate(_PASTE_JS, text)
@@ -574,6 +576,41 @@ class Adapter:
                 await page.keyboard.press("Shift+Enter")
             if line:
                 await page.keyboard.insert_text(line)
+
+    async def _focus_input(self, page, el) -> None:
+        """Click the input. Something may cover it (a menu, a rating panel, a
+        pop-up, a captcha): press Escape and retry; a captcha or a pop-up that
+        stays -> pause for the human; as a last resort focus it by script."""
+        for attempt in range(3):
+            try:
+                await el.click(timeout=5_000)
+                return
+            except TypeError:  # minimal element objects (tests)
+                await el.click()
+                return
+            except Exception:
+                logger.info("The chat input is covered (attempt %d)", attempt + 1)
+            if attempt == 0:
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+            elif attempt == 1:
+                if await self._captcha_visible(page):
+                    await self._pause(page, "captcha", lambda p: self._captcha_visible(p, True))
+                elif await self._dialog_visible(page):
+                    await self._pause(page, "dialog", self._dialog_visible)
+        try:
+            await el.evaluate("(e) => { e.scrollIntoView({block: 'center'}); e.focus(); }")
+        except Exception as exc:
+            raise RuntimeError(f"Could not focus chat input ({self._selectors['input']}): {exc}") from exc
+
+    async def _dialog_visible(self, page) -> bool:
+        try:
+            return bool(await page.evaluate(_DIALOG_JS))
+        except Exception:
+            return False
 
     async def _accept_dialog_and_resend(self, page) -> None:
         """If a configured pop-up button appeared after sending, click it and send again."""
@@ -603,12 +640,21 @@ class Adapter:
     async def wait_response(self, page, timeout: int = 600) -> str:
         """Wait for the assistant's response and return its text.
 
-        Polls `get_state` until it stops being "generating", then returns the
-        last message text. Raises TimeoutError if no response arrives.
+        `timeout` is a limit on INACTIVITY: while the service is busy or the
+        reply keeps growing, the wait goes on (agents may work for a long
+        time), up to ADAPTER_MAX_REPLY_SECONDS in total. Time paused for a
+        human does not count. If `reply_complete` is set and says a settled
+        reply is not finished yet (an agent between steps), the wait goes on
+        until it stays unchanged for ADAPTER_INCOMPLETE_SETTLE_SECONDS.
+        Raises TimeoutError if no response arrives.
         """
-        deadline = _MONOTONIC() + timeout
+        start = _MONOTONIC()
+        hard_deadline = start + max(float(timeout), float(getattr(self.settings, "ADAPTER_MAX_REPLY_SECONDS", 3600)))
+        last_progress = start
         poll = self.settings.ADAPTER_POLL_INTERVAL_SECONDS
         settle = float(getattr(self.settings, "ADAPTER_SETTLE_SECONDS", 3.0))
+        incomplete_settle = float(getattr(self.settings, "ADAPTER_INCOMPLETE_SETTLE_SECONDS", 120.0))
+        complete = getattr(self, "reply_complete", None)
         sent = self._last_sent.get(id(page), "")
 
         # Snapshot of the conversation before we wait, so we can detect a
@@ -618,7 +664,13 @@ class Adapter:
             snapshot = (await self._message_count(page), await self._last_message_text(page))
         before_count, before_text = snapshot
         candidate, candidate_since = "", 0.0
+        seen = snapshot
         resends = 0
+
+        def paused(seconds: float) -> None:
+            nonlocal hard_deadline, last_progress
+            hard_deadline += seconds
+            last_progress = _MONOTONIC()
 
         while True:
             state = await self.get_state(page)
@@ -630,7 +682,7 @@ class Adapter:
                 # The reply (if any) was lost with the session: let the caller resend.
                 raise RuntimeError("Session restored during the reply; the message must be sent again")
             if await self._captcha_visible(page):
-                deadline += await self._pause(page, "captcha", lambda p: self._captcha_visible(p, True))
+                paused(await self._pause(page, "captcha", lambda p: self._captcha_visible(p, True)))
                 continue
             if await self._reloaded(page):
                 count, last = await self._message_count(page), await self._last_message_text(page)
@@ -644,33 +696,41 @@ class Adapter:
                     await self._wait_ready(page)
                     await self.prepare_page(page)  # a reload resets things like the chat mode
                     await self._submit(page, sent)
-                    deadline = max(deadline, _MONOTONIC() + timeout)
+                    paused(0.0)
                     continue
 
+            now = _MONOTONIC()
+            after_count = await self._message_count(page)
+            after_text = await self._last_message_text(page)
+            if state == "generating" or (after_count, after_text) != seen:
+                last_progress, seen = now, (after_count, after_text)  # the service is working
+
+            fresh = bool(
+                state != "generating"
+                and after_count > before_count
+                and after_text
+                and after_text != before_text
+                and not _is_echo(after_text, sent)
+            )
             if state == "generating":
                 candidate = ""  # still working (agents work in several steps)
-            else:
-                after_count = await self._message_count(page)
-                after_text = await self._last_message_text(page)
-                fresh = (
-                    after_count > before_count
-                    and after_text
-                    and after_text != before_text
-                    and not _is_echo(after_text, sent)
-                )
-                if fresh:
-                    now = _MONOTONIC()
-                    if after_text != candidate:
-                        candidate, candidate_since = after_text, now
-                    if now - candidate_since >= settle:
-                        return candidate
-                if _MONOTONIC() >= deadline:
-                    if candidate:
-                        return candidate
-                    return after_text if fresh else ""
+            elif fresh:
+                if after_text != candidate:
+                    candidate, candidate_since = after_text, now
+                wait_for = settle
+                if complete is not None and not complete(candidate):
+                    wait_for = max(settle, incomplete_settle)  # an agent between steps: give it time
+                if now - candidate_since >= wait_for:
+                    if wait_for > settle:
+                        logger.info("Taking an unfinished-looking reply after %.0fs without changes", wait_for)
+                    return candidate
 
-            if _MONOTONIC() >= deadline:
-                raise TimeoutError(f"No response from service within {timeout}s")
+            if now - last_progress >= timeout or now >= hard_deadline:
+                if candidate:
+                    return candidate
+                if now >= hard_deadline:
+                    raise TimeoutError(f"No complete response from service within {hard_deadline - start:.0f}s")
+                raise TimeoutError(f"No response from service within {timeout}s (no activity)")
 
             await asyncio.sleep(poll)
 

@@ -180,7 +180,7 @@ def test_pipeline_commits_files_and_opens_pr() -> None:
 
     # Task ids are only known after planning: route by prefix.
     replies = {
-        "coder": ["Sorry, here is the code: <html></html>",
+        "coder": ["FILE: index.html\n```html\n<h1>Hello</h1>\n```\nI will now",  # cut off: no STATUS
                   "FILE: index.html\n```html\n<h1>Hello</h1>\n```\nSTATUS: DONE\nSUMMARY: Added index.html"],
         "reviewer": ["FILE: index.html\n```html\n<h1>Hello, world</h1>\n```\n"
                      "FILE: reviews/index.md\n````markdown\n# Review\nFixed greeting.\n````\n"
@@ -457,3 +457,38 @@ def test_resume_api_only_for_stopped_projects(monkeypatch) -> None:
         res = client.post(f"/api/projects/{pid}/resume", headers=_auth(token))
         assert res.status_code == 202 and res.json()["status"] == "running"
         assert started[-1] == (pid, True)
+
+
+def test_reply_without_files_gets_the_whole_task_again_in_the_same_chat() -> None:
+    """The agent lost its work («I can't reproduce the previous reply...»): the
+    server sends the full task again, not «resend the same work»."""
+    ids = _setup()
+    p = ids["project"]
+    gh = FakeGitHub()
+    adapter = FakeAdapter({f"project-{p}": [_plan(ids), "## Summary\nDone."]})
+    replies = {
+        "coder": ["I can't reproduce the previous reply: please resend the original request.",
+                  "FILE: index.html\n```html\n<h1>Hi</h1>\n```\nSTATUS: DONE\nSUMMARY: Added index.html"],
+        "reviewer": ["FILE: reviews/r.md\n```\nok\n```\nSTATUS: DONE\nSUMMARY: ok"],
+    }
+    original_wait = adapter.wait_response
+
+    async def wait_response(page, timeout=600):
+        if page.startswith(f"project-{p}-task-"):
+            prompt = next(t for pg, t in adapter.prompts if pg == page)
+            return replies["coder" if "You are the Coder" in prompt else "reviewer"].pop(0)
+        return await original_wait(page, timeout)
+
+    adapter.wait_response = wait_response
+    status, _ = _run(ids, adapter, gh)
+    assert status == "completed", _load(ids)[0].result
+    coder = [(pg, t) for pg, t in adapter.prompts if pg.startswith(f"project-{p}-task-")][:2]
+    assert coder[0][0] == coder[1][0]  # same chat
+    assert "did not receive your work" in coder[1][1] and "You are the Coder" in coder[1][1]
+    assert gh.files(f"ai/project-{p}")["index.html"] == "<h1>Hi</h1>\n"
+
+
+def test_agent_reply_finished_needs_the_status_line() -> None:
+    assert orchestrator._agent_reply_finished("FILE: a\n```\nx\n```\nSTATUS: DONE\nSUMMARY: ok")
+    assert orchestrator._agent_reply_finished("**STATUS:** BLOCKED")
+    assert not orchestrator._agent_reply_finished("Step 1: reading the files... FILE: a")

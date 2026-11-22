@@ -245,7 +245,7 @@ def test_wait_response_login_required_raises():
 
 def test_wait_response_timeout_raises():
     page = StubPage(state="generating")  # never becomes idle
-    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.01)
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.01, ADAPTER_MAX_REPLY_SECONDS=0.3)
     with pytest.raises(TimeoutError):
         asyncio.run(_run(a.wait_response(page, timeout=0.2)))
 
@@ -711,3 +711,101 @@ def test_reloaded_chat_showing_our_own_message_as_markdown_is_an_echo():
     sent = 'Build the "UI" module:\n- login page\n- settings page'
     assert _is_echo("Build the «UI» module: • login page • settings page", sent)
     assert not _is_echo("FILE: src/ui.js ... STATUS: DONE", sent)
+
+
+def test_long_reply_that_keeps_growing_is_not_cut_by_the_timeout():
+    """`timeout` is about inactivity: an agent that keeps writing for longer
+    than it gets the whole reply, not a cut-off part."""
+    page = StubPage()
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.02, ADAPTER_SETTLE_SECONDS=0.25)
+
+    async def flow():
+        await a.send_message(page, "build it")
+        msg = _StubEl(text="part 0")
+        page.messages.append(msg)
+
+        async def agent_writes():
+            for i in range(1, 12):
+                await asyncio.sleep(0.1)
+                msg._text = f"{msg._text} part {i}"
+            msg._text += " STATUS: DONE"
+
+        task = asyncio.create_task(agent_writes())
+        text = await a.wait_response(page, timeout=0.5)  # shorter than the writing
+        await task
+        return text
+
+    assert asyncio.run(_run(flow())).endswith("part 11 STATUS: DONE")
+
+
+def test_no_activity_at_all_times_out():
+    page = StubPage()
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.02)
+
+    async def flow():
+        await a.send_message(page, "build it")
+        await a.wait_response(page, timeout=0.3)
+
+    with pytest.raises(TimeoutError, match="no activity"):
+        asyncio.run(_run(flow()))
+
+
+def test_agent_between_steps_is_waited_for_until_its_reply_is_finished():
+    page = StubPage()
+    a = _adapter(ADAPTER_POLL_INTERVAL_SECONDS=0.02, ADAPTER_SETTLE_SECONDS=0.1,
+                 ADAPTER_INCOMPLETE_SETTLE_SECONDS=5)
+    a.reply_complete = lambda t: "STATUS:" in t
+
+    async def flow():
+        await a.send_message(page, "build it")
+        msg = _StubEl(text="Step 1: reading the repository")
+        page.messages.append(msg)
+
+        async def agent():
+            await asyncio.sleep(1.0)  # a long pause between steps (no busy indicator)
+            msg._text = "FILE: a.txt ... STATUS: DONE"
+
+        task = asyncio.create_task(agent())
+        text = await a.wait_response(page, timeout=10)
+        await task
+        return text
+
+    assert asyncio.run(_run(flow())) == "FILE: a.txt ... STATUS: DONE"
+
+
+def test_covered_chat_input_is_freed_with_escape():
+    """Something covers the editor (a menu / rating panel): the click fails until Escape."""
+    state = {"covered": True, "pasted": ""}
+
+    class Editor(_StubEl):
+        async def click(self, timeout=None):
+            if state["covered"]:
+                raise Exception("ElementHandle.click: Timeout 5000ms exceeded")
+
+        async def evaluate(self, script, *args):
+            if "isContentEditable" in script:
+                return True
+            if args:  # the synthetic paste
+                state["pasted"] = args[0]
+                return len("".join(args[0].split()))
+            return None
+
+    page = StubPage()
+    editor = Editor()
+
+    class Keyboard:
+        async def press(self, key):
+            if key == "Escape":
+                state["covered"] = False
+
+    page.keyboard = Keyboard()
+
+    async def query(selector):
+        if "textarea" in selector or "contenteditable" in selector:
+            return [editor]
+        return await StubPage.query_selector_all(page, selector)
+
+    page.query_selector_all = query
+    a = _adapter()
+    asyncio.run(_run(a.send_message(page, "hello world")))
+    assert state["pasted"] == "hello world" and not state["covered"]
