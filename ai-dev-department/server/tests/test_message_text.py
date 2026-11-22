@@ -187,7 +187,7 @@ MODEL_BAR = """
 """
 
 
-def _model_check(model, clicks=""):
+def _model_check(model, clicks="", auto=False):
     from playwright.async_api import async_playwright
 
     from app.adapters.generic import adapter as mod
@@ -197,7 +197,7 @@ def _model_check(model, clicks=""):
             browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
             page = await browser.new_page()
             await page.set_content(MODEL_BAR)
-            a = mod.Adapter(settings=_login_settings(ADAPTER_MODEL_CLICKS=clicks))
+            a = mod.Adapter(settings=_login_settings(ADAPTER_MODEL_CLICKS=clicks, ADAPTER_MODEL_AUTO=auto))
             a.expected_model = model
             try:
                 await a.prepare_page(page)
@@ -217,5 +217,73 @@ def test_model_check_passes_when_the_model_is_selected():
 def test_model_check_picks_the_model_with_clicks_or_explains():
     assert _model_check("gemini-4-argon-high",
                         clicks='button[aria-haspopup] || [role="menuitem"]:has-text("{model}")') is None
-    error = _model_check("gemini-4-argon-high")
+    error = _model_check("gemini-4-argon-high")  # automatic picking off, no clicks
     assert error and "is not selected" in error and "gemini-4-argon-high" in error
+    assert _model_check("gemini-4-argon-high", auto=True) is None  # picked in the model menu
+    assert "is not selected" in _model_check("no-such-model-1", auto=True)
+
+
+TOOLBAR = """
+<div id="msgs"><p>Earlier answer mentioning Code and Chat</p></div>
+<textarea id="box" placeholder="Describe the website or app you want"></textarea><button id="send">Send</button>
+<div class="bar">
+  <button>+</button>
+  <button id="mode" aria-haspopup="menu">Agent <svg width="8" height="8"></svg></button>
+  <button id="modality" aria-haspopup="menu"><svg width="12" height="12"></svg> <svg width="8" height="8"></svg></button>
+  <button id="model" aria-haspopup="dialog"><svg width="10" height="10"></svg> claude-sonnet-5-5-high</button>
+</div>
+<div id="layer"></div>
+<script>
+  const state = { mode: "Agent", modality: "Text", model: "claude-sonnet-5-5-high" };
+  window.state = state;
+  const layer = document.getElementById("layer");
+  const menu = (role, items, onPick) => {
+    layer.innerHTML = "";
+    const m = document.createElement("div"); m.setAttribute("role", role);
+    for (const [title, sub] of items) {
+      const it = document.createElement("div"); it.setAttribute("role", role === "menu" ? "menuitem" : "option");
+      it.innerHTML = "<div><span>" + title + "</span></div>" + (sub ? "<small>" + sub + "</small>" : "");
+      it.onclick = () => { onPick(title); layer.innerHTML = ""; };
+      m.append(it);
+    }
+    layer.append(m); return m;
+  };
+  document.getElementById("mode").onclick = () => menu("menu", [["Chat", ""], ["Agent", ""]], (t) => {
+    state.mode = t; document.getElementById("mode").firstChild.textContent = t + " "; });
+  document.getElementById("modality").onclick = () => menu("menu",
+    [["Image", "Generate and edit images"], ["Code", "Generate websites and apps"], ["Text", "Text to text chat"]],
+    (t) => { state.modality = t; });
+  document.getElementById("model").onclick = () => {
+    const pick = (t) => { state.model = t; document.getElementById("model").lastChild.textContent = " " + t; };
+    const m = menu("dialog", [["Max", "Router"], ["claude-sonnet-5-5-high", ""], ["gemini-4-argon-high", ""]], pick);
+    const search = document.createElement("input"); search.placeholder = "Search models";
+    search.oninput = () => { for (const it of m.querySelectorAll("[role=option]"))
+      it.style.display = it.innerText.includes(search.value) ? "" : "none"; };
+    m.prepend(search);
+  };
+</script>
+"""
+
+
+def test_chat_toolbar_setup_picks_mode_modality_and_model():
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic import adapter as mod
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            page = await browser.new_page()
+            await page.set_content(TOOLBAR)
+            a = mod.Adapter(settings=_login_settings(ADAPTER_CHAT_MODE="Chat", ADAPTER_MODALITY="Code"))
+            a.expected_model = "gemini-4-argon-high"
+            await a.prepare_page(page)
+            first = await page.evaluate("({...window.state})")
+            await a.prepare_page(page)  # again: already set -> nothing breaks
+            second = await page.evaluate("({...window.state})")
+            await browser.close()
+            return first, second
+
+    first, second = asyncio.run(go())
+    want = {"mode": "Chat", "modality": "Code", "model": "gemini-4-argon-high"}
+    assert first == want and second == want

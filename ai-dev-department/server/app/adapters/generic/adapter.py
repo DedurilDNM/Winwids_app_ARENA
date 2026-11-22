@@ -123,6 +123,52 @@ _MESSAGE_TEXT_JS = r"""
 """.replace("FENCE", "```")
 
 
+# Chat setup (mode / modality / model) by visible labels. Marks the element to
+# click with data-aidd-pick; returns a boolean only (no page text leaves the page).
+_PICK_TOGGLE_JS = r"""
+(args) => {
+  const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const label = (e) => (e.innerText || '').replace(/[\u2304\u02c5\u25be\u25bc\u2335\u2228]/g, '').trim();
+  document.querySelectorAll('[data-aidd-pick]').forEach((e) => e.removeAttribute('data-aidd-pick'));
+  const btns = [...document.querySelectorAll('button, [role="button"], [role="combobox"], [aria-haspopup]')]
+    .filter(vis).filter((b) => !b.closest('[role="menu"], [role="listbox"], [role="dialog"]'));
+  const modes = args.modes || [];
+  let el = null;
+  if (args.kind === 'mode') el = btns.find((b) => modes.includes(label(b)));
+  if (args.kind === 'modality') {
+    const m = btns.find((b) => modes.includes(label(b)));
+    if (m) el = btns.slice(btns.indexOf(m) + 1).find((b) => !m.contains(b) && !b.contains(m) && label(b).length <= 3);
+  }
+  if (args.kind === 'model') {
+    el = btns.find((b) => label(b) === args.model)
+      || btns.find((b) => /^[A-Za-z0-9][\w.]*(-[\w.]+)+$/.test(label(b)) || label(b) === 'Max');
+  }
+  if (!el) return false;
+  el.setAttribute('data-aidd-pick', 'toggle');
+  return label(el) === (args.current || null) ? 'same' : true;
+}
+"""
+
+_PICK_OPTION_JS = r"""
+(text) => {
+  const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const first = (e) => ((e.innerText || '').trim().split('\n')[0] || '').trim();
+  document.querySelectorAll('[data-aidd-pick="option"]').forEach((e) => e.removeAttribute('data-aidd-pick'));
+  const all = [...document.querySelectorAll('body *')].filter((e) => !e.closest('[data-aidd-pick="toggle"]')
+    && !e.closest('textarea, [contenteditable="true"], input') && vis(e) && first(e) === text);
+  if (!all.length) return false;
+  const popup = all.filter((e) => e.closest('[role="menu"], [role="listbox"], [role="dialog"], [data-radix-popper-content-wrapper], [cmdk-list]'));
+  const pool = popup.length ? popup : all;
+  let best = pool[pool.length - 1];
+  for (const e of pool) if (best.contains(e)) best = e;  // the deepest match
+  const target = best.closest('[role="menuitem"], [role="menuitemradio"], [role="option"], [cmdk-item], button, li, a') || best;
+  target.setAttribute('data-aidd-pick', 'option');
+  return true;
+}
+"""
+
 _DIALOG_JS = """
 () => [...document.querySelectorAll("[role=dialog], [role=alertdialog], [aria-modal=true], dialog[open]")].some((d) => {
   const r = d.getBoundingClientRect();
@@ -319,6 +365,10 @@ class Adapter:
         Returns [(selector, clicked)]. A click that fails is logged and skipped:
         the chat may already be in the wanted state.
         """
+        try:
+            await self._setup_chat(page)
+        except Exception:
+            logger.warning("Chat setup failed", exc_info=True)
         raw = getattr(self.settings, "ADAPTER_SETUP_CLICKS", "") or ""
         results: list[tuple[str, bool]] = []
         for selector in [part.strip() for part in raw.split("||") if part.strip()]:
@@ -337,6 +387,76 @@ class Adapter:
         return (f'button:has-text("{m}"), [role="button"]:has-text("{m}"), [role="combobox"]:has-text("{m}"), '
                 f'[aria-haspopup]:has-text("{m}")')
 
+    async def _pick(self, page, kind: str, **args) -> bool | str:
+        try:
+            return await page.evaluate(_PICK_TOGGLE_JS, {"kind": kind, **args})
+        except Exception:
+            return False
+
+    async def _choose(self, page, text: str, search: bool = False) -> bool:
+        """With a menu open: (optionally type `text` into its search box) click the option labelled `text`."""
+        if search:
+            box = await self._first_visible(page, 'input[placeholder*="earch" i], input[type="search"]')
+            if box is not None:
+                try:
+                    await box.fill(text)
+                    await asyncio.sleep(0.6)
+                except Exception:
+                    pass
+        for _ in range(6):
+            try:
+                if await page.evaluate(_PICK_OPTION_JS, text):
+                    await page.click('[data-aidd-pick="option"]', timeout=5_000)
+                    await asyncio.sleep(0.6)
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _setup_chat(self, page) -> None:
+        """ADAPTER_CHAT_MODE (e.g. Chat) and ADAPTER_MODALITY (e.g. Code): pick them
+        in the chat toolbar by their visible labels. Failures are logged only."""
+        s = self.settings
+        modes = [m.strip() for m in (getattr(s, "ADAPTER_CHAT_MODES", "") or "").split(",") if m.strip()]
+        mode = (getattr(s, "ADAPTER_CHAT_MODE", "") or "").strip()
+        if mode:
+            found = await self._pick(page, "mode", modes=modes + [mode], current=mode)
+            if found is True:
+                await page.click('[data-aidd-pick="toggle"]', timeout=5_000)
+                await asyncio.sleep(0.5)
+                if not await self._choose(page, mode):
+                    logger.warning("Chat mode %s: option not found", mode)
+                    await page.keyboard.press("Escape")
+            elif not found:
+                logger.warning("Chat mode %s: mode button not found", mode)
+        modality = (getattr(s, "ADAPTER_MODALITY", "") or "").strip()
+        if modality:
+            if await self._pick(page, "modality", modes=modes + ([mode] if mode else [])):
+                await page.click('[data-aidd-pick="toggle"]', timeout=5_000)
+                await asyncio.sleep(0.5)
+                if not await self._choose(page, modality):
+                    logger.warning("Modality %s: option not found", modality)
+                    await page.keyboard.press("Escape")
+            else:
+                logger.warning("Modality %s: button not found", modality)
+
+    async def _auto_pick_model(self, page, model: str) -> bool:
+        """Open the model picker (the button showing a model name) and pick `model`."""
+        if not getattr(self.settings, "ADAPTER_MODEL_AUTO", True):
+            return False
+        try:
+            if not await self._pick(page, "model", model=model):
+                return False
+            await page.click('[data-aidd-pick="toggle"]', timeout=5_000)
+            await asyncio.sleep(0.6)
+            if await self._choose(page, model, search=True):
+                return True
+            await page.keyboard.press("Escape")
+        except Exception:
+            logger.warning("Model picker: could not pick the model", exc_info=True)
+        return False
+
     async def _ensure_model(self, page) -> None:
         """If the account has a model set: make sure the chat uses it (the
         model button shows its name). ADAPTER_MODEL_CLICKS ({model} = the name)
@@ -345,7 +465,10 @@ class Adapter:
         if not model or not getattr(self.settings, "ADAPTER_MODEL_CHECK", True):
             return
         sel = self._model_selector(model)
-        if await self._wait_visible(page, sel, 10) is not None:
+        if await self._wait_visible(page, sel, 5) is not None:
+            return
+        if await self._auto_pick_model(page, model) and await self._wait_visible(page, sel, 5) is not None:
+            logger.info("Model selected: %s", model)
             return
         clicks = (getattr(self.settings, "ADAPTER_MODEL_CLICKS", "") or "").replace("{model}", model.replace('"', ""))
         for selector in [part.strip() for part in clicks.split("||") if part.strip()]:
@@ -358,8 +481,8 @@ class Adapter:
             logger.info("Model selected: %s", model)
             return
         raise RuntimeError(
-            f"Model «{model}» is not selected in this account's chat: open the account's browser and pick it "
-            "once (the service remembers it), or set ADAPTER_MODEL_CLICKS")
+            f"Model «{model}» is not selected in this account's chat and could not be picked automatically: "
+            "check the model name (as the service shows it) or pick it once in the account's browser")
 
     async def send_message(self, page, text: str) -> None:
         """Type `text` into the chat input and send it."""

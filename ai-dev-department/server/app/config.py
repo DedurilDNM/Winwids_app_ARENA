@@ -178,6 +178,16 @@ class Settings(BaseSettings):
     # must show the model's name. ADAPTER_MODEL_CLICKS ("||"-separated, {model}
     # = the name) picks it; empty = the user picks it once in the account's browser.
     ADAPTER_MODEL_CHECK: bool = True
+    # Pick the account's model automatically in the model picker (the button
+    # showing a model name; a search box is used if present).
+    ADAPTER_MODEL_AUTO: bool = True
+    # Chat toolbar setup by visible labels, before every new chat:
+    # ADAPTER_CHAT_MODE - the mode to select (e.g. Chat); ADAPTER_CHAT_MODES - all
+    # labels the mode button can show; ADAPTER_MODALITY - the option of the menu
+    # next to it (e.g. Code). Empty = do not touch.
+    ADAPTER_CHAT_MODE: str = ""
+    ADAPTER_CHAT_MODES: str = "Chat,Agent"
+    ADAPTER_MODALITY: str = ""
     ADAPTER_MODEL_CLICKS: str = ""
     # Extra selector that must appear before the chat is considered ready
     # (empty = skip this check).
