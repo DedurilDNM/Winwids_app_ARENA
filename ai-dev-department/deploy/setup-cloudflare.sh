@@ -97,7 +97,7 @@ Type=notify
 DynamicUser=yes
 # the token is read from the environment, so it is not visible in the process list
 EnvironmentFile=/etc/cloudflared/ai-dept.env
-ExecStart=$CF --no-autoupdate tunnel --metrics 127.0.0.1:20241 run
+ExecStart=$CF --no-autoupdate tunnel run
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=0
