@@ -225,12 +225,12 @@ def test_model_check_picks_the_model_with_clicks_or_explains():
 
 TOOLBAR = """
 <div id="msgs"><p>Earlier answer mentioning Code and Chat</p></div>
-<textarea id="box" placeholder="Describe the website or app you want"></textarea><button id="send">Send</button>
+<meta charset="utf-8"><textarea id="box" placeholder="Describe the website or app you want"></textarea><button id="send">Send</button>
 <div class="bar">
   <button>+</button>
   <button id="mode" aria-haspopup="menu">Agent <svg width="8" height="8"></svg></button>
   <button id="modality" aria-haspopup="menu"><svg width="12" height="12"></svg> <svg width="8" height="8"></svg></button>
-  <div id="model" style="cursor:pointer;display:inline-block"><svg width="10" height="10"></svg><span> claude-sonnet-5-5-high</span><svg width="8" height="8"></svg></div>
+  <div id="model" style="cursor:pointer;display:inline-block"><svg width="10" height="10"></svg><span> Claude Sonnet</span><svg width="8" height="8"></svg></div>
 </div>
 <div id="layer"></div>
 <script>
@@ -256,7 +256,7 @@ TOOLBAR = """
   // like the real one: a MULTI-select list (up to 2), «Deselect all», stays open until Escape
   let selected = ["claude-sonnet-5-5-high"];
   const showModel = () => { state.model = selected.join(", ") || "none";
-    document.querySelector("#model span").textContent = " " + (selected.length ? selected.join(", ") : "Select model"); };
+    document.querySelector("#model span").textContent = " " + (selected.length ? selected.join(", ").replace(/-/g, "\u2011") : "Select model"); };
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") layer.innerHTML = ""; });
   document.getElementById("model").onclick = () => {
     const items = [["Max", "Router"], ["claude-sonnet-5-5-high", ""], ["gemini-4-argon-high", ""]];
@@ -333,7 +333,7 @@ def test_empty_model_list_is_fixed_by_opening_a_chat_and_a_new_one_in_the_app():
             page = await browser.new_page()
 
             async def serve(route):
-                await route.fulfill(status=200, content_type="text/html", body=EMPTY_MODELS_SPA)
+                await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=EMPTY_MODELS_SPA)
 
             await page.route("https://service.example.com/**", serve)
             await page.goto("https://service.example.com/")

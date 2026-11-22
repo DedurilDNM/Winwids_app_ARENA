@@ -129,20 +129,19 @@ _PICK_TOGGLE_JS = r"""
 (args) => {
   const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
-  const label = (e) => (e.innerText || '').replace(/[\u2304\u02c5\u25be\u25bc\u2335\u2228]/g, '').trim();
+  const label = (e) => (e.innerText || '').replace(/[⌄˅▾▼⌵∨]/g, '').trim();
+  // compare by letters and digits only: other hyphens / spaces / line breaks do not matter
+  const norm = (t) => (t || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '');
   document.querySelectorAll('[data-aidd-pick]').forEach((e) => e.removeAttribute('data-aidd-pick'));
   const btns = [...document.querySelectorAll('button, [role="button"], [role="combobox"], [aria-haspopup]')]
     .filter(vis).filter((b) => !b.closest('[role="menu"], [role="listbox"], [role="dialog"]'));
-  const modes = args.modes || [];
+  const modes = (args.modes || []).map(norm);
   let el = null;
-  if (args.kind === 'mode') el = btns.find((b) => modes.includes(label(b)));
+  if (args.kind === 'mode') el = btns.find((b) => modes.includes(norm(label(b))));
   if (args.kind === 'modality') {
-    const m = btns.find((b) => modes.includes(label(b)));
-    if (m) el = btns.slice(btns.indexOf(m) + 1).find((b) => !m.contains(b) && !b.contains(m) && label(b).length <= 3);
+    const m = btns.find((b) => modes.includes(norm(label(b))));
+    if (m) el = btns.slice(btns.indexOf(m) + 1).find((b) => !m.contains(b) && !b.contains(m) && norm(label(b)).length <= 3);
   }
-  // the model chip may be any element (e.g. a div with a click handler): take the
-  // deepest visible element outside pop-ups whose text matches, lowest on the page
-  // (the chat toolbar), and climb to its nearest clickable ancestor
   const clickable = (t) => {
     let c = t;
     while (c && c !== document.body && !(c.matches('button, [role="button"], [role="combobox"], [aria-haspopup]')
@@ -157,35 +156,68 @@ _PICK_TOGGLE_JS = r"""
     return found.length ? clickable(found[0]) : null;
   };
   if (args.kind === 'model') {
+    const want = norm(args.model);
     const marked = document.querySelector('[data-aidd-model-btn]');
-    el = btns.find((b) => label(b) === args.model)
-      || byText((t) => t === args.model)
-      || (marked && vis(marked) ? marked : null)  // found earlier (its label may now be «Select model»)
+    el = (marked && vis(marked) ? marked : null)   // found earlier (by its behaviour or its text)
+      || btns.find((b) => norm(label(b)) === want)
+      || byText((t) => norm(t) === want)
       || btns.find((b) => /^[A-Za-z0-9][\w.]*(-[\w.]+)+$/.test(label(b)) || label(b) === 'Max')
       // several models selected: «a-b-c +1», «2 models», «a-b-c, d-e-f»
       || btns.find((b) => /(^|[\s,])[A-Za-z0-9][\w.]*(-[\w.]+){2,}/.test(label(b)) && label(b).length < 120)
-      || btns.find((b) => /^\d+\s+models?$/i.test(label(b)) || /^(select|choose) (a )?models?$/i.test(label(b)))
-      || byText((t) => /^[A-Za-z0-9][\w.]*(-[\w.]+){2,}$/.test(t) || t === 'Max');
-    if (el) { document.querySelectorAll('[data-aidd-model-btn]').forEach((e) => e.removeAttribute('data-aidd-model-btn'));
-              el.setAttribute('data-aidd-model-btn', ''); }
+      || btns.find((b) => /^\d+\s+models?$/i.test(label(b)) || /^(select|choose) (a )?models?$/i.test(label(b)));
+    if (el && !marked) el.setAttribute('data-aidd-model-btn', '');
   }
   if (!el) return false;
   el.setAttribute('data-aidd-pick', 'toggle');
-  return label(el) === (args.current || null) ? 'same' : true;
+  return args.current && norm(label(el)) === norm(args.current) ? 'same' : true;
+}
+"""
+
+# The model chip, found by what it DOES: in the toolbar row of the mode button
+# (or of the chat input), every clickable is a candidate, right to left; the one
+# that opens a model search box is the chip. Marks data-aidd-cand=<i>, returns count.
+_TOOLBAR_CANDIDATES_JS = r"""
+(args) => {
+  const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const norm = (t) => (t || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const isClick = (e) => e.matches('button, [role="button"], [role="combobox"], [aria-haspopup], a[href]')
+    || getComputedStyle(e).cursor === 'pointer';
+  document.querySelectorAll('[data-aidd-cand]').forEach((e) => e.removeAttribute('data-aidd-cand'));
+  const modes = (args.modes || []).map(norm);
+  let anchor = [...document.querySelectorAll('button, [role="button"]')].filter(vis)
+    .find((b) => modes.includes(norm(b.innerText)));
+  if (!anchor && args.input) anchor = [...document.querySelectorAll(args.input)].find(vis) || null;
+  if (!anchor) return 0;
+  const inPopup = (e) => e.closest('[role="menu"], [role="listbox"], [role="dialog"]');
+  let box = anchor.parentElement, cands = [];
+  for (let up = 0; box && box !== document.body && up < 7; up++, box = box.parentElement) {
+    cands = [...box.querySelectorAll('*')].filter((e) => vis(e) && isClick(e) && !inPopup(e)
+      && !e.contains(anchor) && !anchor.contains(e) && !e.closest('textarea, [contenteditable="true"]')
+      && e.getBoundingClientRect().width < 420 && e.getBoundingClientRect().height < 90
+      && norm(e.innerText).length >= 3);  // the chip shows a name; icon-only buttons (attach, modality) are skipped
+    if (cands.length >= 2) break;
+  }
+  if (args.send) { try { cands = cands.filter((e) => !e.matches(args.send)); } catch (err) {} }
+  cands = cands.filter((e) => !cands.some((o) => o !== e && e.contains(o) === false && o.contains(e)));  // outermost
+  cands.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right);
+  cands.slice(0, 8).forEach((e, i) => e.setAttribute('data-aidd-cand', String(i)));
+  return Math.min(cands.length, 8);
 }
 """
 
 # Structure only (no text): what the element showing a model-like name looks like.
 _MODEL_DIAG_JS = r"""
 () => {
-  const rx = /^[A-Za-z0-9][\w.]*(-[\w.]+){2,}$/;
-  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-  const lab = (e) => (e.innerText || '').trim();
-  const hits = [...document.querySelectorAll('body *')].filter((e) => vis(e) && rx.test(lab(e))
-    && ![...e.children].some((c) => rx.test(lab(c))));
-  const desc = (e) => e ? [e.tagName.toLowerCase(), e.getAttribute('role') || '-', e.hasAttribute('aria-haspopup') ? 'popup' : '-',
-    getComputedStyle(e).cursor, e.closest('[role="dialog"], [role="menu"], [role="listbox"]') ? 'in-popup' : 'page'].join('/') : 'none';
-  return `matches=${hits.length}` + hits.slice(0, 4).map((h) => ` [${desc(h)} < ${desc(h.parentElement)} < ${desc(h.parentElement && h.parentElement.parentElement)}]`).join('');
+  const shape = (t) => (t || '').trim().slice(0, 40).replace(/[a-z]/g, 'a').replace(/[A-Z]/g, 'A')
+    .replace(/[0-9]/g, '9').replace(/[^\x20-\x7e]/g, (c) => 'U+' + c.charCodeAt(0).toString(16));
+  const desc = (e) => [e.tagName.toLowerCase(), e.getAttribute('role') || '-', e.hasAttribute('aria-haspopup') ? 'popup' : '-',
+    getComputedStyle(e).cursor, JSON.stringify(shape(e.innerText))].join('/');
+  const c = [...document.querySelectorAll('[data-aidd-cand]')];
+  const m = document.querySelector('[data-aidd-model-btn]');
+  return `candidates=${c.length}` + c.map((e) => ` [${e.getAttribute('data-aidd-cand')}: ${desc(e)}]`).join('')
+    + (m ? ` chip=[${desc(m)}]` : ' chip=none')
+    + ` search=${!!document.querySelector('input[placeholder*="earch" i]')}`;
 }
 """
 
@@ -193,10 +225,13 @@ _PICK_OPTION_JS = r"""
 (text) => {
   const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const norm = (t) => (t || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const want = norm(text);
   const first = (e) => ((e.innerText || '').trim().split('\n')[0] || '').trim();
+  const match = (e) => norm(first(e)) === want || norm(e.innerText) === want;
   document.querySelectorAll('[data-aidd-pick="option"]').forEach((e) => e.removeAttribute('data-aidd-pick'));
   const all = [...document.querySelectorAll('body *')].filter((e) => !e.closest('[data-aidd-pick="toggle"]')
-    && !e.closest('textarea, [contenteditable="true"], input') && vis(e) && first(e) === text);
+    && !e.closest('textarea, [contenteditable="true"], input') && vis(e) && match(e));
   if (!all.length) return false;
   const popup = all.filter((e) => e.closest('[role="menu"], [role="listbox"], [role="dialog"], [data-radix-popper-content-wrapper], [cmdk-list]'));
   const pool = popup.length ? popup : all;
@@ -536,12 +571,55 @@ class Adapter:
                 return False
             await asyncio.sleep(0.5)
 
+    async def _search_open(self, page, seconds: float = 2.0, model: str = "") -> bool:
+        """The model menu is open: its search box or the model's option is visible."""
+        deadline = _MONOTONIC() + seconds
+        while True:
+            if await self._first_visible(page, 'input[placeholder*="earch" i]') is not None:
+                return True
+            if model:
+                try:
+                    if await page.evaluate(_PICK_OPTION_JS, model):
+                        return True
+                except Exception:
+                    pass
+            if _MONOTONIC() >= deadline:
+                return False
+            await asyncio.sleep(0.3)
+
     async def _open_model_menu(self, page, model: str) -> bool:
-        if not await self._pick(page, "model", model=model):
-            return False
-        await page.click('[data-aidd-pick="toggle"]', timeout=5_000)
-        await asyncio.sleep(0.6)
-        return True
+        """Open the model picker: the known chip, else the element whose text is the
+        model name, else probe the toolbar (the clickable that opens a model search box)."""
+        if await self._pick(page, "model", model=model):
+            await page.click('[data-aidd-pick="toggle"]', timeout=5_000)
+            if await self._search_open(page, 2.0, model):
+                return True
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+            await page.evaluate("() => document.querySelectorAll('[data-aidd-model-btn]')"
+                                ".forEach((e) => e.removeAttribute('data-aidd-model-btn'))")
+        s = self.settings
+        modes = [m.strip() for m in (getattr(s, "ADAPTER_CHAT_MODES", "") or "").split(",") if m.strip()]
+        mode = (getattr(s, "ADAPTER_CHAT_MODE", "") or "").strip()
+        try:
+            count = await page.evaluate(_TOOLBAR_CANDIDATES_JS, {
+                "modes": modes + ([mode] if mode else []), "input": self._selectors["input"],
+                "send": self._selectors["send"]})
+        except Exception:
+            count = 0
+        for i in range(int(count or 0)):
+            try:
+                await page.click(f'[data-aidd-cand="{i}"]', timeout=3_000)
+            except Exception:
+                continue
+            if await self._search_open(page, 1.5, model):
+                await page.evaluate("(i) => document.querySelector(`[data-aidd-cand=\"${i}\"]`)"
+                                    ".setAttribute('data-aidd-model-btn', '')", str(i))
+                logger.info("Model picker: chip found by probing the toolbar (candidate %d of %d)", i + 1, count)
+                return True
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.4)
+        return False
 
     async def _auto_pick_model(self, page, model: str) -> bool:
         """Open the model picker (the button showing a model name) and make `model`
