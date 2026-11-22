@@ -529,3 +529,21 @@ def test_service_ui_text_after_the_summary_is_ignored() -> None:
     out = parse_agent_output("FILE: a.txt\n```\nx\n```\n\nSTATUS: DONE\nSUMMARY: Made a.txt\nwith care.\n\n"
                              "Deployed the project\n\nShow More")
     assert out.summary == "Made a.txt\nwith care."
+
+
+def test_rendered_language_label_block_before_the_code_is_dropped() -> None:
+    """Text mode renders «HTML» as its own little block above the code."""
+    from app.services.agent_output import parse_agent_output
+
+    reply = ("FILE: index.html\n\n```\nHTML\n```\n\n\n```\n<!DOCTYPE html>\n<p>hi</p>\n```\n\n"
+             "FILE: README.md\n\n```\nMarkdown\n```\n\n```\n# Title\n\n~~~js\nconsole.log(1)\n~~~\n```\n\n"
+             "STATUS: DONE\nSUMMARY: ok")
+    out = parse_agent_output(reply)
+    assert out.files["index.html"] == "<!DOCTYPE html>\n<p>hi</p>\n"
+    assert out.files["README.md"] == "# Title\n\n~~~js\nconsole.log(1)\n~~~\n"
+
+
+def test_contract_tells_agents_to_use_tilde_fences_inside_markdown() -> None:
+    from app.services.prompts import OUTPUT_CONTRACT
+
+    assert "~~~" in OUTPUT_CONTRACT and "Do NOT build" in OUTPUT_CONTRACT

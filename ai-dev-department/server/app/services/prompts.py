@@ -40,6 +40,7 @@ OUTPUT_CONTRACT = """OUTPUT FORMAT (mandatory - your reply is parsed by a progra
 You cannot access the repository yourself. The server commits the files from your reply.
 The server sees ONLY the text of this chat reply: files you save in your own workspace or sandbox,
 attachments and downloads are lost. Do not create files with tools - write every file in the reply.
+Do NOT build, run, preview, deploy or install anything and do not start a project/sandbox: text only.
 For every file you create or change, output its FULL final content (never a diff, never "..." or
 "rest of the code" placeholders - the server rejects unfinished files). Keep each file under ~300 lines;
 split bigger code into several files:
@@ -49,7 +50,8 @@ FILE: path/relative/to/repo/root.ext
 <entire file content>
 ```
 
-Use a four-backtick fence (````) for files that themselves contain ``` (e.g. Markdown).
+Inside a file's content never write ``` (it would end the block early): in Markdown files write code
+examples with ~~~ fences instead (~~~js ... ~~~).
 After the last file, end your reply with exactly:
 
 STATUS: DONE

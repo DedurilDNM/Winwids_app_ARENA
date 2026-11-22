@@ -105,6 +105,14 @@ def _strip_fences(lines: list[str]) -> str:
     if len(lines) >= 2 and not _FENCE_RE.match(lines[0]) and _FENCE_RE.match(lines[1]) \
             and re.fullmatch(r"[A-Za-z0-9+#.\-]{1,20}", lines[0].strip()):
         lines = lines[1:]
+    # ...or render it as a separate block that holds only the label (```\nHTML\n```),
+    # followed by the real code block: drop that label block.
+    while (len(lines) >= 4 and _FENCE_RE.match(lines[0]) and _FENCE_RE.match(lines[2])
+           and re.fullmatch(r"[A-Za-z][A-Za-z0-9+#. \-]{0,19}", lines[1].strip())
+           and any(_FENCE_RE.match(x) for x in lines[3:])):
+        lines = lines[3:]
+        while lines and not lines[0].strip():
+            lines.pop(0)
     if lines and _FENCE_RE.match(lines[0]):
         fence = _FENCE_RE.match(lines[0]).group(1)
         closing = next(
