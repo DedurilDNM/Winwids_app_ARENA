@@ -142,7 +142,13 @@ _PICK_TOGGLE_JS = r"""
   }
   if (args.kind === 'model') {
     el = btns.find((b) => label(b) === args.model)
-      || btns.find((b) => /^[A-Za-z0-9][\w.]*(-[\w.]+)+$/.test(label(b)) || label(b) === 'Max');
+      || btns.find((b) => b.hasAttribute('data-aidd-model-btn'))  // found earlier (its label may now be «Select model»)
+      || btns.find((b) => /^[A-Za-z0-9][\w.]*(-[\w.]+)+$/.test(label(b)) || label(b) === 'Max')
+      // several models selected: «a-b-c +1», «2 models», «a-b-c, d-e-f»
+      || btns.find((b) => /(^|[\s,])[A-Za-z0-9][\w.]*(-[\w.]+){2,}/.test(label(b)) && label(b).length < 120)
+      || btns.find((b) => /^\d+\s+models?$/i.test(label(b)) || /^(select|choose) (a )?models?$/i.test(label(b)));
+    if (el) { document.querySelectorAll('[data-aidd-model-btn]').forEach((e) => e.removeAttribute('data-aidd-model-btn'));
+              el.setAttribute('data-aidd-model-btn', ''); }
   }
   if (!el) return false;
   el.setAttribute('data-aidd-pick', 'toggle');
@@ -466,32 +472,74 @@ class Adapter:
                     await page.keyboard.press("Escape")
             elif not found:
                 logger.warning("Chat mode %s: mode button not found", mode)
+        await self._set_modality(page)
+
+    async def _set_modality(self, page) -> bool:
+        """ADAPTER_MODALITY (e.g. Code) in the menu next to the mode button."""
+        s = self.settings
         modality = (getattr(s, "ADAPTER_MODALITY", "") or "").strip()
-        if modality:
-            if await self._pick(page, "modality", modes=modes + ([mode] if mode else [])):
-                await page.click('[data-aidd-pick="toggle"]', timeout=5_000)
-                await asyncio.sleep(0.5)
-                if not await self._choose(page, modality):
-                    logger.warning("Modality %s: option not found", modality)
-                    await page.keyboard.press("Escape")
-            else:
-                logger.warning("Modality %s: button not found", modality)
+        if not modality:
+            return True
+        modes = [m.strip() for m in (getattr(s, "ADAPTER_CHAT_MODES", "") or "").split(",") if m.strip()]
+        mode = (getattr(s, "ADAPTER_CHAT_MODE", "") or "").strip()
+        if not await self._pick(page, "modality", modes=modes + ([mode] if mode else [])):
+            logger.warning("Modality %s: button not found", modality)
+            return False
+        await page.click('[data-aidd-pick="toggle"]', timeout=5_000)
+        await asyncio.sleep(0.5)
+        if await self._choose(page, modality):
+            return True
+        logger.warning("Modality %s: option not found", modality)
+        await page.keyboard.press("Escape")
+        return False
+
+    async def _model_is(self, page, model: str, seconds: float = 0) -> bool:
+        """The model button shows exactly `model` (only it: not «model +1»)."""
+        deadline = _MONOTONIC() + seconds
+        while True:
+            if await self._pick(page, "model", model=model, current=model) == "same":
+                return True
+            if _MONOTONIC() >= deadline:
+                return False
+            await asyncio.sleep(0.5)
+
+    async def _open_model_menu(self, page, model: str) -> bool:
+        if not await self._pick(page, "model", model=model):
+            return False
+        await page.click('[data-aidd-pick="toggle"]', timeout=5_000)
+        await asyncio.sleep(0.6)
+        return True
 
     async def _auto_pick_model(self, page, model: str) -> bool:
-        """Open the model picker (the button showing a model name) and pick `model`."""
+        """Open the model picker (the button showing a model name) and make `model`
+        the only selected one: the list may be multi-select (ADAPTER_MODEL_CLEAR_LABEL,
+        e.g. «Deselect all», is clicked first). Logs only found/not found."""
         if not getattr(self.settings, "ADAPTER_MODEL_AUTO", True):
             return False
+        clear_label = (getattr(self.settings, "ADAPTER_MODEL_CLEAR_LABEL", "") or "").strip()
+        search_box = 'input[placeholder*="earch" i]'
+        steps = {"menu": False, "cleared": False, "modality": None, "option": False, "shown": False}
         try:
-            if not await self._pick(page, "model", model=model):
-                return False
-            await page.click('[data-aidd-pick="toggle"]', timeout=5_000)
-            await asyncio.sleep(0.6)
-            if await self._choose(page, model, search=True):
-                return True
-            await page.keyboard.press("Escape")
-        except Exception:
-            logger.warning("Model picker: could not pick the model", exc_info=True)
-        return False
+            steps["menu"] = await self._open_model_menu(page, model)
+            if steps["menu"]:
+                if clear_label:
+                    steps["cleared"] = await self._choose(page, clear_label)
+                    if steps["cleared"]:
+                        # clearing also resets the modality (e.g. Code): set it again, then reopen
+                        if await self._first_visible(page, search_box) is not None:
+                            await page.keyboard.press("Escape")
+                            await asyncio.sleep(0.5)
+                        steps["modality"] = await self._set_modality(page)
+                        await self._open_model_menu(page, model)
+                steps["option"] = await self._choose(page, model, search=True)
+                if await self._first_visible(page, 'input[placeholder*="earch" i]') is not None:
+                    await page.keyboard.press("Escape")  # a multi-select list stays open
+                    await asyncio.sleep(0.5)
+            steps["shown"] = await self._model_is(page, model, 3)
+        except Exception as exc:
+            logger.warning("Model picker error: %s", type(exc).__name__)
+        logger.info("Model picker for %s: %s", model, " ".join(f"{k}={v}" for k, v in steps.items()))
+        return steps["shown"]
 
     async def _nav(self, page, kind: str) -> bool:
         """Click a navigation control found by _NAV_JS (or by an ADAPTER_*_SELECTOR)."""
@@ -530,9 +578,9 @@ class Adapter:
         if not model or not getattr(self.settings, "ADAPTER_MODEL_CHECK", True):
             return
         sel = self._model_selector(model)
-        if await self._wait_visible(page, sel, 5) is not None:
+        if await self._model_is(page, model, 5):
             return
-        if await self._auto_pick_model(page, model) and await self._wait_visible(page, sel, 5) is not None:
+        if await self._auto_pick_model(page, model):
             logger.info("Model selected: %s", model)
             return
         if getattr(self.settings, "ADAPTER_MODEL_AUTO", True) and await self._new_chat_in_app(page):
@@ -540,8 +588,7 @@ class Adapter:
                 await self._setup_chat(page)
             except Exception:
                 logger.warning("Chat setup failed", exc_info=True)
-            if await self._wait_visible(page, sel, 3) is not None or (
-                    await self._auto_pick_model(page, model) and await self._wait_visible(page, sel, 5) is not None):
+            if await self._model_is(page, model, 3) or await self._auto_pick_model(page, model):
                 logger.info("Model selected after the in-app new chat: %s", model)
                 return
         clicks = (getattr(self.settings, "ADAPTER_MODEL_CLICKS", "") or "").replace("{model}", model.replace('"', ""))
@@ -551,7 +598,7 @@ class Adapter:
                 await asyncio.sleep(0.5)
             except Exception:
                 logger.warning("Model click not possible: %s", selector)
-        if clicks and await self._wait_visible(page, sel, 5) is not None:
+        if clicks and (await self._model_is(page, model, 5) or await self._wait_visible(page, sel, 1) is not None):
             logger.info("Model selected: %s", model)
             return
         raise RuntimeError(

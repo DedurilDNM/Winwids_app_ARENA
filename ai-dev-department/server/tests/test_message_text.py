@@ -253,13 +253,31 @@ TOOLBAR = """
   document.getElementById("modality").onclick = () => menu("menu",
     [["Image", "Generate and edit images"], ["Code", "Generate websites and apps"], ["Text", "Text to text chat"]],
     (t) => { state.modality = t; });
+  // like the real one: a MULTI-select list (up to 2), «Deselect all», stays open until Escape
+  let selected = ["claude-sonnet-5-5-high"];
+  const showModel = () => { state.model = selected.join(", ") || "none";
+    document.getElementById("model").lastChild.textContent = " " + (selected.length ? selected.join(", ") : "Select model"); };
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") layer.innerHTML = ""; });
   document.getElementById("model").onclick = () => {
-    const pick = (t) => { state.model = t; document.getElementById("model").lastChild.textContent = " " + t; };
-    const m = menu("dialog", [["Max", "Router"], ["claude-sonnet-5-5-high", ""], ["gemini-4-argon-high", ""]], pick);
+    const items = [["Max", "Router"], ["claude-sonnet-5-5-high", ""], ["gemini-4-argon-high", ""]];
+    layer.innerHTML = "";
+    const m = document.createElement("div"); m.setAttribute("role", "dialog");
     const search = document.createElement("input"); search.placeholder = "Search models";
-    search.oninput = () => { for (const it of m.querySelectorAll("[role=option]"))
-      it.style.display = it.innerText.includes(search.value) ? "" : "none"; };
-    m.prepend(search);
+    const clear = document.createElement("button"); clear.textContent = "Deselect all";
+    clear.onclick = () => { selected = []; state.modality = "Auto"; showModel(); render(); };  // resets Code too
+    const list = document.createElement("div");
+    const render = () => { list.innerHTML = "";
+      for (const [title, sub] of items) {
+        if (search.value && !title.includes(search.value)) continue;
+        const it = document.createElement("div");  // no role, like many real lists
+        it.innerHTML = "<span>" + title + "</span>" + (sub ? " <small>" + sub + "</small>" : "")
+          + (selected.includes(title) ? " <svg width=8 height=8></svg>" : "");
+        it.onclick = () => { selected = selected.includes(title) ? selected.filter((x) => x !== title)
+          : [...selected, title].slice(-2); showModel(); render(); };
+        list.append(it);
+      } };
+    search.oninput = render;
+    m.append(search, clear, list); layer.append(m); render();
   };
 </script>
 """

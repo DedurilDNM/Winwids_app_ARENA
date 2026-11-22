@@ -181,6 +181,8 @@ class Settings(BaseSettings):
     # Pick the account's model automatically in the model picker (the button
     # showing a model name; a search box is used if present).
     ADAPTER_MODEL_AUTO: bool = True
+    # Multi-select model lists: the option that clears the selection first.
+    ADAPTER_MODEL_CLEAR_LABEL: str = "Deselect all"
     # Chat toolbar setup by visible labels, before every new chat:
     # ADAPTER_CHAT_MODE - the mode to select (e.g. Chat); ADAPTER_CHAT_MODES - all
     # labels the mode button can show; ADAPTER_MODALITY - the option of the menu
