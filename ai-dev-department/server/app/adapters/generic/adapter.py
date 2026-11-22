@@ -1185,6 +1185,7 @@ class Adapter:
         seen = snapshot
         stuck_after = float(getattr(self.settings, "ADAPTER_STUCK_REFRESH_SECONDS", 300) or 0)
         last_change = start  # last time the reply TEXT changed (a busy indicator alone does not count)
+        last_report = start
         resends = 0
 
         def paused(seconds: float) -> None:
@@ -1222,6 +1223,13 @@ class Adapter:
             now = _MONOTONIC()
             after_count = await self._message_count(page)
             after_text = await self._last_message_text(page)
+            if now - last_report >= 60:  # numbers only, never the text
+                last_report = now
+                logger.info(
+                    "Waiting for the reply %.0fs: state=%s messages=%d (before %d) last_len=%d new=%s echo=%s "
+                    "unchanged=%.0fs", now - start, state, after_count, before_count, len(after_text or ""),
+                    bool(after_text) and after_text != before_text, bool(after_text) and _is_echo(after_text, sent),
+                    now - last_change)
             if (after_count, after_text) != seen:
                 last_change = now
             if state == "generating" or (after_count, after_text) != seen:
