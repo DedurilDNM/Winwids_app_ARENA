@@ -399,3 +399,30 @@ def test_reply_is_found_next_to_our_message_when_the_selector_finds_nothing():
     text, second = asyncio.run(go())
     assert '{"tasks": [{"id": "t1"}]}' in text and "Copy" not in text and "mistakes" not in text
     assert second.strip() == "second answer here"
+
+
+def test_hidden_older_chat_with_the_same_prompt_is_not_taken():
+    """The site keeps the previous chat (same prompt, old reply) hidden in the page."""
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic import adapter as mod
+
+    prompt = "You are the ORCHESTRATOR of a software project. Split the project task."
+    old_chat = ("<section id='old' style='display:none'><div><div><p>" + prompt + "</p></div></div>"
+                + "".join(f"<div><p>old block {i}</p></div>" for i in range(9)) + "</section>")
+    html = TEXT_MODE_CHAT.replace("<footer>", old_chat + "<footer>")
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            page = await browser.new_page()
+            await page.set_content(html)
+            a = mod.Adapter(settings=_login_settings(ADAPTER_POLL_INTERVAL_SECONDS=0.2, ADAPTER_SETTLE_SECONDS=1))
+            a._last_sent[page] = prompt  # as if inherited from an earlier chat
+            await a.send_message(page, prompt)
+            text = await a.wait_response(page, timeout=20)
+            await browser.close()
+            return text
+
+    text = asyncio.run(go())
+    assert '{"tasks": [{"id": "t1"}]}' in text and "old block" not in text

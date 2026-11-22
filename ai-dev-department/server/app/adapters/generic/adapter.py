@@ -28,6 +28,7 @@ import hashlib
 import logging
 import re
 import time
+import weakref
 from urllib.parse import urlsplit
 from typing import Literal
 
@@ -137,19 +138,24 @@ _REPLY_FALLBACK_JS = r"""
   if (head.length < 12) return { count: 0, text: '' };
   const skip = (e) => e.closest('textarea, input, [contenteditable="true"], script, style');
   const hits = [...document.querySelectorAll('body *')].filter((e) => !skip(e) && norm(e.textContent).includes(head));
-  const deep = hits.filter((e) => ![...e.children].some((c) => norm(c.textContent).includes(head)));
+  const shown = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden'; };
+  // a site may keep an older chat (with the same prompt) hidden in the page: only a VISIBLE
+  // copy counts, and one that appeared after we sent (not marked «seen») wins
+  const deep = hits.filter((e) => ![...e.children].some((c) => norm(c.textContent).includes(head)) && shown(e));
   if (!deep.length) return { count: 0, text: '' };
-  const bubble = deep[deep.length - 1];  // the latest copy of our message
+  const fresh = deep.filter((e) => !e.hasAttribute('data-aidd-seen'));
+  const bubble = (fresh.length ? fresh : deep)[(fresh.length ? fresh : deep).length - 1];
   const top = bubble.getBoundingClientRect().top;
   let row = bubble;
-  for (let up = 0; up < 8 && row.parentElement && row.parentElement !== document.body; up++) {
+  for (let up = 0; up < 14 && row.parentElement && row.parentElement !== document.body; up++) {
     const parent = row.parentElement;
     const sibs = [...parent.children];
     const after = sibs.slice(sibs.indexOf(row) + 1).filter((x) => !x.hasAttribute('data-aidd-seen')
       && !x.querySelector('textarea, input, [contenteditable="true"]') && !norm(x.textContent).includes(head)
-      && (x.innerText || '').trim().length > 0 && x.getBoundingClientRect().top >= top);
+      && (x.innerText || '').trim().length > 0 && shown(x) && x.getBoundingClientRect().top >= top);
     if (after.length) {
-      return { count: sibs.length, text: after.map((x) => msgText(x)).filter(Boolean).join('\n\n').trim() };
+      return { count: after.length, text: after.map((x) => msgText(x)).filter(Boolean).join('\n\n').trim() };
     }
     row = parent;
   }
@@ -357,8 +363,10 @@ class Adapter:
 
     def __init__(self, settings=None) -> None:
         self.settings = settings or get_settings()
-        self._last_sent: dict[int, str] = {}  # id(page) -> last prompt (echo filter)
-        self._before: dict[int, tuple[int, str]] = {}
+        # Per-page state, keyed by the page OBJECT (weakly): never by id(page) - a new
+        # page can get the id of a closed one and inherit its prompt.
+        self._last_sent: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # page -> last prompt
+        self._before: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # page -> (count, text) before sending
         # Optional: reply text -> bool "looks finished" (set per task by the orchestrator).
         self.reply_complete = None
         # Optional auto-login: (email, password) of this account, and an async
@@ -367,11 +375,11 @@ class Adapter:
         # Optional: the model name the account's chat must use (Account.model).
         self.expected_model: str | None = None
         self.on_logged_in = None
-        self._marks: dict[int, str] = {}  # id(page) -> reload marker
+        self._marks: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # page -> reload marker
         # async (kind: "captcha" | "dialog" | "login", active: bool) -> None; set by the orchestrator
         self.on_attention = None
         # async () -> bool: False once the project was stopped (ends a pause)
-        self.should_continue = None  # id(page) -> chat snapshot taken before sending
+        self.should_continue = None
 
     # ------------------------------------------------------------------ config
 
@@ -471,14 +479,17 @@ class Adapter:
                 return ""
         return (text or "").strip()
 
-    async def _message_count(self, page) -> int:
+    async def _selector_count(self, page) -> int:
         msg_sel = self._selectors["message"]
-        count = 0
-        if msg_sel:
-            try:
-                count = len(await page.query_selector_all(msg_sel))
-            except Exception:
-                count = 0
+        if not msg_sel:
+            return 0
+        try:
+            return len(await page.query_selector_all(msg_sel))
+        except Exception:
+            return 0
+
+    async def _message_count(self, page) -> int:
+        count = await self._selector_count(page)
         if count == 0:
             fallback = await self._fallback_reply(page)
             return fallback[0] if fallback else 0
@@ -486,7 +497,7 @@ class Adapter:
 
     async def _fallback_reply(self, page) -> tuple[int, str] | None:
         """(count, text) found next to our own last sent message, or None."""
-        sent = self._last_sent.get(id(page), "")
+        sent = self._last_sent.get(page, "")
         if not sent or not getattr(self.settings, "ADAPTER_REPLY_FALLBACK", True):
             return None
         try:
@@ -790,9 +801,12 @@ class Adapter:
         send_sel = self._selectors["send"]
 
         # Snapshot BEFORE sending: a fast reply must not end up in "before".
-        self._before[id(page)] = (await self._message_count(page), await self._last_message_text(page))
+        count = await self._selector_count(page)
+        # no selector match = the fallback reader: everything on the page now gets marked
+        # «seen» and can never be the reply, so the baseline is simply empty
+        self._before[page] = (count, await self._last_message_text(page)) if count else (0, "")
         await self._mark_seen(page)  # what is on the page now can never be the new reply
-        self._last_sent[id(page)] = text
+        self._last_sent[page] = text
         await self._submit(page, text)
         logger.debug("Message sent to service (len=%d)", len(text))
 
@@ -1091,12 +1105,12 @@ class Adapter:
         token = f"aidd-{id(page)}-{_MONOTONIC()}"
         try:
             await page.evaluate("(t) => { window.__aiddMark = t; }", token)
-            self._marks[id(page)] = token
+            self._marks[page] = token
         except Exception:
-            self._marks.pop(id(page), None)
+            self._marks.pop(page, None)
 
     async def _reloaded(self, page) -> bool:
-        token = self._marks.get(id(page))
+        token = self._marks.get(page)
         if not token:
             return False
         for attempt in range(3):
@@ -1233,11 +1247,11 @@ class Adapter:
         settle = float(getattr(self.settings, "ADAPTER_SETTLE_SECONDS", 3.0))
         incomplete_settle = float(getattr(self.settings, "ADAPTER_INCOMPLETE_SETTLE_SECONDS", 120.0))
         complete = getattr(self, "reply_complete", None)
-        sent = self._last_sent.get(id(page), "")
+        sent = self._last_sent.get(page, "")
 
         # Snapshot of the conversation before we wait, so we can detect a
         # genuinely new assistant message (not an echo of what we sent).
-        snapshot = self._before.pop(id(page), None)
+        snapshot = self._before.pop(page, None)
         if snapshot is None:  # wait_response without send_message (tests / reuse)
             snapshot = (await self._message_count(page), await self._last_message_text(page))
         before_count, before_text = snapshot
