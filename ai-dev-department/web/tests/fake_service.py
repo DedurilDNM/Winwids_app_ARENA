@@ -54,7 +54,25 @@ function projectReply(t) {
   if (t.includes("All agent tasks are complete")) return "## Summary\\nAll done.";
   return "";
 }
+// ?real=1: markup like the real service in text mode - user and assistant turns look
+// the same (no roles, no data attributes), the answer has a model header, and an
+// OLDER chat with an orchestrator prompt is kept hidden in the page.
+const REAL = location.search.includes("real=1");
+if (REAL) {
+  const old = document.createElement("section"); old.style.display = "none";
+  old.innerHTML = "<div class='turn'><div class='bubble'><p>You are the ORCHESTRATOR of a software project. Split the project task into concrete subtasks</p></div></div>"
+    + "<div class='turn'><div class='bubble'><div class='head'><span>model-x</span></div><p>old answer</p></div></div>";
+  document.body.append(old);
+}
 function add(role, text) {
+  if (REAL) {
+    const d = document.createElement("div"); d.className = "turn";
+    const b = document.createElement("div"); b.className = "bubble"; d.append(b);
+    if (role === "assistant") { const head = document.createElement("div"); head.className = "head";
+      head.innerHTML = "<span>model-x</span><small>Thought for 1 second</small>"; b.append(head); }
+    const p = document.createElement("p"); p.textContent = text; b.append(p); messages.append(d);
+    return;
+  }
   const d = document.createElement("div"); d.className = "msg msg-" + role; d.dataset.role = role;
   const p = document.createElement("p"); p.textContent = text; d.append(p); messages.append(d);
 }

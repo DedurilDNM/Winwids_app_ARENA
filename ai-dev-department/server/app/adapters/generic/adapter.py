@@ -77,7 +77,7 @@ _BLOCKED_MESSAGES = {
 }
 
 _MESSAGE_TEXT_JS = r"""
-(root) => {
+(root, skip) => {
   // Rebuild the message as markdown-ish text: code blocks become fenced blocks
   // with ONLY their code (no language label / copy button), hidden parts and
   // buttons are skipped, block elements end lines.
@@ -110,6 +110,10 @@ _MESSAGE_TEXT_JS = r"""
   }
   // Code-block chrome: short header siblings of a <pre> (language label, copy button).
   const marked = [];
+  // chrome learned by calibration (model name, «thought for…» header): skipped
+  for (const q of (skip || [])) {
+    try { for (const e of root.querySelectorAll(q)) { e.setAttribute("data-aidd-skip", "1"); marked.push(e); } } catch (err) {}
+  }
   for (const pre of root.querySelectorAll("pre")) {
     const wrap = pre.parentElement;
     if (!wrap || wrap === root) continue;
@@ -157,7 +161,7 @@ _REPLY_FALLBACK_JS = r"""
       && !x.querySelector('textarea, input, [contenteditable="true"]') && !norm(x.textContent).includes(head)
       && (x.innerText || '').trim().length > 0 && shown(x) && x.getBoundingClientRect().top >= top);
     if (after.length) {
-      return { count: after.length, text: after.map((x) => msgText(x)).filter(Boolean).join('\n\n').trim() };
+      return { count: after.length, text: after.map((x) => msgText(x, args.skip || [])).filter(Boolean).join('\n\n').trim() };
     }
     row = parent;
   }
@@ -494,7 +498,7 @@ class Adapter:
             return fallback[1] if fallback else ""
         last = els[-1]
         try:
-            text = await last.evaluate(_MESSAGE_TEXT_JS)
+            text = await last.evaluate(_MESSAGE_TEXT_JS, self._skip())
         except Exception:
             text = None
         if text is not None:
@@ -507,6 +511,10 @@ class Adapter:
             except Exception:
                 return ""
         return (text or "").strip()
+
+    def _skip(self) -> list[str]:
+        """Chrome inside a reply (model name, «thought for…») learned by calibration."""
+        return list((self.profile or {}).get("skip") or [])
 
     async def _selector_count(self, page) -> int:
         msg_sel = self._selectors["message"]
@@ -542,7 +550,7 @@ class Adapter:
 
     async def _fallback_reply_now(self, page, sent: str) -> tuple[int, str] | None:
         try:
-            result = await page.evaluate(_REPLY_FALLBACK_JS, {"head": sent[:400]})
+            result = await page.evaluate(_REPLY_FALLBACK_JS, {"head": sent[:400], "skip": self._skip()})
         except Exception:
             return None
         if not isinstance(result, dict):

@@ -145,9 +145,41 @@ _LOCATE_JS = r"""
     if (!nt.includes(one) || !nt.includes(two)) continue;
     good.push({ sel: c.sel, kind: c.kind, depth: c.depth, matches: m.length, fenced: fencedTwo(text) });
   }
+  // chrome before the answer inside the reply turn (model name, «thought for N s»):
+  // blocks that come before the branch holding the first marker. Selectors are
+  // relative to the reply turn: class-based when possible, else a :scope path.
+  const root = nodes[0];
+  const markers = all.filter((e) => root.contains(e) && vis(e) && norm(e.textContent).includes(one)
+    && ![...e.children].some((c) => norm(c.textContent).includes(one)));
+  const skip = [];
+  if (markers.length) {
+    const marker = markers[0];
+    const path = [];
+    const sigOf = (el, steps) => {
+      const tag = el.tagName.toLowerCase();
+      const cls = [...el.classList].find((c) => c.length <= 40 && /[a-z]{3}/i.test(c));
+      if (cls) return `${tag}.${CSS.escape(cls)}`;
+      const at = [...el.attributes].find((a) => a.name.startsWith('data-') && !a.name.startsWith('data-aidd'));
+      if (at) return `${tag}[${at.name}]`;
+      return ':scope > ' + steps.concat(`${tag}:nth-child(${[...el.parentElement.children].indexOf(el) + 1})`).join(' > ');
+    };
+    let el = root;
+    while (el && el !== marker) {
+      let next = null;
+      for (const ch of el.children) {
+        if (ch.contains(marker)) { next = ch; break; }
+        const txt = (ch.innerText || '').trim();
+        if (txt && txt.length < 200) skip.push(sigOf(ch, path));
+      }
+      if (!next) break;
+      path.push(`${next.tagName.toLowerCase()}:nth-child(${[...el.children].indexOf(next) + 1})`);
+      el = next;
+    }
+  }
   const rank = { data: 0, role: 0, id: 1, class: 2 };
   good.sort((a, b) => (b.fenced - a.fenced) || (rank[a.kind] - rank[b.kind]) || (a.depth - b.depth) || (a.matches - b.matches));
-  return { reply: true, user: !!user, best: good.slice(0, 3).map((g) => ({ sel: g.sel, fenced: g.fenced, kind: g.kind })) };
+  return { reply: true, user: !!user, skip: skip.slice(0, 5),
+           best: good.slice(0, 3).map((g) => ({ sel: g.sel, fenced: g.fenced, kind: g.kind })) };
 }
 """.replace("__NORM__", _NORM_JS).replace("__MESSAGE_TEXT__", _MESSAGE_TEXT_JS.strip())
 
@@ -252,18 +284,23 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
             profile["reader"], profile["message"] = "selector", best[0]["sel"]
         else:
             profile["reader"], profile["message"] = "anchor", ""
+        profile["skip"] = list((located or {}).get("skip") or [])
 
         # verify with the NORMAL reader, exactly as tasks will read replies
         await step("checking that the answer is read correctly")
         adapter.profile = profile
         text = await adapter._last_message_text(page)
         ok_markers = _norm(one) in _norm(text) and _norm(two) in _norm(text)
+        if not ok_markers and profile["skip"]:  # skipping removed part of the answer: read everything
+            profile["skip"] = []
+            text = await adapter._last_message_text(page)
+            ok_markers = _norm(one) in _norm(text) and _norm(two) in _norm(text)
         if not ok_markers and profile["reader"] == "selector":  # one more chance: the anchor reader
             profile["reader"], profile["message"] = "anchor", ""
             text = await adapter._last_message_text(page)
             ok_markers = _norm(one) in _norm(text) and _norm(two) in _norm(text)
         fenced = any(i % 2 == 1 and _norm(two) in _norm(part) for i, part in enumerate(text.split("```")))
-        profile["checks"] = {"markers": ok_markers, "code_block": fenced, "status_line": "status:done" in _norm(text).replace(" ", "")
+        profile["checks"] = {"clean_start": _norm(text).startswith(_norm(one)), "markers": ok_markers, "code_block": fenced, "status_line": "status:done" in _norm(text).replace(" ", "")
                              or "statusdone" in _norm(text), "own_message_found": bool(located.get("user"))}
         profile["ok"] = ok_markers
         if not ok_markers:

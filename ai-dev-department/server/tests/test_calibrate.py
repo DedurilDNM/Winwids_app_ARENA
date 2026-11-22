@@ -112,7 +112,9 @@ def test_calibration_learns_a_message_selector_and_the_busy_indicator(variant):
     assert profile["ok"], profile
     assert profile["reader"] == "selector" and profile["message"]
     assert profile["busy"] == 'button[aria-label="Stop generating"]'
-    assert profile["checks"] == {"markers": True, "code_block": True, "status_line": True, "own_message_found": True}
+    assert profile["checks"] == {"clean_start": True, "markers": True, "code_block": True, "status_line": True,
+                                 "own_message_found": True}
+    assert not reply.startswith("model-x")  # the reply header (model name) is skipped
     assert "STATUS: DONE" in reply and "SUMMARY: made a.txt" in reply and "AIDD-CHECK" not in reply
     assert "generating" in states  # the learned busy indicator works in a normal task
 
@@ -123,6 +125,8 @@ def test_identical_layout_falls_back_to_the_anchor_reader_and_no_busy_indicator(
     assert profile["reader"] == "anchor" and profile["message"] == ""
     assert profile["busy"] == ""
     assert "SUMMARY: made a.txt" in reply and "Answers may contain" not in reply
+    assert profile["skip"] and profile["checks"]["clean_start"]
+    assert reply.startswith("FILE: a.txt")  # the «model-x» header before the answer is skipped
 
 
 def test_profile_selectors_override_the_env_ones():
