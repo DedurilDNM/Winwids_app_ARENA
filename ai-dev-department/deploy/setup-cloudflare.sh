@@ -1,7 +1,7 @@
 #!/bin/bash
 # Permanent public HTTPS address via a Cloudflare Tunnel (no open ports needed).
 # Before: a domain on Cloudflare + a tunnel whose Public Hostname points to
-# http://localhost:8080 (see the steps the assistant gave / deploy/README.md).
+# http://localhost:$LOCAL_PORT (see the steps the assistant gave / deploy/README.md).
 #
 #   sudo bash deploy/setup-cloudflare.sh aidd.example.dpdns.org
 #
@@ -10,7 +10,7 @@
 # What it does:
 #   1. installs cloudflared if missing;
 #   2. stores the token in /etc/cloudflared/ai-dept.env (root only, chmod 600);
-#   3. Caddy on 127.0.0.1:8080 (local only): / -> app, /novnc/ -> agents' browsers;
+#   3. Caddy on 127.0.0.1:$LOCAL_PORT (local only): / -> app, /novnc/ -> agents' browsers;
 #   4. systemd service "cloudflared-aidd" (starts on boot);
 #   5. NOVNC_PUBLIC_BASE_URL in server/.env, restarts the app (service aidd).
 set -euo pipefail
@@ -23,6 +23,12 @@ HOST="${HOST#https://}"; HOST="${HOST%%/*}"
 SERVER_DIR="$(cd "$(dirname "$0")/../server" && pwd)"
 ENV_FILE="$SERVER_DIR/.env"
 [ -f "$ENV_FILE" ] || { echo "No $ENV_FILE"; exit 1; }
+
+# Local port for Caddy (must be free; another program may use 8080).
+LOCAL_PORT="${LOCAL_PORT:-8787}"
+if ss -ltn "sport = :$LOCAL_PORT" | grep -q LISTEN && ! ss -ltnp "sport = :$LOCAL_PORT" | grep -q caddy; then
+  echo "Port $LOCAL_PORT is busy: run again with another one, e.g. LOCAL_PORT=8788 sudo -E bash $0 ${1:-}"; exit 1
+fi
 
 echo "== 1. cloudflared"
 CF="$(command -v cloudflared || true)"
@@ -56,13 +62,14 @@ else
   echo "   saved to /etc/cloudflared/ai-dept.env"
 fi
 
-echo "== 3. Caddy (local router on 127.0.0.1:8080)"
+echo "== 3. Caddy (local router on 127.0.0.1:$LOCAL_PORT)"
 if ! command -v caddy >/dev/null; then
   apt-get update -qq && apt-get install -y -qq caddy
 fi
-cat > /etc/caddy/Caddyfile <<'EOF'
+cat > /etc/caddy/Caddyfile <<EOF
 # Local only: the Cloudflare Tunnel publishes it with HTTPS (deploy/setup-cloudflare.sh).
-http://127.0.0.1:8080, http://localhost:8080 {
+http://127.0.0.1:$LOCAL_PORT, http://localhost:$LOCAL_PORT {
+	bind 127.0.0.1
 	encode gzip
 	# agents' browsers (noVNC + websocket); prefix stripped for websockify
 	handle_path /novnc/* {
@@ -119,8 +126,8 @@ else
 fi
 
 echo "== 6. Check"
-for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break; sleep 1; done
-curl -fsS http://127.0.0.1:8080/health >/dev/null && echo "   app via Caddy: OK" || echo "   app via Caddy: NOT OK (see $SERVER_DIR/data/uvicorn.log)"
+for i in $(seq 1 30); do curl -fsS http://127.0.0.1:$LOCAL_PORT/health >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS http://127.0.0.1:$LOCAL_PORT/health >/dev/null && echo "   app via Caddy: OK" || echo "   app via Caddy: NOT OK (see $SERVER_DIR/data/uvicorn.log)"
 systemctl is-active -q cloudflared-aidd && echo "   tunnel service: running" || echo "   tunnel service: NOT running (journalctl -u cloudflared-aidd -n 30)"
 OK=0
 for i in $(seq 1 12); do
@@ -133,6 +140,6 @@ if [ "$OK" = 1 ]; then
   echo "Done. Open https://$HOST/app/ on any device (install it as an app from the browser menu)."
 else
   echo "   https://$HOST : not reachable yet. Check in the Cloudflare dashboard: the domain is Active,"
-  echo "   the tunnel is HEALTHY, and its Public Hostname is $HOST -> HTTP localhost:8080."
+  echo "   the tunnel is HEALTHY, and its Public Hostname is $HOST -> HTTP localhost:$LOCAL_PORT."
   echo "   Tunnel log: journalctl -u cloudflared-aidd -n 30 --no-pager"
 fi
