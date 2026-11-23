@@ -16,6 +16,7 @@ VNC_TOKEN_TTL_MINUTES and are removed when the session stops.
 from __future__ import annotations
 
 import asyncio
+import os
 import logging
 import shutil
 import subprocess
@@ -62,6 +63,8 @@ class VncManager:
         # Displays whose VNC was closed but whose browser keeps running there
         # (after confirm-login / closing the viewer): account_id -> (display, Xvfb).
         self._parked: dict[int, tuple[int, subprocess.Popen]] = {}
+        # displays where an Xvfb failed to start in this process: not tried again
+        self._bad_displays: set[int] = set()
 
     # --------------------------------------------------------------- helpers
 
@@ -87,18 +90,92 @@ class VncManager:
             raise VncUnavailableError(f"noVNC web root {root} does not contain vnc.html")
         return root
 
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # alive, another user's process
+        except OSError:
+            return False
+        return True
+
+    @classmethod
+    def _lock_pid(cls, path: Path) -> int:
+        try:
+            return int((path.read_text(encoding="utf-8", errors="ignore").strip() or "0").split()[0])
+        except (OSError, ValueError, IndexError):
+            return 0
+
+    def _display_taken(self, display: int) -> bool:
+        """Is :display really in use? Leftovers of a killed Xvfb (its /tmp/.XN-lock,
+        socket, our display-N.lock) whose process is gone are removed: they made a new
+        Xvfb exit at once («Server is already active») after a service restart."""
+        used = {s.display for s in self._sessions.values() if s.display is not None}
+        used |= {d for d, _ in self._parked.values()}
+        if display in used or display in self._bad_displays:
+            return True
+        if self.x_display_alive(display):
+            return True
+        x_lock = Path(f"/tmp/.X{display}-lock")
+        if x_lock.exists():
+            if self._pid_alive(self._lock_pid(x_lock)):
+                return True
+            self._clear_stale_display(display)
+        elif Path(f"/tmp/.X11-unix/X{display}").exists():
+            self._clear_stale_display(display)  # a socket nobody answers on
+        our_lock = VNC_DIR / f"display-{display}.lock"
+        if our_lock.exists():
+            if self._pid_alive(self._lock_pid(our_lock)):
+                return True
+            our_lock.unlink(missing_ok=True)
+        return False
+
     def _free_display(self) -> int:
         settings = get_settings()
-        used = {s.display for s in self._sessions.values() if s.display is not None}
         for display in range(settings.XVFB_BASE_DISPLAY, settings.XVFB_BASE_DISPLAY + 30):
-            if display in used:
-                continue
-            if Path(f"/tmp/.X11-unix/X{display}").exists():
-                continue
-            if Path(VNC_DIR / f"display-{display}.lock").exists():
-                continue
-            return display
+            if not self._display_taken(display):
+                return display
         raise VncUnavailableError("No free Xvfb display numbers (97-126)")
+
+    async def _spawn_xvfb(self) -> tuple[int, subprocess.Popen]:
+        """Start an Xvfb on a free display. If it exits at once (display busy after all,
+        a broken leftover), the next number is tried; its output goes to a log file."""
+        settings = get_settings()
+        xvfb_bin = self._which_or_raise("Xvfb")
+        self._ensure_dirs()
+        last = ""
+        for _ in range(5):
+            display = self._free_display()
+            log_path = VNC_LOG_DIR / f"xvfb-{display}.log"
+            with open(log_path, "wb") as log:
+                proc = subprocess.Popen(
+                    [xvfb_bin, f":{display}", "-screen", "0", f"{settings.VNC_WIDTH}x{settings.VNC_HEIGHT}x24",
+                     "-nolisten", "tcp"],
+                    stdout=log, stderr=log, start_new_session=True,
+                )
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                if proc.poll() is None and self.x_display_alive(display):
+                    await asyncio.sleep(0.5)  # «already active» Xvfbs exit right away: is it really OURS?
+                    if proc.poll() is None:
+                        (VNC_DIR / f"display-{display}.lock").write_text(str(proc.pid), encoding="utf-8")
+                        return display, proc
+                if proc.poll() is not None:
+                    break
+                await asyncio.sleep(0.1)
+            try:
+                last = log_path.read_text(encoding="utf-8", errors="ignore").strip().splitlines()[-1:][0]
+            except (OSError, IndexError):
+                last = ""
+            logger.warning("Xvfb :%s did not start (%s); trying another display", display, last or "no output")
+            self._terminate(proc)
+            self._bad_displays.add(display)
+        raise VncUnavailableError(f"Xvfb could not start (last error: {last or 'unknown'}); see {VNC_LOG_DIR}")
 
     def _free_rfb_port(self) -> int:
         import socket
@@ -263,20 +340,25 @@ class VncManager:
         display = settings.VNC_SHARED_DISPLAY
         if self.x_display_alive(display):
             return f":{display}"  # already running (e.g. left over from a previous process)
-        self._clear_stale_display(display)
-        self._shared_xvfb = subprocess.Popen(
-            [xvfb, f":{display}", "-screen", "0", f"{settings.VNC_WIDTH}x{settings.VNC_HEIGHT}x24", "-nolisten", "tcp"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        try:
-            await asyncio.get_event_loop().run_in_executor(None, self._wait_x_socket, display, 10.0)
-        except VncUnavailableError:
-            self._shared_xvfb.terminate()
-            self._shared_xvfb = None
-            raise
-        return f":{display}"
+        x_lock = Path(f"/tmp/.X{display}-lock")
+        if not (x_lock.exists() and self._pid_alive(self._lock_pid(x_lock))):
+            self._clear_stale_display(display)
+        self._ensure_dirs()
+        with open(VNC_LOG_DIR / f"xvfb-{display}.log", "wb") as log:
+            self._shared_xvfb = subprocess.Popen(
+                [xvfb, f":{display}", "-screen", "0", f"{settings.VNC_WIDTH}x{settings.VNC_HEIGHT}x24", "-nolisten", "tcp"],
+                stdout=log, stderr=log, start_new_session=True,
+            )
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if self.x_display_alive(display):
+                return f":{display}"
+            if self._shared_xvfb.poll() is not None:
+                break
+            await asyncio.sleep(0.1)
+        self._terminate(self._shared_xvfb)
+        self._shared_xvfb = None
+        raise VncUnavailableError(f"Xvfb :{display} did not start; see {VNC_LOG_DIR / f'xvfb-{display}.log'}")
 
     @staticmethod
     async def _ensure_service_page(account_id: int) -> None:
@@ -309,15 +391,8 @@ class VncManager:
         if settings.VNC_HEADLESS or not xvfb_bin:
             return await browser_manager.launch(account_id, storage_state=storage_state, headless=True, open_url=open_url)
         async with self._lock:
-            display = self._free_display()
-            xvfb = subprocess.Popen(
-                [xvfb_bin, f":{display}", "-screen", "0", f"{settings.VNC_WIDTH}x{settings.VNC_HEIGHT}x24", "-nolisten", "tcp"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-            )
+            display, xvfb = await self._spawn_xvfb()
             try:
-                await asyncio.get_event_loop().run_in_executor(None, self._wait_x_socket, display, 10.0)
-                self._ensure_dirs()
-                (VNC_DIR / f"display-{display}.lock").write_text(str(xvfb.pid), encoding="utf-8")
                 context = await browser_manager.launch(account_id, storage_state=storage_state, display=f":{display}",
                                                        headless=False, open_url=open_url)
             except Exception:
@@ -389,22 +464,8 @@ class VncManager:
 
                     storage_state = json.loads(decrypt_bytes(account.storage_state_encrypted))
 
-                display = self._free_display()
-                xvfb = subprocess.Popen(
-                    [xvfb_bin, f":{display}", "-screen", "0", f"{settings.VNC_WIDTH}x{settings.VNC_HEIGHT}x24", "-nolisten", "tcp"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                try:
-                    await asyncio.get_event_loop().run_in_executor(None, self._wait_x_socket, display, 10.0)
-                except Exception:
-                    xvfb.terminate()
-                    raise
-
+                display, xvfb = await self._spawn_xvfb()
                 lock_file = VNC_DIR / f"display-{display}.lock"
-                self._ensure_dirs()
-                lock_file.write_text(str(xvfb.pid), encoding="utf-8")
 
                 try:
                     await browser_manager.launch(
