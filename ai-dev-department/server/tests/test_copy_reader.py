@@ -238,3 +238,70 @@ def test_new_reply_rules():
     assert not new(1, sent, 1, "old", sent)  # our own message
     assert not new(1, "chat: " + sent + " answer", 1, "old", sent)  # the whole chat with our message
     assert not new(0, "answer", 0, "", sent)
+
+
+def _whole_chat_page(collapse: bool = False, code_copy_footer: bool = False) -> str:
+    """Like the real site (log of 23.11): the message selector matches ONE element that
+    holds the whole chat - our own message AND the answer; a long message of ours may be
+    shown cut («show more»); a code block may have its copy button UNDER the code."""
+    return """<!doctype html><meta charset="utf-8">
+<div class="thread"><div class="turn"><p>older question</p></div><div class="turn"><p>older answer</p></div></div>
+<textarea id="box"></textarea><button id="send" aria-label="Send">Send</button>
+<script>
+const COLLAPSE = """ + ("true" if collapse else "false") + """, FOOTER = """ + ("true" if code_copy_footer else "false") + """;
+document.getElementById('send').onclick = () => {
+  const box = document.getElementById('box'); const text = box.value; box.value = '';
+  const thread = document.querySelector('.thread');
+  const u = document.createElement('div'); u.className = 'turn';
+  const p = document.createElement('p'); p.textContent = COLLAPSE ? text.slice(0, 300) : text; u.append(p);
+  if (COLLAPSE) { const more = document.createElement('button'); more.textContent = 'Show more'; u.append(more); }
+  thread.append(u);
+  const r = document.createElement('div'); r.className = 'turn';
+  setTimeout(() => { thread.append(r); r.innerHTML = '<p>Working</p>'; }, 400);
+  setTimeout(() => {
+    r.innerHTML = '<p>FILE: run.sh</p><div class="code"><pre><code>npm run test</code></pre>' +
+      (FOOTER ? '<div class="foot"><button aria-label="Copy">c</button></div>' : '') + '</div>' +
+      '<p>STATUS: DONE</p><p>SUMMARY: added the test script</p>';
+    const b = r.querySelector('.foot button'); if (b) b.onclick = () => navigator.clipboard.writeText('npm run test\\n').catch(() => {});
+  }, 1500);
+};
+</script>"""
+
+
+LONG = ("You are the Coder in a team. " + "Follow the plan step by step and keep the code simple. " * 12 +
+        "Reply with FILE blocks, then STATUS: DONE and a SUMMARY line at the very end.")
+
+
+def _agent_complete(adapter):
+    adapter.reply_complete = lambda text: "STATUS:" in text
+
+
+@pytest.mark.parametrize("prompt", [PROMPT, LONG])
+def test_whole_chat_in_one_element_gives_only_the_answer(prompt):
+    [reply] = _run(_whole_chat_page(), [prompt], ADAPTER_MESSAGE_SELECTOR=".thread", ADAPTER_SETTLE_SECONDS=2.0,
+                   patch=_agent_complete)
+    assert reply.startswith("FILE: run.sh") and reply.rstrip().endswith("SUMMARY: added the test script")
+    assert "Follow the plan" not in reply and "older" not in reply
+
+
+def test_whole_chat_with_our_long_message_shown_cut():
+    [reply] = _run(_whole_chat_page(collapse=True), [LONG], ADAPTER_MESSAGE_SELECTOR=".thread",
+                   ADAPTER_SETTLE_SECONDS=2.0, ADAPTER_REPLY_FALLBACK=True, patch=_agent_complete)
+    assert "FILE: run.sh" in reply and "SUMMARY: added the test script" in reply
+    assert "Follow the plan" not in reply
+
+
+def test_a_code_block_copy_button_under_the_code_is_never_taken_as_the_answer():
+    [reply] = _run(_whole_chat_page(code_copy_footer=True), [LONG], ADAPTER_MESSAGE_SELECTOR=".thread",
+                   ADAPTER_SETTLE_SECONDS=2.0, patch=_agent_complete)
+    assert reply.startswith("FILE: run.sh") and "SUMMARY: added the test script" in reply
+
+
+def test_after_prompt_cut():
+    from app.adapters.generic.adapter import _after_prompt
+
+    sent = "Write the file a.txt with **hello** in it, then report the STATUS line at the end."
+    shown = "older\nWrite the file a.txt with hello in it, then report the STATUS line at the end.\nFILE: a.txt\nSTATUS: DONE"
+    assert _after_prompt(shown, sent) == "FILE: a.txt\nSTATUS: DONE"
+    assert _after_prompt("FILE: a.txt\nSTATUS: DONE", sent) is None
+    assert _after_prompt(shown.rsplit("\n", 2)[0], sent) == ""

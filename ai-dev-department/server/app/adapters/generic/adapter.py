@@ -199,7 +199,9 @@ _REPLY_FALLBACK_JS = r"""
         return xr.top >= top && xr.left < rr.right && xr.right > rr.left;  // below our message, same column
       });
       if (after.length) {
-        return { count: after.length, text: after.map((x) => msgText(x, args.skip || [])).filter(Boolean).join('\n\n').trim() };
+        const text = after.map((x) => msgText(x, args.skip || [])).filter(Boolean).join('\n\n').trim();
+        // only controls after our message inside its own bubble («show more», copy...): go up
+        if (text) return { count: after.length, text };
       }
       row = parent;
     }
@@ -639,6 +641,28 @@ def _is_echo(candidate: str, sent: str) -> bool:
     return len(ca) >= 20 and (ca == sa or sa.startswith(ca))
 
 
+_WORD = re.compile(r"[^\W_]")
+
+
+def _after_prompt(text: str, sent: str) -> str | None:
+    """The part of `text` after the LAST copy of our own message `sent` (compared by
+    letters/digits, so markdown rendering does not matter); None if it is not in there.
+    Some pages' message element holds our message AND the answer (or the whole chat)."""
+    if not text or not sent:
+        return None
+    tail = _alnum(sent)[-60:]
+    if len(tail) < 30:
+        return None
+    idx = [i for i, ch in enumerate(text) if _WORD.match(ch)]
+    letters = "".join(text[i] for i in idx).lower()
+    pos = letters.rfind(tail)
+    if pos < 0:
+        return None
+    rest = text[idx[pos + len(tail) - 1] + 1:]
+    newline = rest.find("\n")
+    return (rest[newline + 1:] if newline != -1 else "").strip()
+
+
 def _closed(page) -> bool:
     try:
         return page.is_closed()
@@ -999,14 +1023,42 @@ class Adapter:
         finally:
             await self._clip_pad(page, "remove")
 
-    def _copy_usable(self, page, text: str | None, sent: str, before_text: str) -> bool:
+    def _copy_usable(self, page, text: str | None, sent: str, before_text: str, page_reply: str = "") -> bool:
         if not text or not text.strip():
+            return False
+        # the copy button of a code block gives a part: it must cover the answer on the page
+        # (with no page answer, the caller takes a copy only if it looks finished)
+        if page_reply and len(_alnum(text)) < 0.6 * len(_alnum(page_reply)):
             return False
         if _is_echo(text, sent) or (sent and _alnum(text) == _alnum(sent)):
             return False  # our own message's copy button
         if before_text and _alnum(text) == _alnum(before_text):
             return False
         return text not in self._copied.get(page, ())
+
+    async def _read_reply(self, page, sent: str, before_count: int, before_text: str) -> tuple[int, str, str]:
+        """(count, raw text, reply): the reply is "" while there is no new answer yet.
+        Three ways, the first that works: the message reader; the same text cut after our
+        own message (when the element holds both); the blocks right after our message."""
+        count = await self._message_count(page)
+        raw = await self._last_message_text(page)
+        cut = _after_prompt(raw, sent)
+        if cut is not None:
+            if cut and not _is_echo(cut, sent):
+                return count, raw, cut
+        elif self._is_new_reply(count, raw, before_count, before_text, sent):
+            return count, raw, raw
+        if sent and self._selectors["message"] and getattr(self.settings, "ADAPTER_REPLY_FALLBACK", True):
+            alt = await self._fallback_reply_now(page, sent)
+            text = (alt or (0, ""))[1]
+            if text:
+                cut2 = _after_prompt(text, sent)
+                text = cut2 if cut2 is not None else text
+                head = _alnum(sent)[:200]
+                if text and not _is_echo(text, sent) and not (len(head) >= 40 and head in _alnum(text)) \
+                        and _alnum(text) != _alnum(before_text):
+                    return count, raw, text
+        return count, raw, ""
 
     @staticmethod
     def _is_new_reply(count: int, text: str, before_count: int, before_text: str, sent: str) -> bool:
@@ -2130,8 +2182,8 @@ class Adapter:
                 paused(await self._pause(page, "captcha", lambda p: self._captcha_visible(p, True)))
                 continue
             if await self._reloaded(page):
-                count, last = await self._message_count(page), await self._last_message_text(page)
-                if self._is_new_reply(count, last, before_count, before_text, sent):
+                count, last, got = await self._read_reply(page, sent, before_count, before_text)
+                if got:
                     await self._mark(page)  # the reply is there after the reload: keep waiting for it
                 elif resends < MAX_RESENDS and sent:
                     resends += 1
@@ -2145,16 +2197,13 @@ class Adapter:
                     continue
 
             now = _MONOTONIC()
-            after_count = await self._message_count(page)
-            after_text = await self._last_message_text(page)
+            after_count, after_raw, after_text = await self._read_reply(page, sent, before_count, before_text)
             if self.on_progress is not None and now - last_pulse >= float(
                     getattr(self.settings, "ADAPTER_PROGRESS_SECONDS", 10) or 10):
                 last_pulse = now
                 try:
                     await self.on_progress({"waiting": round(now - start), "unchanged": round(now - last_change),
-                                            "reply_len": max(len(after_text or "") if self._is_new_reply(
-                                                after_count, after_text, before_count, before_text, sent)
-                                                             else 0, len(copy_candidate)),
+                                            "reply_len": max(len(after_text), len(copy_candidate)),
                                             "state": state})
                 except Exception:
                     logger.debug("progress callback failed", exc_info=True)
@@ -2171,15 +2220,15 @@ class Adapter:
                     except Exception:
                         pass
                 logger.info(
-                    "Waiting for the reply %.0fs: state=%s messages=%d (before %d) last_len=%d new=%s echo=%s "
-                    "unchanged=%.0fs copy_buttons=%s new_copy=%s copy_len=%d copy_fails=%d", now - start, state,
-                    after_count, before_count, len(after_text or ""),
-                    bool(after_text) and after_text != before_text, bool(after_text) and _is_echo(after_text, sent),
-                    now - last_change, buttons.get("total"), buttons.get("fresh"), len(copy_candidate), copy_fails)
-            if (after_count, after_text) != seen:
+                    "Waiting for the reply %.0fs: state=%s messages=%d (before %d) last_len=%d reply_len=%d "
+                    "own_message_inside=%s unchanged=%.0fs copy_buttons=%s new_copy=%s copy_len=%d copy_fails=%d",
+                    now - start, state, after_count, before_count, len(after_raw or ""), len(after_text),
+                    _after_prompt(after_raw, sent) is not None, now - last_change, buttons.get("total"),
+                    buttons.get("fresh"), len(copy_candidate), copy_fails)
+            if (after_count, after_raw) != seen:
                 last_change = now
-            if state == "generating" or (after_count, after_text) != seen:
-                last_progress, seen = now, (after_count, after_text)  # the service is working
+            if state == "generating" or (after_count, after_raw) != seen:
+                last_progress, seen = now, (after_count, after_raw)  # the service is working
             if stuck_after and now - last_change >= stuck_after:
                 # «thinking» forever with nothing new on screen: the answer is often already
                 # there - reload THIS chat (same tab, same URL) and read it again
@@ -2194,9 +2243,9 @@ class Adapter:
                 if buttons.get("fresh") and buttons["fresh"] != echo_fresh:
                     last_copy_try = now
                     text = await self._copy_reply(page)
-                    if self._copy_usable(page, text, sent, before_text):
+                    if self._copy_usable(page, text, sent, before_text, after_text):
                         if text == copy_candidate:
-                            if complete is None or complete(text) or now - copy_since >= incomplete_settle:
+                            if complete is None or complete(text):  # never a part-looking copy
                                 return self._take_copy(page, text, now - start)
                         else:
                             copy_candidate, copy_since = text, now
@@ -2208,10 +2257,7 @@ class Adapter:
                         if copy_fails == 6:
                             logger.info("The copy button gave nothing 6 times; reading the page only")
 
-            fresh = bool(
-                state != "generating"
-                and self._is_new_reply(after_count, after_text, before_count, before_text, sent)
-            )
+            fresh = state != "generating" and bool(after_text)
             if state == "generating":
                 candidate = ""  # still working (agents work in several steps)
             elif fresh:
@@ -2225,15 +2271,16 @@ class Adapter:
                         logger.info("Taking an unfinished-looking reply after %.0fs without changes", wait_for)
                     if copy_on and copy_fails < 6:  # the whole answer as the service copies it
                         text = await self._copy_reply(page)
-                        if self._copy_usable(page, text, sent, before_text):
+                        if self._copy_usable(page, text, sent, before_text, candidate) and (
+                                complete is None or complete(text) or not complete(candidate)):
                             return self._take_copy(page, text, now - start)
                     return candidate
 
             if now - last_progress >= timeout or now >= hard_deadline:
-                if copy_candidate:
-                    return self._take_copy(page, copy_candidate, now - start)
                 if candidate:
                     return candidate
+                if copy_candidate:
+                    return self._take_copy(page, copy_candidate, now - start)
                 if now >= hard_deadline:
                     raise ReplyTimeoutError(f"No complete response from service within {hard_deadline - start:.0f}s")
                 raise ReplyTimeoutError(f"No response from service within {timeout}s (no activity)")

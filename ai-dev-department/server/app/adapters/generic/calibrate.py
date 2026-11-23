@@ -317,15 +317,23 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
         # verify with the NORMAL reader, exactly as tasks will read replies
         await step("checking that the answer is read correctly")
         adapter.profile = profile
-        text = await adapter._last_message_text(page)
+
+        async def read() -> str:  # exactly as tasks read: cut after our own message if it is inside
+            from app.adapters.generic.adapter import _after_prompt
+
+            raw = await adapter._last_message_text(page)
+            cut = _after_prompt(raw, prompt)
+            return cut if cut else raw
+
+        text = await read()
         ok_markers = _norm(one) in _norm(text) and _norm(two) in _norm(text)
         if not ok_markers and profile["skip"]:  # skipping removed part of the answer: read everything
             profile["skip"] = []
-            text = await adapter._last_message_text(page)
+            text = await read()
             ok_markers = _norm(one) in _norm(text) and _norm(two) in _norm(text)
         if not ok_markers and profile["reader"] == "selector":  # one more chance: the anchor reader
             profile["reader"], profile["message"] = "anchor", ""
-            text = await adapter._last_message_text(page)
+            text = await read()
             ok_markers = _norm(one) in _norm(text) and _norm(two) in _norm(text)
         fenced = any(i % 2 == 1 and _norm(two) in _norm(part) for i, part in enumerate(text.split("```")))
         profile["checks"] = {"clean_start": _norm(text).startswith(_norm(one)), "markers": ok_markers, "code_block": fenced, "status_line": "status:done" in _norm(text).replace(" ", "")
