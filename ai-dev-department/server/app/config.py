@@ -169,6 +169,9 @@ class Settings(BaseSettings):
     ADAPTER_MESSAGE_SELECTOR: str = "[role='article'], .message, .chat-message"
     ADAPTER_STATE_SELECTOR: str = "[aria-busy='true'], .generating, .loading, .error"
     ADAPTER_LOGIN_SELECTOR: str = "input[type='password'], [aria-label*='login' i]"
+    # Also «logged out» when one of these is visible (a service shows them after a logout).
+    ADAPTER_LOGGED_OUT_BUTTONS: str = ('button:text-is("Log in") || a:text-is("Log in") || '
+                                       'button:text-is("Sign in") || a:text-is("Sign in")')
     # Auto-login (accounts with a login e-mail + password): the button that opens
     # the login form, the e-mail and password fields, the buttons that submit a
     # step (tried in order, "||"-separated; Enter is pressed first anyway).

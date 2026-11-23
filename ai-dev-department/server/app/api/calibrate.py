@@ -57,6 +57,23 @@ def public_result(profile: dict | None) -> dict | None:
     }
 
 
+def _attention_for(account: Account, progress=None):
+    """A captcha / logout during a calibration started from the app: show the «нужна
+    помощь» banner (like in projects) instead of waiting silently."""
+    from app.services.attention import raise_attention, resolve_attention
+
+    async def notify(kind: str, active: bool) -> None:
+        if active:
+            raise_attention(account.user_id, account_id=account.id, account_name=account.name, project_id=None, kind=kind)
+            if progress is not None:
+                await progress("waiting for a human")
+        else:
+            resolve_attention(account.user_id, account_id=account.id, kind=kind)
+            if progress is not None:
+                await progress("waiting for the answer")
+    return notify
+
+
 async def run_calibration(account: Account, progress=None) -> dict:
     """Calibrate one account (used by the API and by the project preflight).
     Saves the profile on success. Returns the full profile."""
@@ -76,6 +93,8 @@ async def run_calibration(account: Account, progress=None) -> dict:
             return {"ok": False, "reason": "the configured adapter does not support calibration"}
         _wire_auto_login(adapter, account, session_factory=SessionLocal, browser_manager=browser_manager)
         adapter.profile = None  # learn from scratch
+        if getattr(adapter, "on_attention", None) is None:
+            adapter.on_attention = _attention_for(account, progress)
         profile = await calibrate(adapter, context, progress=progress)
         if profile.get("ok"):
             await apply_profile(SessionLocal, account.id, profile)

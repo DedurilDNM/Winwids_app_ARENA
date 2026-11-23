@@ -307,3 +307,86 @@ def test_empty_model_list_tries_older_chats_until_the_models_appear():
     assert state["model"] == "claude-sonnet-5-5-high" and state["loaded"]
     assert state["visits"] == ["Agent", "Text"]  # the agent-mode chat was skipped, the text one helped
     assert state["modeSwitchInAgentChat"] == 0  # the mode of an old agent chat is never switched
+
+
+LOGGED_OUT_SPA = """<!doctype html><meta charset="utf-8">
+<header><button id="signup">Sign up</button> <button id="login">Log in</button></header>
+<div id="dlg" role="dialog" style="display:none">
+  <button>Continue with Google</button>
+  <div id="s1"><input id="email" type="email"><button type="button" id="cont">Continue</button></div>
+  <div id="s2" style="display:none"><input id="pw" type="password"><button type="button" id="go">Log in</button></div>
+</div>
+<textarea id="box"></textarea><button id="send">Send</button>
+<div id="bar" style="display:none"><button id="mode" aria-haspopup="menu">Chat</button>
+  <button id="modality" aria-haspopup="menu"><svg width="12" height="12"></svg></button>
+  <div id="model" style="cursor:pointer;display:inline-block"><span>Model</span></div></div>
+<div id="layer"></div>
+<script>
+// logged out: only «Log in» / «Sign up», no chat toolbar (no model list) - until a login
+const $ = (id) => document.getElementById(id);
+window.st = { logins: 0, model: "" };
+const loggedIn = () => { $("login").remove(); $("signup").remove(); $("dlg").remove(); $("bar").style.display = ""; };
+if (localStorage.getItem("in")) loggedIn();
+else {
+  $("login").onclick = () => { $("dlg").style.display = ""; };
+  $("cont").onclick = () => { if ($("email").value) { $("s1").style.display = "none"; $("s2").style.display = ""; } };
+  const tryLogin = () => { if ($("pw").value === "letmein") { localStorage.setItem("in", "1"); window.st.logins += 1; loggedIn(); } };
+  $("go").onclick = tryLogin;
+  $("pw").addEventListener("keydown", (e) => { if (e.key === "Enter") tryLogin(); });
+}
+const layer = $("layer");
+$("model").onclick = () => { layer.innerHTML = ""; const m = document.createElement("div"); m.setAttribute("role", "dialog");
+  for (const t of ["gemini-4-argon-high", "claude-sonnet-5-5-high"]) { const it = document.createElement("div");
+    it.innerHTML = "<span>" + t + "</span>"; it.onclick = () => { window.st.model = t;
+      document.querySelector("#model span").textContent = t; layer.innerHTML = ""; }; m.append(it); }
+  layer.append(m); };
+</script>"""
+
+
+def _open_logged_out(creds):
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic.adapter import Adapter
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            context = await browser.new_context()
+
+            async def serve(route):
+                await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=LOGGED_OUT_SPA)
+
+            await context.route("https://service.example.com/**", serve)
+            a = Adapter(settings=_settings(ADAPTER_LOGIN_SELECTOR="#no-such-login-form", ADAPTER_CAPTCHA_WAIT_SECONDS=2,
+                                           ADAPTER_NAVIGATE_TIMEOUT_SECONDS=10))
+            a.expected_model = "claude-sonnet-5-5-high"
+            a.login_credentials = creds
+            error, state = None, None
+            try:
+                page = await a.open_chat(context, "task-1")
+                state = await page.evaluate("({...window.st})")
+            except Exception as exc:
+                error = exc
+            await browser.close()
+            return state, error
+
+    return asyncio.run(go())
+
+
+def test_logged_out_account_logs_in_first_then_picks_the_model():
+    from app.adapters.generic import adapter as mod
+
+    mod._AUTO_LOGINS.clear()
+    state, error = _open_logged_out(("bot.one@example.com", "letmein"))
+    assert error is None, error
+    assert state["model"] == "claude-sonnet-5-5-high"  # chosen AFTER the login
+
+
+def test_logged_out_account_without_a_password_reports_login_not_model():
+    from app.adapters.errors import NeedsHumanError
+    from app.adapters.generic import adapter as mod
+
+    mod._AUTO_LOGINS.clear()
+    state, error = _open_logged_out(None)
+    assert isinstance(error, NeedsHumanError) and "login" in str(error).lower()
+    assert "is not selected" not in str(error)

@@ -95,6 +95,7 @@ const STEP_LABELS = {
   "waiting for the answer": "жду ответ",
   "finding the answer on the page": "ищу ответ на странице",
   "checking that the answer is read correctly": "проверяю, что ответ читается",
+  "waiting for a human": "нужна ваша помощь в браузере аккаунта (вход или капча) — см. баннер сверху",
 };
 
 /** One line on the account card: is the account calibrated for the current chat mode? */

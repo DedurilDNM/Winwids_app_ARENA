@@ -471,13 +471,22 @@ class Adapter:
         return None
 
     async def _is_login_required(self, page) -> bool:
+        """Logged out: the configured login selector, or (ADAPTER_LOGGED_OUT_BUTTONS) a visible
+        button/link that is exactly «Log in» / «Sign in» - what services show after a logout."""
         login = self._selectors["login"]
-        if not login:
-            return False
         try:
-            return await self._first_visible(page, login) is not None
+            if login and await self._first_visible(page, login) is not None:
+                return True
         except Exception:
-            return False
+            pass
+        hints = getattr(self.settings, "ADAPTER_LOGGED_OUT_BUTTONS", "") or ""
+        for selector in [part.strip() for part in hints.split("||") if part.strip()]:
+            try:
+                if await self._first_visible(page, selector) is not None:
+                    return True
+            except Exception:
+                continue
+        return False
 
     async def _detect_state(self, page) -> State:
         """Inspect the page for a state indicator.
@@ -603,6 +612,12 @@ class Adapter:
             wait_until="domcontentloaded",
             timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS),
         )
+        # logged out? log in FIRST (auto-login, else ask a human): without a login the page
+        # has no chat toolbar, and choosing the mode / model would fail for the wrong reason
+        if await self._wait_chat_or_login(page):
+            await self._handle_login(page)
+            await page.goto(url, wait_until="domcontentloaded",
+                            timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS))
         ready_sel = self._selectors["ready"]
         wait_sel = ready_sel or self._selectors["input"]
         if wait_sel:
@@ -611,6 +626,21 @@ class Adapter:
             )
         await self.prepare_page(page)
         return page
+
+    async def _wait_chat_or_login(self, page) -> bool:
+        """Wait until the page shows either the chat input (False) or a logged-out sign (True)."""
+        deadline = _MONOTONIC() + float(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS)
+        input_sel = self._selectors["ready"] or self._selectors["input"]
+        while True:
+            if await self._is_login_required(page):
+                return True
+            if input_sel and await self._first_visible(page, input_sel) is not None:
+                # the input can be there while logged out too: give a logout sign a moment
+                await asyncio.sleep(1.0)
+                return await self._is_login_required(page)
+            if _MONOTONIC() >= deadline:
+                return False
+            await asyncio.sleep(0.5)
 
     async def prepare_page(self, page) -> list[tuple[str, bool]]:
         """Run ADAPTER_SETUP_CLICKS (e.g. switch the chat to a specific mode).
@@ -894,6 +924,8 @@ class Adapter:
         if clicks and (await self._model_is(page, model, 5) or await self._wait_visible(page, sel, 1) is not None):
             logger.info("Model selected: %s", model)
             return
+        if await self._is_login_required(page):
+            raise NeedsHumanError("Service requires login: the account session has expired (log in, then start again)")
         raise ConfigAdapterError(
             f"Model «{model}» is not selected in this account's chat and could not be picked automatically: "
             "check the model name (as the service shows it) or pick it once in the account's browser")
