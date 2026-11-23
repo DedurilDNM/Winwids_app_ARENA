@@ -356,3 +356,35 @@ def test_calibration_api_runs_in_background_and_shows_booleans_only(api, monkeyp
     card = next(a for a in api.get("/api/accounts", headers=_auth(token)).json() if a["id"] == account["id"])
     assert card["calibration"]["ok"] is True and card["calibration"]["reader"] == "selector"
     assert secret_selector not in str(card)
+
+
+def test_confirm_login_never_fails_with_a_bare_500(api, monkeypatch):
+    from app.services.browser_manager import browser_manager
+
+    token = _login_admin(api)
+    account = _create_account(api, token, name="save-1")
+
+    async def broken(account_id):
+        raise RuntimeError("Target page, context or browser has been closed")
+
+    monkeypatch.setattr(browser_manager, "export_storage_state", broken)
+    resp = api.post(f"/api/accounts/{account['id']}/confirm-login", headers=_auth(token))
+    assert resp.status_code == 409 and "Открыть браузер" in resp.json()["detail"]
+
+
+def test_storage_state_falls_back_when_indexeddb_export_fails():
+    import asyncio as _asyncio
+    from types import SimpleNamespace
+
+    from app.services.browser_manager import BrowserManager
+
+    class Ctx:
+        async def storage_state(self, **kw):
+            if kw.get("indexed_db"):
+                raise RuntimeError("IndexedDB export failed")
+            return {"cookies": [{"name": "s", "value": "1"}], "origins": []}
+
+    bm = BrowserManager()
+    bm._handles[77] = SimpleNamespace(context=Ctx())
+    state = _asyncio.run(bm.export_storage_state(77))
+    assert state["cookies"][0]["value"] == "1"

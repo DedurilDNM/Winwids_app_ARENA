@@ -9,6 +9,7 @@ Security rules enforced here:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -21,6 +22,8 @@ from app.deps import get_current_user, get_db
 from app.models import Account, Project, ProjectAssignment, Task, User
 from app.schemas import AccountCreate, AccountCreateResponse, AccountOut, AccountUpdate
 from app.security import encrypt_bytes
+
+logger = logging.getLogger(__name__)
 from app.services import vnc_manager as vnc_module
 from app.services.browser_manager import BrowserUnavailableError, browser_manager
 from app.services.vnc_manager import VncUnavailableError, vnc_manager
@@ -189,6 +192,13 @@ async def confirm_login(
         storage_state = await browser_manager.export_storage_state(account.id)
     except BrowserUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception as exc:  # never a bare 500: say what to do
+        logger.warning("confirm-login: could not read the session of account %s", account.id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Could not read the login from the account's browser ({type(exc).__name__}). "
+                   "Open the browser again («Открыть браузер»), check that you are logged in and press «Готово».",
+        ) from exc
 
     blob = json.dumps(storage_state, default=str).encode("utf-8")
     was_relogin = account.status == "relogin_needed"
@@ -198,7 +208,10 @@ async def confirm_login(
     await db.refresh(account)
 
     # Close only the noVNC path; the browser stays alive in the background (spec).
-    await vnc_manager.stop_session(account.id, keep_browser=True)
+    try:
+        await vnc_manager.stop_session(account.id, keep_browser=True)
+    except Exception:  # the login is saved already: a viewer problem must not fail it
+        logger.warning("confirm-login: closing the viewer of account %s failed", account.id, exc_info=True)
 
     if was_relogin:
         # The user re-logged in after a session loss: tell affected projects.

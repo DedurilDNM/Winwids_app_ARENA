@@ -255,22 +255,27 @@ HISTORY_SPA = """<!doctype html><meta charset="utf-8">
 <script>
 // like the real service: the model list is filled only after a NEW chat is opened in the
 // app from a chat in text mode; in an agent-mode chat the modality cannot be changed
-const st = { chatMode: "Text", loaded: false, model: "", visits: [] }; window.st = st;
+const st = { chatMode: "Text", loaded: false, model: "", visits: [], modeSwitchInAgentChat: 0 }; window.st = st;
 const layer = document.getElementById("layer");
 const go = (e, path) => { e.preventDefault(); history.pushState({}, "", path); };
 document.getElementById("toggle").onclick = () => { document.getElementById("side").style.display = ""; };
 for (const a of document.querySelectorAll("a.h")) a.onclick = (e) => { go(e, a.getAttribute("href"));
   st.chatMode = a.dataset.mode; st.visits.push(a.dataset.mode);
+  document.getElementById("mode").textContent = a.dataset.mode === "Agent" ? "Agent" : "Chat";
   document.getElementById("modality").style.display = a.dataset.mode === "Agent" ? "none" : ""; };
 document.getElementById("newchat").onclick = (e) => { go(e, "/"); st.loaded = st.chatMode === "Text";
-  document.getElementById("modality").style.display = ""; };
+  document.getElementById("modality").style.display = ""; document.getElementById("mode").textContent = "Chat"; };
 const menu = (items, pick, search) => { layer.innerHTML = ""; const m = document.createElement("div");
   m.setAttribute("role", "dialog");
   if (search) { const s = document.createElement("input"); s.placeholder = "Search models"; m.append(s); }
   for (const t of items) { const it = document.createElement("div"); it.innerHTML = "<span>" + t + "</span>";
     it.onclick = () => { pick(t); layer.innerHTML = ""; }; m.append(it); }
   layer.append(m); };
-document.getElementById("mode").onclick = () => menu(["Chat", "Agent"], (t) => { document.getElementById("mode").textContent = t; });
+document.getElementById("mode").onclick = () => menu(["Chat", "Agent"], (t) => {
+  // like the real service: choosing Chat inside an agent-mode chat starts a new chat at once
+  if (st.chatMode === "Agent" && t === "Chat") { st.modeSwitchInAgentChat += 1; history.pushState({}, "", "/");
+    st.chatMode = "Chat"; document.getElementById("modality").style.display = ""; }
+  document.getElementById("mode").textContent = t; });
 document.getElementById("modality").onclick = () => menu(["Text", "Code"], (t) => { st.chatMode = t; });
 document.getElementById("model").onclick = () => menu(st.loaded ? ["gemini-4-argon-high", "claude-sonnet-5-5-high"] : [],
   (t) => { st.model = t; document.querySelector("#model span").textContent = t; }, st.loaded);
@@ -300,4 +305,5 @@ def test_empty_model_list_tries_older_chats_until_the_models_appear():
 
     state = asyncio.run(go())
     assert state["model"] == "claude-sonnet-5-5-high" and state["loaded"]
-    assert state["visits"] == ["Agent", "Text"]  # the agent-mode chat did not help, the text one did
+    assert state["visits"] == ["Agent", "Text"]  # the agent-mode chat was skipped, the text one helped
+    assert state["modeSwitchInAgentChat"] == 0  # the mode of an old agent chat is never switched

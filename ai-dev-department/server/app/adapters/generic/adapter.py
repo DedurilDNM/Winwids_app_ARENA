@@ -326,7 +326,7 @@ _NAV_JS = r"""
     el = [...document.querySelectorAll('a[href]')].filter(vis).filter((a) => {
       try {
         const u = new URL(a.href, location.href);
-        return u.origin === location.origin && u.pathname !== location.pathname
+        return u.origin === location.origin  // the current chat stays in the list: stable numbering
           && /[0-9a-f]{8}-[0-9a-f]{4}|[0-9a-z_-]{16,}/i.test(u.pathname.split('/').pop() || '');
       } catch (e) { return false; }
     })[args.index || 0] || null;
@@ -814,7 +814,7 @@ class Adapter:
         except Exception:
             return False
 
-    async def _new_chat_in_app(self, page, index: int = 0) -> bool:
+    async def _new_chat_in_app(self, page, index: int = 0, force_mode: bool = False) -> bool | str:
         """Some services fill the model list only after in-app navigation: open the
         index-th recent chat (opening the sidebar if needed), switch IT to our mode /
         modality (the list follows the chat that was open: after an Agent-mode chat the
@@ -822,10 +822,23 @@ class Adapter:
         history = await self._nav(page, "history", index)
         if not history and await self._nav(page, "sidebar"):
             history = await self._nav(page, "history", index)
+        if not history and index > 0:
+            return False  # no more chats in the history
         if history:
             await self._wait_ready(page)
+            mode = (getattr(self.settings, "ADAPTER_CHAT_MODE", "") or "").strip()
+            modes = [m.strip() for m in (getattr(self.settings, "ADAPTER_CHAT_MODES", "") or "").split(",") if m.strip()]
             try:
-                await self._setup_chat(page)  # Chat + Text in the old chat as well
+                if force_mode:
+                    await self._setup_chat(page)  # last resort: switching the mode may open a new chat itself
+                else:
+                    current = await self._pick(page, "mode", modes=modes + [mode], current=mode) if mode else "same"
+                    if current is True:
+                        # a chat in another mode (e.g. Agent): switching it would start another chat
+                        # and its model list does not fit ours - take the next chat instead
+                        logger.info("Model list workaround #%d: that chat is in another mode, skipped", index + 1)
+                        return "skip"
+                    await self._set_modality(page)  # only the modality (e.g. Text) in the old chat
             except Exception:
                 logger.debug("setup in the history chat failed", exc_info=True)
         opened = await self._nav(page, "new")
@@ -850,8 +863,19 @@ class Adapter:
             logger.info("Model selected: %s", model)
             return
         tries = int(getattr(self.settings, "ADAPTER_MODEL_HISTORY_TRIES", 4) or 0)
-        for index in range(tries if getattr(self.settings, "ADAPTER_MODEL_AUTO", True) else 0):
-            if not await self._new_chat_in_app(page, index):
+        attempts = list(range(tries if getattr(self.settings, "ADAPTER_MODEL_AUTO", True) else 0))
+        skipped = 0
+        for index in attempts + ([-1] if attempts else []):
+            if index == -1:  # every recent chat was in another mode: last resort, switch the newest one
+                if skipped < len(attempts):
+                    break
+                opened = await self._new_chat_in_app(page, 0, force_mode=True)
+            else:
+                opened = await self._new_chat_in_app(page, index)
+            if opened == "skip":
+                skipped += 1
+                continue
+            if not opened:
                 break  # no history / no «new chat»: nothing else to try
             try:
                 await self._setup_chat(page)

@@ -165,6 +165,15 @@ class BrowserManager:
             return await context.storage_state(indexed_db=True)  # Playwright >= 1.49 (experimental)
         except TypeError:
             return await context.storage_state()
+        except Exception:
+            # IndexedDB export fails on some pages: cookies + localStorage are enough to stay logged in
+            logger.warning("storage_state with IndexedDB failed for account %s; saving without it", account_id,
+                           exc_info=True)
+            try:
+                return await context.storage_state()
+            except Exception as exc:
+                raise BrowserUnavailableError(
+                    f"The account's browser does not respond ({type(exc).__name__}): open its browser again") from exc
 
     async def stop(self, account_id: int, *, close_browser: bool = True) -> None:
         handle = self._handles.pop(account_id, None)
