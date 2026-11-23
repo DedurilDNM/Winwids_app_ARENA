@@ -175,7 +175,9 @@ class VncManager:
             logger.warning("Xvfb :%s did not start (%s); trying another display", display, last or "no output")
             self._terminate(proc)
             self._bad_displays.add(display)
-        raise VncUnavailableError(f"Xvfb could not start (last error: {last or 'unknown'}); see {VNC_LOG_DIR}")
+        from app.services.disk import explain
+
+        raise VncUnavailableError(explain(f"Xvfb could not start (last error: {last or 'unknown'}); see {VNC_LOG_DIR}"))
 
     def _free_rfb_port(self) -> int:
         import socket
@@ -358,7 +360,9 @@ class VncManager:
             await asyncio.sleep(0.1)
         self._terminate(self._shared_xvfb)
         self._shared_xvfb = None
-        raise VncUnavailableError(f"Xvfb :{display} did not start; see {VNC_LOG_DIR / f'xvfb-{display}.log'}")
+        from app.services.disk import explain
+
+        raise VncUnavailableError(explain(f"Xvfb :{display} did not start; see {VNC_LOG_DIR / f'xvfb-{display}.log'}"))
 
     @staticmethod
     async def _ensure_service_page(account_id: int) -> None:

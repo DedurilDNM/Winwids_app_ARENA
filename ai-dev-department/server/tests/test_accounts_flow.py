@@ -421,3 +421,48 @@ def test_browser_starts_even_if_the_saved_indexeddb_cannot_be_restored(monkeypat
     context = _asyncio.run(manager.launch(4242, storage_state=state, headless=True, open_url=False))
     assert context is not None and len(seen) == 2
     assert "indexedDB" not in seen[1]["origins"][0] and seen[1]["origins"][0]["localStorage"] and seen[1]["cookies"]
+
+
+def test_full_disk_is_named_in_errors(monkeypatch):
+    import shutil as _shutil
+    from collections import namedtuple
+
+    from app.services import disk
+
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(_shutil, "disk_usage", lambda p: usage(10 << 30, 10 << 30, 12 * 1024 * 1024))
+    msg = disk.explain("Xvfb could not start (last error: Failed to activate virtual core keyboard: 2)")
+    assert "disk is (almost) full" in msg and "12 MB free" in msg and "Xvfb could not start" in msg
+    monkeypatch.setattr(_shutil, "disk_usage", lambda p: usage(10 << 30, 1 << 30, 9 << 30))
+    assert disk.explain("boom") == "boom"
+
+
+def test_browser_starts_with_cookies_only_if_the_session_does_not_restore_at_all(monkeypatch):
+    import asyncio as _asyncio
+
+    import app.services.browser_manager as bmod
+
+    seen = []
+
+    class Browser:
+        async def new_context(self, storage_state=None, **kw):
+            seen.append(storage_state)
+            if storage_state and storage_state.get("origins"):
+                raise RuntimeError("Error setting storage state: Unable to restore IndexedDB")
+            return object()
+
+    class Fox:
+        def __init__(self, **kw):
+            pass
+
+        async def start(self):
+            return Browser()
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(bmod, "AsyncCamoufox", Fox)
+    state = {"cookies": [{"name": "s", "value": "1"}],
+             "origins": [{"origin": "https://x", "localStorage": [], "indexedDB": [{"name": "db"}]}]}
+    context = _asyncio.run(bmod.BrowserManager().launch(4343, storage_state=state, headless=True, open_url=False))
+    assert context is not None and len(seen) == 3 and seen[2] == {"cookies": state["cookies"], "origins": []}

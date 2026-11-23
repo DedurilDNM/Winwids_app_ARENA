@@ -72,6 +72,13 @@ def without_indexed_db(state: dict) -> dict:
     return {**state, "origins": origins}
 
 
+def _strip_indexed(state: dict) -> dict:
+    """Drop every IndexedDB part of a saved session, whatever its key spelling."""
+    origins = [{k: v for k, v in o.items() if "indexed" not in k.lower()} for o in (state.get("origins") or [])
+               if isinstance(o, dict)]
+    return {**{k: v for k, v in state.items() if "indexed" not in k.lower()}, "origins": origins}
+
+
 class BrowserManager:
     def __init__(self) -> None:
         self._handles: dict[int, BrowserHandle] = {}
@@ -139,17 +146,7 @@ class BrowserManager:
             camoufox = AsyncCamoufox(**kwargs)
             try:
                 browser = await camoufox.start()
-                try:
-                    context = await browser.new_context(storage_state=storage_state, no_viewport=True)
-                except Exception as exc:
-                    if not (storage_state and _has_indexed_db(storage_state)):
-                        raise
-                    # a saved IndexedDB that cannot be restored must not block the browser:
-                    # cookies + localStorage keep the login
-                    logger.warning("Account %s: restoring IndexedDB failed (%s); starting without it",
-                                   account_id, type(exc).__name__)
-                    context = await browser.new_context(storage_state=without_indexed_db(storage_state),
-                                                        no_viewport=True)
+                context = await self._new_context(browser, account_id, storage_state)
                 if open_url:
                     page = await context.new_page()
                     await page.goto(settings.SERVICE_URL, wait_until="domcontentloaded", timeout=60_000)
@@ -160,7 +157,10 @@ class BrowserManager:
                     await camoufox.stop()
                 except Exception:
                     pass
-                raise BrowserUnavailableError(f"Failed to launch browser for account {account_id}: {exc}") from exc
+                from app.services.disk import explain
+
+                raise BrowserUnavailableError(
+                    explain(f"Failed to launch browser for account {account_id}: {exc}")) from exc
 
             self._handles[account_id] = BrowserHandle(
                 account_id=account_id,
@@ -172,6 +172,30 @@ class BrowserManager:
             )
             logger.info("Browser launched for account %s (headless=%s, display=%s)", account_id, headless, display)
             return context
+
+    @staticmethod
+    async def _new_context(browser, account_id: int, storage_state: dict | None):
+        """A context with the saved login. A part of the session that cannot be restored
+        must not block the browser: first without IndexedDB, then cookies only, then empty
+        (the user logs in again) - each step logged."""
+        attempts = [("full session", storage_state)]
+        if storage_state:
+            attempts += [("without IndexedDB", _strip_indexed(storage_state)),
+                         ("cookies only", {"cookies": storage_state.get("cookies") or [], "origins": []}),
+                         ("empty (log in again)", None)]
+        last: Exception | None = None
+        for label, state in attempts:
+            try:
+                context = await browser.new_context(storage_state=state, no_viewport=True)
+                if label != "full session":
+                    logger.warning("Account %s: browser started with the %s (the saved session did not restore)",
+                                   account_id, label)
+                return context
+            except Exception as exc:
+                last = exc
+                logger.warning("Account %s: new context with the %s failed: %s", account_id, label,
+                               type(exc).__name__)
+        raise last  # type: ignore[misc]
 
     async def export_storage_state(self, account_id: int) -> dict:
         """Dump the live context storage_state (cookies + localStorage, IndexedDB if supported)."""

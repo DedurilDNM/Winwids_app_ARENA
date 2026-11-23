@@ -209,6 +209,10 @@ async def lifespan(app: FastAPI):
     await init_db()
     await seed_admin()
     interrupted = await handle_interrupted_projects()
+    from app.services.disk import low_disk
+
+    if (disk := low_disk()):
+        logger.error(disk)
 
     # Phase 2: relaunch browsers for all active accounts so they open logged-in
     # sessions without a fresh VNC login. Failures never block startup.
