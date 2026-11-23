@@ -198,6 +198,9 @@ class Settings(BaseSettings):
     # Empty model list on a fresh page: try this many recent chats (each switched to our
     # mode/modality first), then a new chat, until the model can be picked.
     ADAPTER_MODEL_HISTORY_TRIES: int = 4
+    # If the model still cannot be chosen: pause and ask a human («нужна помощь») to pick
+    # it in the account's browser (once per browser session: the tab is reused).
+    ADAPTER_MODEL_ASK_HUMAN: bool = True
     # Chat toolbar setup by visible labels, before every new chat:
     # ADAPTER_CHAT_MODE - the mode to select (e.g. Chat); ADAPTER_CHAT_MODES - all
     # labels the mode button can show; ADAPTER_MODALITY - the option of the menu

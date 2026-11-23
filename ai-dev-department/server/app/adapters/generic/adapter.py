@@ -98,6 +98,7 @@ _BLOCKED_MESSAGES = {
     "captcha": "Service is showing a captcha that did not clear by itself",
     "dialog": "Service is showing a pop-up window that blocks sending",
     "login": "Service requires login: the account session has expired",
+    "model": "The model is not selected in the account's chat and nobody chose it",
 }
 
 _MESSAGE_TEXT_JS = r"""
@@ -1118,6 +1119,17 @@ class Adapter:
             return
         if await self._is_login_required(page):
             raise NeedsHumanError("Service requires login: the account session has expired (log in, then start again)")
+        if getattr(self.settings, "ADAPTER_MODEL_ASK_HUMAN", True) and self.on_attention is not None:
+            # every automatic way failed: ask the human (banner «нужна помощь») to pick it in this
+            # very tab; the tab is reused afterwards, so it is needed once per browser session
+            logger.warning("Model %s could not be chosen automatically: asking a human", model)
+
+            async def not_chosen(p) -> bool:
+                return not await self._model_is(p, model)
+
+            await self._pause(page, "model", not_chosen)
+            logger.info("Model chosen by a human: %s", model)
+            return
         raise ConfigAdapterError(
             f"Model «{model}» is not selected in this account's chat and could not be picked automatically: "
             "check the model name (as the service shows it) or pick it once in the account's browser")

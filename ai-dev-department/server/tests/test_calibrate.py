@@ -556,3 +556,46 @@ def test_a_message_that_cannot_be_sent_fails_fast_and_clearly():
     sent, error, took = _send_on(SEND_PAGES["nothing_sends"])
     assert isinstance(error, TransientAdapterError) and "could not be sent" in str(error)
     assert took < 30
+
+
+def test_model_that_cannot_be_chosen_automatically_is_asked_from_a_human():
+    """The model list never fills by itself: the server pauses with «нужна помощь»,
+    the human picks the model in the agent's browser, and the chat goes on."""
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic.adapter import Adapter
+
+    html = """<!doctype html><meta charset="utf-8"><textarea id="box"></textarea><button id="send">Send</button>
+      <div class="bar"><button id="mode" aria-haspopup="menu">Chat</button>
+      <div id="model" style="cursor:pointer;display:inline-block"><span>Model</span></div></div>"""
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            context = await browser.new_context()
+
+            async def serve(route):
+                await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=html)
+
+            await context.route("https://service.example.com/**", serve)
+            a = Adapter(settings=_settings(ADAPTER_CHAT_MODE="Chat", ADAPTER_MODEL_HISTORY_TRIES=1))
+            a.expected_model = "claude-sonnet-5-5-high"
+            events = []
+
+            async def on_attention(kind, active):
+                events.append((kind, active))
+                if active:  # the human picks the model in the agent's browser a bit later
+                    async def human():
+                        await asyncio.sleep(2)
+                        for pg in context.pages:
+                            await pg.evaluate("document.querySelector('#model span').textContent = 'claude-sonnet-5-5-high'")
+                    asyncio.create_task(human())
+
+            a.on_attention = on_attention
+            page = await a.open_chat(context, "task-1")
+            shown = await page.evaluate("document.querySelector('#model span').textContent")
+            await browser.close()
+            return events, shown
+
+    events, shown = asyncio.run(go())
+    assert events == [("model", True), ("model", False)] and shown == "claude-sonnet-5-5-high"

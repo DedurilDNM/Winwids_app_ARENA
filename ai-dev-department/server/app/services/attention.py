@@ -14,6 +14,7 @@ KIND_TEXT = {
     "captcha": "the service is showing a captcha",
     "dialog": "a pop-up window blocks sending",
     "login": "the account is logged out",
+    "model": "the model could not be chosen automatically: choose it in the agent's browser",
 }
 
 
