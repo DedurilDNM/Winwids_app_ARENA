@@ -223,6 +223,7 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
     """Run the calibration in a new chat of `context`. Returns a profile dict
     ({"ok": bool, ...}); never raises for a page problem (ok=False + reason)."""
     async def step(text: str) -> None:
+        logger.info("Calibration step: %s", text)
         if progress is not None:
             try:
                 await progress(text)

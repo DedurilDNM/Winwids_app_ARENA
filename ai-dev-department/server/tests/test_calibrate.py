@@ -660,3 +660,38 @@ def test_side_panel_opened_by_the_workaround_does_not_block_typing():
 
     state = asyncio.run(go())
     assert state["sent"] == 1 and state["side"] == "none"  # the panel was closed again, the message left
+
+
+def test_a_model_list_left_open_does_not_eat_the_send():
+    """After the model was chosen the list stays open over the composer and grabs Enter /
+    clicks: it is closed before typing, and the message leaves."""
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic.adapter import Adapter
+
+    html = """<!doctype html><meta charset="utf-8"><div id="list"></div>
+      <div id="ed" contenteditable="true" style="min-height:30px;border:1px solid"></div>
+      <button aria-label="Send message" id="go">Send</button>
+      <div id="pick" role="listbox" style="position:fixed;inset:0;background:rgba(255,255,255,.9)">
+        <div role="option">gemini-4-argon-high</div></div>
+      <script>
+        const $ = (id) => document.getElementById(id); window.SENT = 0;
+        document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("pick")) { $("pick").remove(); }
+          else if (e.key === "Enter" && $("pick")) { e.preventDefault(); } }, true);
+        $("go").onclick = () => { const p = document.createElement("p"); p.textContent = $("ed").innerText;
+          $("list").append(p); $("ed").innerText = ""; window.SENT += 1; };
+      </script>"""
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            page = await browser.new_page()
+            await page.set_content(html)
+            a = Adapter(settings=_settings(ADAPTER_INPUT_SELECTOR='[contenteditable="true"]',
+                                           ADAPTER_SEND_SELECTOR='button[aria-label="Send message"]'))
+            await a.send_message(page, "You are the ORCHESTRATOR of a software project. Split the task.")
+            sent = await page.evaluate("window.SENT")
+            await browser.close()
+            return sent
+
+    assert asyncio.run(go()) == 1

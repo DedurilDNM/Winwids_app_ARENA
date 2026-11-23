@@ -399,6 +399,12 @@ async def _preflight(accounts: list, *, project_id: int, user_id: int, settings,
                 await emit("calibrating")
                 adapter.profile = None
                 profile = await calibrate(adapter, context)
+                reason_text = str(profile.get("reason") or "")
+                if not profile.get("ok") and not any(k in reason_text for k in ("ConfigAdapterError", "NeedsHuman",
+                                                                                  "Stopped", "no browser")):
+                    logger.info("Preflight: calibration of %s failed (%s); one more try", account.name, reason_text[:120])
+                    adapter.profile = None
+                    profile = await calibrate(adapter, context)
                 if not profile.get("ok"):
                     reason = f"{account.name}: calibration failed ({profile.get('reason') or 'answer not read'})"
                     await emit("problem", reason)

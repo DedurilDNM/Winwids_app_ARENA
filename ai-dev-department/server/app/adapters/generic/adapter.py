@@ -216,6 +216,13 @@ _REPLY_FALLBACK_JS = r"""
 }
 """.replace("__MESSAGE_TEXT__", _MESSAGE_TEXT_JS.strip())
 
+# An open pop-up list / menu / dialog (not the captcha: that one is handled by a pause).
+_POPUP_OPEN_JS = r"""
+() => [...document.querySelectorAll('[role="dialog"], [role="listbox"], [role="menu"], [aria-modal="true"]')]
+  .some((d) => { const r = d.getBoundingClientRect(); const s = getComputedStyle(d);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && !d.querySelector('iframe'); })
+"""
+
 # Is the input covered by a dialog / modal (what is at its centre is not the input)?
 _COVERED_JS = r"""
 (input) => {
@@ -1186,7 +1193,9 @@ class Adapter:
 
     async def send_message(self, page, text: str) -> None:
         """Type `text` into the chat input and send it."""
+        logger.info("Send: checking the login")
         if await self._is_login_required(page):
+            logger.info("Send: the page looks logged out; logging in first")
             await self._handle_login(page)
             await self._reopen(page)  # logging in may have navigated away from a new chat
         input_sel = self._selectors["input"]
@@ -1199,6 +1208,7 @@ class Adapter:
         self._before[page] = (count, await self._last_message_text(page)) if count else (0, "")
         await self._mark_seen(page)  # what is on the page now can never be the new reply
         self._last_sent[page] = text
+        logger.info("Send: typing the message")
         await self._submit(page, text)
         logger.debug("Message sent to service (len=%d)", len(text))
 
@@ -1436,6 +1446,7 @@ class Adapter:
         """Type, mark the page (to notice a reload), send, handle pop-ups /
         captcha. If the human reloaded the page while helping, send again."""
         input_sel, send_sel = self._selectors["input"], self._selectors["send"]
+        await self._close_popups(page)  # an open model list / menu eats clicks and Enter
         try:
             el = await self._write_input(page, text)
         except RuntimeError:
@@ -1599,6 +1610,7 @@ class Adapter:
         """Send what is in `el` and CHECK that it left: the VISIBLE send button of
         ADAPTER_SEND_SELECTOR, else Enter in that very input, else a send button next to it.
         Never wait for an answer to a message that was not sent."""
+        await self._close_popups(page)
         before = await self._input_left(el)
         send_sel = self._selectors["send"]
         attempts = []
@@ -1661,6 +1673,25 @@ class Adapter:
             await el.evaluate("(e) => { e.scrollIntoView({block: 'center'}); e.focus(); }")
         except Exception as exc:
             raise TransientAdapterError(f"Could not focus chat input ({self._selectors['input']}): {exc}") from exc
+
+    async def _close_popups(self, page) -> None:
+        """Close an open list / menu / pop-up (e.g. the model list left open after a model was
+        chosen - by us or by a human in the viewer): Escape, at most twice."""
+        if not hasattr(page, "evaluate"):
+            return
+        for _ in range(2):
+            try:
+                open_popup = await page.evaluate(_POPUP_OPEN_JS)
+            except Exception:
+                return
+            if not open_popup:
+                return
+            logger.info("Closing an open list/menu before typing")
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                return
+            await asyncio.sleep(0.4)
 
     async def _input_covered_by_dialog(self, el) -> bool:
         """The element at the input's centre belongs to a dialog / modal, not to the input."""
