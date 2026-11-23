@@ -249,6 +249,10 @@ class Settings(BaseSettings):
     ADAPTER_RATE_LIMIT_MAX_WAIT_SECONDS: float = 1800
     # Reuse the account's chat tab: a new chat via the site's «new chat» button (no page load).
     ADAPTER_REUSE_TAB: bool = True
+    # Save IndexedDB with the login session (experimental in Playwright; some sites'
+    # data cannot be restored later and blocks the browser start). Cookies + localStorage
+    # are enough to stay logged in.
+    BROWSER_SAVE_INDEXEDDB: bool = False
     # After each reply: press Escape (closes rating/feedback panels) and click
     # ADAPTER_DISMISS_SELECTOR if it is visible.
     ADAPTER_AFTER_REPLY_ESCAPE: bool = True

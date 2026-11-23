@@ -61,6 +61,17 @@ def parse_proxy(proxy_url: str) -> dict[str, str] | None:
     return proxy
 
 
+def _has_indexed_db(state: dict) -> bool:
+    return any(o.get("indexedDB") for o in (state.get("origins") or []) if isinstance(o, dict))
+
+
+def without_indexed_db(state: dict) -> dict:
+    """The saved session without IndexedDB (cookies + localStorage stay)."""
+    origins = [{k: v for k, v in o.items() if k != "indexedDB"} for o in (state.get("origins") or [])
+               if isinstance(o, dict)]
+    return {**state, "origins": origins}
+
+
 class BrowserManager:
     def __init__(self) -> None:
         self._handles: dict[int, BrowserHandle] = {}
@@ -128,10 +139,17 @@ class BrowserManager:
             camoufox = AsyncCamoufox(**kwargs)
             try:
                 browser = await camoufox.start()
-                context = await browser.new_context(
-                    storage_state=storage_state,
-                    no_viewport=True,
-                )
+                try:
+                    context = await browser.new_context(storage_state=storage_state, no_viewport=True)
+                except Exception as exc:
+                    if not (storage_state and _has_indexed_db(storage_state)):
+                        raise
+                    # a saved IndexedDB that cannot be restored must not block the browser:
+                    # cookies + localStorage keep the login
+                    logger.warning("Account %s: restoring IndexedDB failed (%s); starting without it",
+                                   account_id, type(exc).__name__)
+                    context = await browser.new_context(storage_state=without_indexed_db(storage_state),
+                                                        no_viewport=True)
                 if open_url:
                     page = await context.new_page()
                     await page.goto(settings.SERVICE_URL, wait_until="domcontentloaded", timeout=60_000)
@@ -161,6 +179,12 @@ class BrowserManager:
         if handle is None:
             raise BrowserUnavailableError(f"No live browser session for account {account_id}")
         context = handle.context
+        if not get_settings().BROWSER_SAVE_INDEXEDDB:
+            try:
+                return await context.storage_state()
+            except Exception as exc:
+                raise BrowserUnavailableError(
+                    f"The account's browser does not respond ({type(exc).__name__}): open its browser again") from exc
         try:
             return await context.storage_state(indexed_db=True)  # Playwright >= 1.49 (experimental)
         except TypeError:

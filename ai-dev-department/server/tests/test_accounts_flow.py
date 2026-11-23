@@ -388,3 +388,36 @@ def test_storage_state_falls_back_when_indexeddb_export_fails():
     bm._handles[77] = SimpleNamespace(context=Ctx())
     state = _asyncio.run(bm.export_storage_state(77))
     assert state["cookies"][0]["value"] == "1"
+
+
+def test_browser_starts_even_if_the_saved_indexeddb_cannot_be_restored(monkeypatch):
+    import asyncio as _asyncio
+
+    import app.services.browser_manager as bmod
+
+    seen = []
+
+    class Browser:
+        async def new_context(self, storage_state=None, **kw):
+            seen.append(storage_state)
+            if any(o.get("indexedDB") for o in (storage_state or {}).get("origins", [])):
+                raise RuntimeError("Error setting storage state: Unable to restore IndexedDB")
+            return object()
+
+    class Fox:
+        def __init__(self, **kw):
+            pass
+
+        async def start(self):
+            return Browser()
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(bmod, "AsyncCamoufox", Fox)
+    state = {"cookies": [{"name": "s", "value": "1"}],
+             "origins": [{"origin": "https://x", "localStorage": [{"name": "a", "value": "b"}], "indexedDB": [{"name": "db"}]}]}
+    manager = bmod.BrowserManager()
+    context = _asyncio.run(manager.launch(4242, storage_state=state, headless=True, open_url=False))
+    assert context is not None and len(seen) == 2
+    assert "indexedDB" not in seen[1]["origins"][0] and seen[1]["origins"][0]["localStorage"] and seen[1]["cookies"]
