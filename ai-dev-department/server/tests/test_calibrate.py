@@ -503,3 +503,56 @@ setInterval(() => { let b = document.getElementById("tick"); if (!b) { b = docum
     assert profile["seconds"] < 28, profile["seconds"]  # the old rule waited for the whole limit (30 s here)
     assert "SUMMARY: made a.txt" in reply
     assert _time.monotonic() - t0 < 120
+
+
+SEND_PAGES = {
+    # the .env send selector matches nothing; the real button has another label; Enter does nothing
+    "button_next_to_input": """<!doctype html><meta charset="utf-8"><div id="list"></div>
+      <div class="composer"><div id="ed" contenteditable="true" style="min-height:30px;border:1px solid"></div>
+      <button aria-label="Submit prompt" id="go">↑</button></div>
+      <script>document.getElementById("go").onclick = () => { const ed = document.getElementById("ed");
+        const p = document.createElement("p"); p.textContent = ed.innerText; document.getElementById("list").append(p);
+        ed.innerText = ""; window.SENT = (window.SENT || 0) + 1; };</script>""",
+    # nothing sends at all: must fail fast with a clear error, not wait for an answer
+    "nothing_sends": """<!doctype html><meta charset="utf-8"><div id="list"></div>
+      <div class="composer"><div id="ed" contenteditable="true" style="min-height:30px;border:1px solid"></div></div>""",
+}
+
+
+def _send_on(page_html):
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic.adapter import Adapter
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            page = await browser.new_page()
+            await page.set_content(page_html)
+            a = Adapter(settings=_settings(ADAPTER_INPUT_SELECTOR='[contenteditable="true"]',
+                                           ADAPTER_SEND_SELECTOR='button[aria-label="Send message"]'))
+            t0 = asyncio.get_running_loop().time()
+            error = None
+            try:
+                await a.send_message(page, "You are the ORCHESTRATOR of a software project. Split the task.")
+            except Exception as exc:
+                error = exc
+            took = asyncio.get_running_loop().time() - t0
+            sent = await page.evaluate("window.SENT || 0")
+            await browser.close()
+            return sent, error, took
+
+    return asyncio.run(go())
+
+
+def test_send_button_next_to_the_input_is_found_when_the_selector_does_not_match():
+    sent, error, _ = _send_on(SEND_PAGES["button_next_to_input"])
+    assert error is None and sent == 1
+
+
+def test_a_message_that_cannot_be_sent_fails_fast_and_clearly():
+    from app.adapters.errors import TransientAdapterError
+
+    sent, error, took = _send_on(SEND_PAGES["nothing_sends"])
+    assert isinstance(error, TransientAdapterError) and "could not be sent" in str(error)
+    assert took < 30

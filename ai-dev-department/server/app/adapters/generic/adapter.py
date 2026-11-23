@@ -215,6 +215,40 @@ _REPLY_FALLBACK_JS = r"""
 }
 """.replace("__MESSAGE_TEXT__", _MESSAGE_TEXT_JS.strip())
 
+# Our message is on the page outside the input (sent and shown in the chat).
+_ECHOED_JS = r"""
+(text) => {
+  const norm = (t) => (t || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9\u0430-\u044f\u0451]/g, '');
+  const head = norm(text).slice(0, 60);
+  if (head.length < 8) return false;
+  for (const e of document.querySelectorAll('body *')) {
+    if (e.closest('textarea, input, [contenteditable="true"], script, style')) continue;
+    if (e.querySelector('textarea, input, [contenteditable="true"]')) continue;  // holds the input itself
+    const r = e.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0 && norm(e.textContent).includes(head)) return true;
+  }
+  return false;
+}
+"""
+
+# A send button in the composer of `input`: nearest ancestors first; label / title /
+# test id / type says «send». Marks it data-aidd-send.
+_COMPOSER_SEND_JS = r"""
+(input) => {
+  const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && !e.disabled; };
+  document.querySelectorAll('[data-aidd-send]').forEach((e) => e.removeAttribute('data-aidd-send'));
+  const looks = (b) => /send|submit|отправ/i.test([b.getAttribute('aria-label'), b.getAttribute('title'),
+    b.getAttribute('data-testid'), b.getAttribute('name')].join(' ')) || b.getAttribute('type') === 'submit';
+  let box = input.parentElement;
+  for (let up = 0; box && box !== document.body && up < 6; up++, box = box.parentElement) {
+    const b = [...box.querySelectorAll('button, [role="button"]')].find((x) => vis(x) && looks(x));
+    if (b) { b.setAttribute('data-aidd-send', ''); return true; }
+  }
+  return false;
+}
+"""
+
 # Chat setup (mode / modality / model) by visible labels. Marks the element to
 # click with data-aidd-pick; returns a boolean only (no page text leaves the page).
 _PICK_TOGGLE_JS = r"""
@@ -1341,19 +1375,22 @@ class Adapter:
         captcha. If the human reloaded the page while helping, send again."""
         input_sel, send_sel = self._selectors["input"], self._selectors["send"]
         try:
-            await self._write_input(page, text)
+            el = await self._write_input(page, text)
         except RuntimeError:
             raise
         except Exception as exc:
             raise TransientAdapterError(f"Could not focus chat input ({input_sel}): {exc}") from exc
         await self._mark(page)
-        try:
-            await page.click(send_sel, timeout=10_000)
-        except Exception:
+        if hasattr(page, "locator") and el is not None and hasattr(el, "press"):
+            await self._send_verified(page, el, text)
+        else:  # minimal page objects (tests)
             try:
-                await page.press(input_sel, "Enter")
-            except Exception as exc:
-                raise TransientAdapterError(f"Could not send message (no working send selector: {send_sel})") from exc
+                await page.click(send_sel, timeout=10_000)
+            except Exception:
+                try:
+                    await page.press(input_sel, "Enter")
+                except Exception as exc:
+                    raise TransientAdapterError(f"Could not send message (no working send selector: {send_sel})") from exc
         await self._accept_dialog_and_resend(page)
         resend = await self._wait_blockers(page)
         if resend and depth < MAX_RESENDS:
@@ -1423,7 +1460,7 @@ class Adapter:
                     await asyncio.sleep(1.0)
         return False
 
-    async def _write_input(self, page, text: str) -> None:
+    async def _write_input(self, page, text: str):
         """Put `text` into the first VISIBLE chat input (a selector may also
         match hidden elements). Rich editors (contenteditable, e.g. ProseMirror)
         get a synthetic paste - it keeps line breaks and is fast for long
@@ -1447,7 +1484,7 @@ class Adapter:
                 await fill(text)
             else:  # minimal page objects (tests)
                 await page.fill(input_sel, text)
-            return
+            return el
 
         expected = len(re.sub(r"\s+", "", text))
         await self._focus_input(page, el)
@@ -1455,7 +1492,7 @@ class Adapter:
         await page.keyboard.press("Delete")
         got = await el.evaluate(_PASTE_JS, text)
         if got >= expected * 0.95:
-            return
+            return el
         logger.info("Editor ignored the synthetic paste (%d/%d chars); typing line by line", got, expected)
         await page.keyboard.press("Control+A")
         await page.keyboard.press("Delete")
@@ -1464,6 +1501,72 @@ class Adapter:
                 await page.keyboard.press("Shift+Enter")
             if line:
                 await page.keyboard.insert_text(line)
+        return el
+
+    async def _input_left(self, el) -> int:
+        """How many letters are still in the input (-1: the input is gone)."""
+        try:
+            return int(await el.evaluate(
+                "(e) => e.isConnected ? (((e.value !== undefined ? e.value : e.innerText) || '').replace(/\\s+/g, '').length) : -1"))
+        except Exception:
+            return -1
+
+    async def _was_sent(self, page, el, before: int, text: str = "") -> bool:
+        """The input emptied (or went away), our message shows up on the page, or the
+        service shows it is busy - within a few seconds. A captcha / pop-up that blocks
+        sending counts as «handled elsewhere» (the pause sends it)."""
+        for _ in range(16):
+            left = await self._input_left(el)
+            if left == -1 or left < max(3, before * 0.05):
+                return True
+            if text:
+                try:
+                    if await page.evaluate(_ECHOED_JS, text[:200]):
+                        return True
+                except Exception:
+                    pass
+            if await self._detect_state(page) == "generating":
+                return True
+            if await self._blocker(page) is not None:
+                return True
+            await asyncio.sleep(0.25)
+        return False
+
+    async def _send_verified(self, page, el, text: str = "") -> None:
+        """Send what is in `el` and CHECK that it left: the VISIBLE send button of
+        ADAPTER_SEND_SELECTOR, else Enter in that very input, else a send button next to it.
+        Never wait for an answer to a message that was not sent."""
+        before = await self._input_left(el)
+        send_sel = self._selectors["send"]
+        attempts = []
+        button = await self._first_visible(page, send_sel) if send_sel else None
+        if button is not None:
+            attempts.append(("send button", lambda: button.click(timeout=5_000)))
+        attempts.append(("Enter in the input", lambda: el.press("Enter")))
+        attempts.append(("button next to the input", lambda: self._click_composer_send(page, el)))
+        for name, action in attempts:
+            try:
+                result = await action()
+                if result is False:
+                    continue
+            except Exception:
+                continue
+            if await self._was_sent(page, el, before, text):
+                logger.info("Message sent (%s)", name)
+                return
+        raise TransientAdapterError("The message was typed but could not be sent: no working send button and Enter "
+                                    "did not send it (check ADAPTER_SEND_SELECTOR or run «Калибровка»)")
+
+    async def _click_composer_send(self, page, el) -> bool:
+        """A visible button that looks like «send» in the input's own composer."""
+        try:
+            found = await el.evaluate(_COMPOSER_SEND_JS)
+        except Exception:
+            return False
+        if not found:
+            return False
+        await page.click('[data-aidd-send]', timeout=5_000)
+        return True
 
     async def _focus_input(self, page, el) -> None:
         """Click the input. Something may cover it (a menu, a rating panel, a
