@@ -15,9 +15,41 @@ MIN_FREE_MB = 300
 
 
 def _paths() -> list[Path]:
+    import tempfile
+
     from app.config import DATA_DIR
 
-    return [Path("/tmp"), Path(DATA_DIR), Path(os.environ.get("HOME") or "/tmp")]
+    return [Path("/tmp"), Path(tempfile.gettempdir()), Path(DATA_DIR), Path(os.environ.get("HOME") or "/tmp")]
+
+
+# Temporary browser profiles / Playwright artifacts. Every browser start makes one; a
+# killed browser (service restart) leaves it behind - on a small /tmp that fills it.
+_BROWSER_TEMP = ("playwright*", "rust_mozprofile*", "*camoufox*", "tmp*_profile*", "mozprofile*")
+
+
+def cleanup_browser_temp() -> int:
+    """At startup (no browser runs yet): remove OUR leftover browser temp dirs from the
+    temp dirs. Only entries owned by this user. Returns the number removed."""
+    import tempfile
+
+    uid = os.getuid()
+    removed = 0
+    for base in {Path(tempfile.gettempdir()), Path("/tmp")}:
+        for pattern in _BROWSER_TEMP:
+            for path in base.glob(pattern):
+                try:
+                    if path.lstat().st_uid != uid:
+                        continue
+                    if path.is_dir() and not path.is_symlink():
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        path.unlink(missing_ok=True)
+                    removed += 1
+                except OSError:
+                    continue
+    if removed:
+        logger.warning("Removed %d leftover browser temp dir(s)", removed)
+    return removed
 
 
 def low_disk() -> str | None:

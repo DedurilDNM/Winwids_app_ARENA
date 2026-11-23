@@ -466,3 +466,20 @@ def test_browser_starts_with_cookies_only_if_the_session_does_not_restore_at_all
              "origins": [{"origin": "https://x", "localStorage": [], "indexedDB": [{"name": "db"}]}]}
     context = _asyncio.run(bmod.BrowserManager().launch(4343, storage_state=state, headless=True, open_url=False))
     assert context is not None and len(seen) == 3 and seen[2] == {"cookies": state["cookies"], "origins": []}
+
+
+def test_leftover_browser_temp_dirs_are_removed_at_startup(monkeypatch, tmp_path):
+    import tempfile
+
+    from app.services import disk
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    for name in ("playwright_firefoxdev_profile-abc", "rust_mozprofileXYZ", "keep-me"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "big.bin").write_bytes(b"0" * 1024)
+    removed = disk.cleanup_browser_temp()
+    assert removed >= 2
+    assert not (tmp_path / "playwright_firefoxdev_profile-abc").exists()
+    assert not (tmp_path / "rust_mozprofileXYZ").exists()
+    assert (tmp_path / "keep-me").exists()  # anything else is left alone

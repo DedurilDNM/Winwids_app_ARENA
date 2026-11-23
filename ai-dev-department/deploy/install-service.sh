@@ -14,8 +14,8 @@ set -euo pipefail
 SERVER_DIR="$(cd "$(dirname "$0")/../server" && pwd)"
 RUN_USER="${SUDO_USER:-$(stat -c %U "$SERVER_DIR")}"
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
-mkdir -p "$SERVER_DIR/data"
-chown "$RUN_USER" "$SERVER_DIR/data"
+mkdir -p "$SERVER_DIR/data/tmp"
+chown "$RUN_USER" "$SERVER_DIR/data" "$SERVER_DIR/data/tmp"
 
 cat > /etc/systemd/system/aidd.service <<EOF
 [Unit]
@@ -28,6 +28,8 @@ User=$RUN_USER
 WorkingDirectory=$SERVER_DIR
 Environment=HOME=$RUN_HOME
 Environment=PYTHONUNBUFFERED=1
+# temp files (browser profiles, ~100 MB each) on the main disk, not on a small /tmp
+Environment=TMPDIR=$SERVER_DIR/data/tmp
 # exactly ONE worker: browsers and VNC sessions live in this process
 ExecStart=$SERVER_DIR/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
 StandardOutput=append:$SERVER_DIR/data/uvicorn.log

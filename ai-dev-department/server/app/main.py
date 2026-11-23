@@ -209,8 +209,12 @@ async def lifespan(app: FastAPI):
     await init_db()
     await seed_admin()
     interrupted = await handle_interrupted_projects()
-    from app.services.disk import low_disk
+    from app.services.disk import cleanup_browser_temp, low_disk
 
+    try:
+        cleanup_browser_temp()  # before any browser starts: leftovers of killed browsers fill /tmp
+    except Exception:
+        logger.warning("Browser temp cleanup failed", exc_info=True)
     if (disk := low_disk()):
         logger.error(disk)
 
