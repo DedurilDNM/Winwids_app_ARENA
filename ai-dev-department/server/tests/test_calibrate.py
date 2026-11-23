@@ -486,3 +486,20 @@ def test_the_account_tab_is_reused_with_the_site_new_chat_button():
     same, loads, new_clicks, pages, closed = asyncio.run(go())
     assert same and not closed and pages == 1
     assert loads == 1 and new_clicks == 1  # the second chat: the site's «new chat» button, no page load
+
+
+def test_calibration_finishes_even_if_a_page_control_keeps_changing():
+    """Something on the page changes all the time (a timer in an aria-label): the
+    answer is still taken once its text has stood still, not after the 5-minute limit."""
+    import time as _time
+
+    churn = _page("data").replace("</script>", """
+setInterval(() => { let b = document.getElementById("tick"); if (!b) { b = document.createElement("button");
+  b.id = "tick"; document.body.append(b); } b.setAttribute("aria-label", "Updated " + Date.now()); }, 300);
+</script>""", 1)
+    t0 = _time.monotonic()
+    profile, reply, _ = _calibrate(churn)
+    assert profile["ok"], profile
+    assert profile["seconds"] < 28, profile["seconds"]  # the old rule waited for the whole limit (30 s here)
+    assert "SUMMARY: made a.txt" in reply
+    assert _time.monotonic() - t0 < 120

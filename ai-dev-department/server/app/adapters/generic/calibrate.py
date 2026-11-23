@@ -268,7 +268,13 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
         last_size, stable_since = -1, None
         sigs: list[str] = []
         last_sigs, sigs_since = None, time.monotonic()
+        last_report = sent_at
         while time.monotonic() - sent_at < timeout:
+            if time.monotonic() - last_report >= 30:  # numbers only
+                last_report = time.monotonic()
+                logger.info("Calibration waiting %.0fs: answer seen=%s, text unchanged %.0fs, controls unchanged %.0fs",
+                            last_report - sent_at, reply_at is not None,
+                            (last_report - stable_since) if stable_since else 0, last_report - sigs_since)
             if await adapter._captcha_visible(page):
                 await adapter._pause(page, "captcha", lambda p: adapter._captcha_visible(p, True))
             now = time.monotonic()
@@ -283,8 +289,10 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
                 reply_at = reply_at or now
                 if presence["size"] != last_size:
                     last_size, stable_since = presence["size"], now
-                elif now - stable_since >= 5 and now - sigs_since >= 5:
-                    break  # the text and the page controls stopped changing: the answer is complete
+                elif now - stable_since >= 5 and (now - sigs_since >= 5 or now - stable_since >= 15):
+                    # the text stopped changing and so did the page controls - or the text has
+                    # stood still long enough even if something on the page keeps changing
+                    break
             await asyncio.sleep(0.5)
         if reply_at is None:
             profile["reason"] = "no answer with the test markers"

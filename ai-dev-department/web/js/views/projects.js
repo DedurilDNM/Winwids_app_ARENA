@@ -311,6 +311,14 @@ async function renderProject(main, projectId) {
   const live = h("span", { class: "live", "data-testid": "live" }, "офлайн");
   // «pulse» of waiting agents (numbers only): task_id -> last progress event
   const pulses = new Map();
+  const preflight = new Map();  // account -> checking | calibrating | ok | problem
+  const planningText = () => {
+    if (preflight.size && [...preflight.values()].some((v) => v === "checking" || v === "calibrating")) {
+      const ready = [...preflight.values()].filter((v) => v === "ok").length;
+      return `Проверка аккаунтов перед запуском… готово ${ready} из ${preflight.size} (по 2 одновременно, калибровка — до пары минут)`;
+    }
+    return "Оркестратор составляет план…";
+  };
   const orchPulse = h("p", { class: "small muted pulse", "data-testid": "orch-pulse", hidden: true });
 
   main.append(
@@ -392,7 +400,7 @@ async function renderProject(main, projectId) {
   function renderTasks() {
     if (!tasks.length) {
       board.replaceChildren(h("p", { class: "muted small" }, project.status === "running"
-        ? "Оркестратор составляет план…" : "Задачи появятся после запуска: их составит оркестратор."));
+        ? planningText() : "Задачи появятся после запуска: их составит оркестратор."));
       return;
     }
     const rounds = new Map();
@@ -542,6 +550,7 @@ async function renderProject(main, projectId) {
         return;
       }
       if (e.type === "project_completed" || e.type === "project_failed" || e.type === "review_done") orchPulse.hidden = true;
+      if (e.type === "preflight") { preflight.set(e.account_id, e.status); if (!tasks.length) renderTasks(); }
       const describe = EVENT_TEXT[e.type];
       if (describe) addEvent(...describe(e));
       // Events carry ids only: refetch the full state (debounced).
