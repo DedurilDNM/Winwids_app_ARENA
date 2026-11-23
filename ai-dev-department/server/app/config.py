@@ -213,6 +213,7 @@ class Settings(BaseSettings):
     ADAPTER_SIDEBAR_SELECTOR: str = ""
     ADAPTER_HISTORY_LINK_SELECTOR: str = ""
     ADAPTER_NEW_CHAT_SELECTOR: str = ""
+    ADAPTER_SIDEBAR_CLOSE_SELECTOR: str = ""
     ADAPTER_MODEL_CLICKS: str = ""
     # Extra selector that must appear before the chat is considered ready
     # (empty = skip this check).

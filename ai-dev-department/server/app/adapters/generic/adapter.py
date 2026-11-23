@@ -216,6 +216,17 @@ _REPLY_FALLBACK_JS = r"""
 }
 """.replace("__MESSAGE_TEXT__", _MESSAGE_TEXT_JS.strip())
 
+# Is the input covered by a dialog / modal (what is at its centre is not the input)?
+_COVERED_JS = r"""
+(input) => {
+  const r = input.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return false;
+  const top = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 20));
+  if (!top || input.contains(top) || top.contains(input)) return false;
+  return !!top.closest('[role="dialog"], [aria-modal="true"], [role="alertdialog"]');
+}
+"""
+
 # Our message is on the page outside the input (sent and shown in the chat).
 _ECHOED_JS = r"""
 (text) => {
@@ -389,6 +400,10 @@ _NAV_JS = r"""
           && /[0-9a-f]{8}-[0-9a-f]{4}|[0-9a-z_-]{16,}/i.test(u.pathname.split('/').pop() || '');
       } catch (e) { return false; }
     })[args.index || 0] || null;
+  } else if (args.kind === 'close_sidebar') {
+    const btns = [...document.querySelectorAll('button, [role="button"]')].filter(vis);
+    const both = (t) => /(close|hide|collapse|закры|скры)/i.test(t) && /(sidebar|side bar|menu|panel|navigation|history|панел|меню)/i.test(t);
+    el = btns.find((b) => both(meta(b))) || null;
   } else if (args.kind === 'sidebar') {
     const btns = [...document.querySelectorAll('button, [role="button"]')].filter(vis);
     el = btns.find((b) => /sidebar|side bar|history|menu|panel|navigation/i.test(meta(b)))
@@ -1024,16 +1039,46 @@ class Adapter:
     async def _nav(self, page, kind: str, index: int = 0) -> bool:
         """Click a navigation control found by _NAV_JS (or by an ADAPTER_*_SELECTOR)."""
         setting = {"sidebar": "ADAPTER_SIDEBAR_SELECTOR", "history": "ADAPTER_HISTORY_LINK_SELECTOR",
-                   "new": "ADAPTER_NEW_CHAT_SELECTOR"}[kind]
+                   "new": "ADAPTER_NEW_CHAT_SELECTOR", "close_sidebar": "ADAPTER_SIDEBAR_CLOSE_SELECTOR"}[kind]
         selector = (getattr(self.settings, setting, "") or "").strip()
         try:
             if not await page.evaluate(_NAV_JS, {"kind": kind, "selector": selector, "index": index}):
                 return False
-            if kind != "sidebar":
+            if kind not in ("sidebar", "close_sidebar"):
                 await self._pace()
             await page.click("[data-aidd-nav]", timeout=5_000)
             await asyncio.sleep(2.0)
             return True
+        except Exception:
+            return False
+
+    async def _close_sidebar(self, page) -> None:
+        """Close the side panel we opened (the same toggle, else Escape) if it is still shown
+        and covers the chat input."""
+        async def covered() -> bool:
+            el = await self._first_visible(page, self._selectors["input"])
+            return el is None or await self._input_hidden_behind(el)
+
+        if not await covered():
+            return
+        for step in ("close_sidebar", "sidebar", "escape"):
+            if step == "escape":
+                try:
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+            elif not await self._nav(page, step):
+                continue
+            if not await covered():
+                return
+
+    async def _input_hidden_behind(self, el) -> bool:
+        try:
+            return bool(await el.evaluate("""(input) => { const r = input.getBoundingClientRect();
+              if (!r.width || !r.height) return true;
+              const t = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 20));
+              return !!t && !input.contains(t) && !t.contains(input); }"""))
         except Exception:
             return False
 
@@ -1042,8 +1087,10 @@ class Adapter:
         index-th recent chat (opening the sidebar if needed), switch IT to our mode /
         modality (the list follows the chat that was open: after an Agent-mode chat the
         Text list stays empty), then a new chat - without reloading the page."""
+        opened_sidebar = False
         history = await self._nav(page, "history", index)
         if not history and await self._nav(page, "sidebar"):
+            opened_sidebar = True
             history = await self._nav(page, "history", index)
         if not history and index > 0:
             return False  # no more chats in the history
@@ -1066,7 +1113,10 @@ class Adapter:
                 logger.debug("setup in the history chat failed", exc_info=True)
         opened = await self._nav(page, "new")
         if not opened and await self._nav(page, "sidebar"):  # the sidebar may have closed again
+            opened_sidebar = True
             opened = await self._nav(page, "new")
+        if opened_sidebar:
+            await self._close_sidebar(page)  # it may lie over the chat input
         logger.info("Model list workaround #%d: history chat opened=%s, new chat opened=%s", index + 1, history, opened)
         if opened:
             await self._wait_ready(page)
@@ -1393,6 +1443,7 @@ class Adapter:
         except Exception as exc:
             raise TransientAdapterError(f"Could not focus chat input ({input_sel}): {exc}") from exc
         await self._mark(page)
+        logger.info("Message typed (%d chars); sending", len(text))
         if hasattr(page, "locator") and el is not None and hasattr(el, "press"):
             await self._send_verified(page, el, text)
         else:  # minimal page objects (tests)
@@ -1602,12 +1653,21 @@ class Adapter:
             elif attempt == 1:
                 if await self._captcha_visible(page):
                     await self._pause(page, "captcha", lambda p: self._captcha_visible(p, True))
-                elif await self._dialog_visible(page):
-                    await self._pause(page, "dialog", self._dialog_visible)
+                elif await self._input_covered_by_dialog(el):
+                    # only a pop-up that really lies over the input needs a human; any other
+                    # «dialog» on the page (a side panel, a closed menu) does not
+                    await self._pause(page, "dialog", lambda p: self._input_covered_by_dialog(el))
         try:
             await el.evaluate("(e) => { e.scrollIntoView({block: 'center'}); e.focus(); }")
         except Exception as exc:
             raise TransientAdapterError(f"Could not focus chat input ({self._selectors['input']}): {exc}") from exc
+
+    async def _input_covered_by_dialog(self, el) -> bool:
+        """The element at the input's centre belongs to a dialog / modal, not to the input."""
+        try:
+            return bool(await el.evaluate(_COVERED_JS))
+        except Exception:
+            return False
 
     async def _dialog_visible(self, page) -> bool:
         try:

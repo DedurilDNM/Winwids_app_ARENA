@@ -203,7 +203,7 @@ def test_preflight_calibrates_new_accounts_checks_calibrated_ones_and_reports_pr
                     return contexts.get(account_id)
 
             ws = _WS()
-            settings = _settings(ADAPTER_MODEL_AUTO=False)
+            settings = _settings(ADAPTER_MODEL_AUTO=False, ADAPTER_MODEL_ASK_HUMAN=False)
             problems = await orchestrator._preflight(
                 [new_acc, calibrated, wrong_model, no_browser], project_id=1, user_id=1, settings=settings,
                 session_factory=SessionLocal, browser_manager=BM(), make_adapter=lambda: Adapter(settings=settings), ws=ws)
@@ -599,3 +599,64 @@ def test_model_that_cannot_be_chosen_automatically_is_asked_from_a_human():
 
     events, shown = asyncio.run(go())
     assert events == [("model", True), ("model", False)] and shown == "claude-sonnet-5-5-high"
+
+
+SIDEBAR_OVER_INPUT = """<!doctype html><meta charset="utf-8">
+<button id="toggle" aria-label="Open sidebar" style="position:fixed;left:4px;top:4px;z-index:5">=</button>
+<div id="side" role="dialog" style="display:none;position:fixed;inset:0;background:#fff;z-index:4;padding-top:40px">
+  <button id="close" aria-label="Close sidebar">x</button>
+  <a id="newchat" href="/">New chat</a>
+  <a class="h" href="/c/0aa1b2c3-d4e5-4f60-8a9b-000000000002">Older text chat</a>
+</div>
+<div id="list"></div>
+<div style="position:fixed;bottom:10px;left:10px;right:10px">
+  <div id="ed" contenteditable="true" style="min-height:30px;border:1px solid"></div>
+  <button id="send" aria-label="Send message">Send</button>
+  <div class="bar"><button id="mode" aria-haspopup="menu">Chat</button>
+  <div id="model" style="cursor:pointer;display:inline-block"><span>Model</span></div></div>
+</div>
+<div id="layer"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const st = { loaded: false, sent: 0 }; window.st = st;
+const go = (e, path) => { e.preventDefault(); history.pushState({}, "", path); };
+$("toggle").onclick = () => { $("side").style.display = ""; };          // the panel covers EVERYTHING
+$("close").onclick = () => { $("side").style.display = "none"; };
+document.querySelector("a.h").onclick = (e) => go(e, document.querySelector("a.h").getAttribute("href"));
+$("newchat").onclick = (e) => { go(e, "/"); st.loaded = true; };       // it does not close by itself
+$("model").onclick = () => { const l = $("layer"); l.innerHTML = ""; if (!st.loaded) return;
+  const m = document.createElement("div"); m.setAttribute("role", "dialog");
+  const it = document.createElement("div"); it.innerHTML = "<span>gemini-4-argon-high</span>";
+  it.onclick = () => { document.querySelector("#model span").textContent = "gemini-4-argon-high"; l.innerHTML = ""; };
+  m.append(it); l.append(m); };
+$("send").onclick = () => { const p = document.createElement("p"); p.textContent = $("ed").innerText;
+  $("list").append(p); $("ed").innerText = ""; st.sent += 1; };
+</script>"""
+
+
+def test_side_panel_opened_by_the_workaround_does_not_block_typing():
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic.adapter import Adapter
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            context = await browser.new_context()
+
+            async def serve(route):
+                await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=SIDEBAR_OVER_INPUT)
+
+            await context.route("https://service.example.com/**", serve)
+            a = Adapter(settings=_settings(ADAPTER_CHAT_MODE="Chat", ADAPTER_INPUT_SELECTOR='[contenteditable="true"]',
+                                           ADAPTER_SEND_SELECTOR='button[aria-label="Send message"]',
+                                           ADAPTER_CAPTCHA_WAIT_SECONDS=5, ADAPTER_MODEL_ASK_HUMAN=False))
+            a.expected_model = "gemini-4-argon-high"
+            page = await a.open_chat(context, "task-1")
+            await a.send_message(page, "You are the ORCHESTRATOR of a software project. Split the task.")
+            state = await page.evaluate("({...window.st, side: document.getElementById('side').style.display})")
+            await browser.close()
+            return state
+
+    state = asyncio.run(go())
+    assert state["sent"] == 1 and state["side"] == "none"  # the panel was closed again, the message left
