@@ -224,21 +224,33 @@ _REPLY_FALLBACK_JS = r"""
 _COPY_BUTTONS_JS = r"""
 (arg) => {
   arg = arg || {};
-  const attrs = (b) => ['aria-label', 'title', 'data-testid', 'data-tooltip', 'data-tooltip-content', 'name', 'id']
-    .map((a) => b.getAttribute(a) || '').join(' ');
+  const HINT_ATTRS = ['aria-label', 'title', 'data-testid', 'data-tooltip', 'data-tooltip-content', 'mattooltip',
+                      'data-test-id', 'name', 'id', 'fonticon', 'data-mat-icon-name', 'data-icon'];
+  const ICONS = 'svg, use, i, mat-icon, [class*="icon"], [class*="material-symbols"], [class*="google-symbols"]';
+  const iconName = (ic) => {
+    const use = ic.tagName.toLowerCase() === 'use' ? ic : null;
+    const parts = [ic.getAttribute('class'), ic.getAttribute('data-icon'), ic.getAttribute('fonticon'),
+                   ic.getAttribute('data-mat-icon-name'), use && (use.getAttribute('href') || use.getAttribute('xlink:href'))];
+    // ligature icon fonts: the element text IS the icon name (e.g. «content_copy»), not page text
+    if (/^(i|mat-icon|span)$/i.test(ic.tagName) && ic.children.length === 0) {
+      const t = (ic.textContent || '').trim();
+      if (/^[a-z_]{3,30}$/.test(t)) parts.push(t);
+    }
+    return parts.filter(Boolean).join(' ');
+  };
+  const hint = (b) => {
+    const own = HINT_ATTRS.map((a) => b.getAttribute(a) || '').join(' ');
+    const inner = [...b.querySelectorAll('[aria-label], [title]')].slice(0, 4)
+      .map((e) => (e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('title') || '')).join(' ');
+    const icons = [...b.querySelectorAll(ICONS)].slice(0, 6).map(iconName).join(' ');
+    return { labels: own + ' ' + inner, icons };
+  };
   const isCopy = (b) => {
     if (arg.sel) { try { return b.matches(arg.sel); } catch (e) { return false; } }
-    const a = attrs(b);
-    if (/code|link|url|share|email|address/i.test(a)) return false;
-    if (/copy|копир/i.test(a)) return true;
-    if (a.trim()) return false;
-    for (const svg of b.querySelectorAll('svg, i, span[class*="icon"]')) {
-      const use = svg.querySelector('use');
-      const c = [svg.getAttribute('class'), svg.getAttribute('data-icon'), svg.getAttribute('data-testid'),
-                 use && (use.getAttribute('href') || use.getAttribute('xlink:href'))].join(' ');
-      if (/copy|clipboard/i.test(c)) return true;
-    }
-    return false;
+    const h = hint(b);
+    if (/code|link|url|share|email|address/i.test(h.labels)) return false;
+    if (/copy|копир/i.test(h.labels)) return true;
+    return /copy|clipboard/i.test(h.icons) && !/code/i.test(h.icons);
   };
   const inCode = (b) => {
     if (b.closest('pre, code')) return true;
@@ -253,8 +265,24 @@ _COPY_BUTTONS_JS = r"""
     }
     return false;
   };
-  const all = [...document.querySelectorAll('button, [role="button"]')]
-    .filter((b) => !b.closest('#aidd-clip-pad') && isCopy(b) && !inCode(b));
+  // clickable things: buttons, plus whatever holds a copy icon / label (a div with a click handler)
+  const pool = new Set(document.querySelectorAll('button, [role="button"]'));
+  const clickableOf = (e) => {
+    const b = e.closest('button, [role="button"], [tabindex]');
+    if (b) return b;
+    let c = e.parentElement;
+    for (let k = 0; c && k < 3; k++, c = c.parentElement) if (getComputedStyle(c).cursor === 'pointer') return c;
+    return null;
+  };
+  for (const ic of document.querySelectorAll(ICONS)) {
+    if (/copy|clipboard/i.test(iconName(ic))) { const c = clickableOf(ic); if (c) pool.add(c); }
+  }
+  for (const e of document.querySelectorAll('[aria-label], [title], [mattooltip], [data-tooltip]')) {
+    if (/copy|копир/i.test(HINT_ATTRS.map((a) => e.getAttribute(a) || '').join(' '))) pool.add(clickableOf(e) || e);
+  }
+  const all = [...pool].filter((b) => b && !b.closest('#aidd-clip-pad') && isCopy(b) && !inCode(b))
+    .filter((b, i, arr) => !arr.some((o) => o !== b && b.contains(o)))  // the innermost clickable one
+    .sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
   if (arg.mark) all.forEach((b) => b.setAttribute('data-aidd-old-copy', '1'));
   const fresh = all.filter((b) => !b.hasAttribute('data-aidd-old-copy'));
   document.querySelectorAll('[data-aidd-copy-target], [data-aidd-copy-host]').forEach((e) => {
@@ -270,6 +298,28 @@ _COPY_BUTTONS_JS = r"""
     if (host) host.setAttribute('data-aidd-copy-host', '1');
   }
   return { total: all.length, fresh: fresh.length, visible };
+}
+"""
+
+# Diagnostics when no copy button is found: the last icon-only buttons of the page, as
+# STRUCTURE only - attribute names, icon class tokens (digits -> 9), icon font names, and
+# whether a label exists. Never label values or page text.
+_COPY_DIAG_JS = r"""
+() => {
+  const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const tokens = (v) => (v || '').split(/\s+/).map((t) => t.replace(/\d/g, '9'))
+    .filter((t) => /^[a-z][a-z9_-]{1,30}$/.test(t)).slice(0, 6);
+  const buttons = [...document.querySelectorAll('button, [role="button"]')]
+    .filter((b) => vis(b) && !(b.innerText || '').trim()).slice(-14);
+  return buttons.map((b) => {
+    const ic = b.querySelector('svg, i, mat-icon, [class*="icon"], [class*="symbols"]');
+    let font = '';
+    if (ic && ic.children.length === 0) { const t = (ic.textContent || '').trim(); if (/^[a-z_]{3,30}$/.test(t)) font = t; }
+    return { tag: b.tagName.toLowerCase(), attrs: b.getAttributeNames().filter((n) => !n.startsWith('data-aidd')).slice(0, 10),
+             label: !!(b.getAttribute('aria-label') || b.getAttribute('title')),
+             icon: ic ? [ic.tagName.toLowerCase(), ...tokens(ic.getAttribute('class'))] : [], font,
+             paths: ic ? ic.querySelectorAll('path, rect, circle').length : 0 };
+  });
 }
 """
 
@@ -958,6 +1008,20 @@ class Adapter:
             return False
         return text not in self._copied.get(page, ())
 
+    @staticmethod
+    def _is_new_reply(count: int, text: str, before_count: int, before_text: str, sent: str) -> bool:
+        """A new reply: new text that is not our own message. More messages than before is
+        not required: on some pages the message selector always matches exactly one
+        element (the latest answer) and only its text changes."""
+        if not text or text == before_text or _is_echo(text, sent):
+            return False
+        if count > before_count:
+            return True
+        if count < 1 or (before_text and _alnum(text) == _alnum(before_text)):
+            return False
+        head = _alnum(sent)[:200]
+        return not (len(head) >= 40 and head in _alnum(text))  # the whole chat, our message inside
+
     def _take_copy(self, page, text: str, seconds: float) -> str:
         logger.info("Reply read by the copy button (%d chars, %.0fs)", len(text), seconds)
         try:
@@ -1021,11 +1085,20 @@ class Adapter:
         if _MONOTONIC() - start > 1 or _RATE["level"]:
             _RATE["level"] = max(0, _RATE["level"] - 1)  # it passed: ease the next wait
 
+    async def _captcha_guard(self, page) -> float:
+        """A captcha on the page: wait for the human (never navigate away from it, never
+        reload it). Returns the seconds paused (0: no captcha)."""
+        if not hasattr(page, "evaluate") or not await self._captcha_visible(page):
+            return 0.0
+        return await self._pause(page, "captcha", lambda p: self._captcha_visible(p, True))
+
     async def _goto(self, page, url: str) -> None:
+        await self._captcha_guard(page)  # a human may be solving it right now
         await self._pace()
         await page.goto(url, wait_until="domcontentloaded",
                         timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS))
         await self._rate_limit_guard(page)
+        await self._captcha_guard(page)
 
     async def _reuse_tab(self, context):
         """The account's chat tab from an earlier chat, if it is free: a new chat there is
@@ -1108,6 +1181,8 @@ class Adapter:
         deadline = _MONOTONIC() + float(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS)
         input_sel = self._selectors["ready"] or self._selectors["input"]
         while True:
+            if await self._captcha_guard(page):
+                deadline = _MONOTONIC() + float(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS)
             if await self._is_login_required(page):
                 return True
             if input_sel and await self._first_visible(page, input_sel) is not None:
@@ -1400,6 +1475,7 @@ class Adapter:
         if not model or not getattr(self.settings, "ADAPTER_MODEL_CHECK", True):
             return
         sel = self._model_selector(model)
+        await self._captcha_guard(page)
         if await self._model_is(page, model, 5):
             return
         if await self._auto_pick_model(page, model):
@@ -1439,6 +1515,8 @@ class Adapter:
             return
         if await self._is_login_required(page):
             raise NeedsHumanError("Service requires login: the account session has expired (log in, then start again)")
+        if await self._captcha_guard(page) and await self._model_is(page, model, 3):
+            return
         if getattr(self.settings, "ADAPTER_MODEL_ASK_HUMAN", True) and self.on_attention is not None:
             # every automatic way failed: ask the human (banner «нужна помощь») to pick it in this
             # very tab; the tab is reused afterwards, so it is needed once per browser session
@@ -1637,7 +1715,7 @@ class Adapter:
         await self._attention(kind, True)
         try:
             clear = 0
-            while clear < 2:  # the page must look clear twice in a row, fully loaded
+            while clear < 3:  # the page must look clear 3 times in a row (~6 s), fully loaded
                 if limit and _MONOTONIC() - start > limit:
                     raise NeedsHumanError(_BLOCKED_MESSAGES.get(kind, f"Service is blocked by: {kind}"))
                 if self.should_continue is not None and not await self.should_continue():
@@ -1650,7 +1728,7 @@ class Adapter:
                     except Exception:
                         blocked = True
                     clear = 0 if blocked else clear + 1
-                if clear < 2:
+                if clear < 3:
                     await asyncio.sleep(2.0)
             logger.info("Resumed: %s resolved after %.0fs", kind, _MONOTONIC() - start)
             return _MONOTONIC() - start
@@ -1746,6 +1824,8 @@ class Adapter:
         if path in ("", "/"):
             logger.info("Chat looks stuck, but it has no own address yet: not refreshing")
             return False
+        if await self._captcha_guard(page):
+            return True  # a human solved a captcha: look again before reloading anything
         logger.info("Chat looks stuck (no new text for a while): refreshing the page")
         try:
             await self._pace()
@@ -2030,6 +2110,7 @@ class Adapter:
         # the «copy» button under a finished reply: the whole answer, independent of selectors
         copy_on = self._copy_on(page)
         copy_candidate, copy_since, last_copy_try, copy_fails, echo_fresh = "", 0.0, 0.0, 0, -1
+        diag_logged = False
 
         def paused(seconds: float) -> None:
             nonlocal hard_deadline, last_progress
@@ -2050,7 +2131,7 @@ class Adapter:
                 continue
             if await self._reloaded(page):
                 count, last = await self._message_count(page), await self._last_message_text(page)
-                if count > before_count and last and last != before_text and not _is_echo(last, sent):
+                if self._is_new_reply(count, last, before_count, before_text, sent):
                     await self._mark(page)  # the reply is there after the reload: keep waiting for it
                 elif resends < MAX_RESENDS and sent:
                     resends += 1
@@ -2071,7 +2152,8 @@ class Adapter:
                 last_pulse = now
                 try:
                     await self.on_progress({"waiting": round(now - start), "unchanged": round(now - last_change),
-                                            "reply_len": max(len(after_text or "") if (after_count > before_count)
+                                            "reply_len": max(len(after_text or "") if self._is_new_reply(
+                                                after_count, after_text, before_count, before_text, sent)
                                                              else 0, len(copy_candidate)),
                                             "state": state})
                 except Exception:
@@ -2079,6 +2161,15 @@ class Adapter:
             if now - last_report >= 60:  # numbers only, never the text
                 last_report = now
                 buttons = await self._copy_buttons(page) if copy_on else {}
+                if copy_on and not buttons.get("total") and not diag_logged and now - start >= 60:
+                    diag_logged = True
+                    try:
+                        import json as _json
+
+                        logger.info("No copy button found; last icon buttons (structure only): %s",
+                                    _json.dumps(await page.evaluate(_COPY_DIAG_JS), ensure_ascii=False)[:3000])
+                    except Exception:
+                        pass
                 logger.info(
                     "Waiting for the reply %.0fs: state=%s messages=%d (before %d) last_len=%d new=%s echo=%s "
                     "unchanged=%.0fs copy_buttons=%s new_copy=%s copy_len=%d copy_fails=%d", now - start, state,
@@ -2119,10 +2210,7 @@ class Adapter:
 
             fresh = bool(
                 state != "generating"
-                and after_count > before_count
-                and after_text
-                and after_text != before_text
-                and not _is_echo(after_text, sent)
+                and self._is_new_reply(after_count, after_text, before_count, before_text, sent)
             )
             if state == "generating":
                 candidate = ""  # still working (agents work in several steps)

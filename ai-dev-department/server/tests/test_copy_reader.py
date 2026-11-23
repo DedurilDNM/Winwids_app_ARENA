@@ -192,3 +192,49 @@ def test_no_copy_button_falls_back_to_the_page_reader():
 def test_copy_reader_can_be_switched_off():
     with pytest.raises(TimeoutError):
         _run(_page(), [PROMPT], timeout=6, ADAPTER_COPY_READER=False, ADAPTER_MAX_REPLY_SECONDS=6)
+
+
+def _latest_only_page(copy_as_div: bool = False) -> str:
+    """Like the real site: the message selector matches ONE element (the latest answer)
+    whose text is replaced - the number of matches never grows."""
+    copy_btn = ('<div class="act" style="cursor:pointer"><mat-icon class="mat-icon">content_copy</mat-icon></div>'
+                if copy_as_div else "")
+    return """<!doctype html><meta charset="utf-8">
+<div id="chat"><div class="latest"><p>previous answer from an older chat</p></div></div>
+<textarea id="box"></textarea><button id="send" aria-label="Send">Send</button>
+<script>
+document.getElementById('send').onclick = () => {
+  const box = document.getElementById('box'); const text = box.value; box.value = '';
+  const u = document.createElement('div'); u.className = 'user'; u.textContent = text;
+  const old = document.querySelector('.latest'); old.classList.remove('latest'); old.classList.add('done');
+  old.after(u);
+  const r = document.createElement('div'); r.className = 'latest';
+  setTimeout(() => { u.after(r); r.innerHTML = '<p>STATUS: DO</p>'; }, 400);
+  setTimeout(() => { r.innerHTML = '<p>FILE: a.txt</p><p>STATUS: DONE</p>""" + copy_btn.replace("'", "\\'") + """';
+    const b = r.querySelector('.act'); if (b) b.onclick = () => navigator.clipboard.writeText('FILE: a.txt\\n\\nSTATUS: DONE (copied)').catch(() => {}); }, 1500);
+};
+</script>"""
+
+
+def test_reply_is_taken_when_the_message_selector_always_matches_one_element():
+    [reply] = _run(_latest_only_page(), [PROMPT], ADAPTER_MESSAGE_SELECTOR=".latest", ADAPTER_SETTLE_SECONDS=2.0)
+    assert reply.startswith("FILE: a.txt") and "STATUS: DONE" in reply
+
+
+def test_copy_button_that_is_a_div_with_an_icon_font():
+    [reply] = _run(_latest_only_page(copy_as_div=True), [PROMPT], ADAPTER_MESSAGE_SELECTOR=".latest",
+                   ADAPTER_SETTLE_SECONDS=2.0)
+    assert reply == "FILE: a.txt\n\nSTATUS: DONE (copied)"
+
+
+def test_new_reply_rules():
+    from app.adapters.generic.adapter import Adapter
+
+    new = Adapter._is_new_reply
+    sent = "You are the Coder. Write the file a.txt with hello in it, then report STATUS."
+    assert new(2, "answer", 1, "old", sent)
+    assert new(1, "answer", 1, "old", sent)  # same count, new text
+    assert not new(1, "old", 1, "old", sent)
+    assert not new(1, sent, 1, "old", sent)  # our own message
+    assert not new(1, "chat: " + sent + " answer", 1, "old", sent)  # the whole chat with our message
+    assert not new(0, "answer", 0, "", sent)

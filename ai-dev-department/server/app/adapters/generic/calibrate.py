@@ -270,14 +270,16 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
         sigs: list[str] = []
         last_sigs, sigs_since = None, time.monotonic()
         last_report = sent_at
-        while time.monotonic() - sent_at < timeout:
+        paused_total = 0.0
+        while time.monotonic() - sent_at - paused_total < timeout:
             if time.monotonic() - last_report >= 30:  # numbers only
                 last_report = time.monotonic()
                 logger.info("Calibration waiting %.0fs: answer seen=%s, text unchanged %.0fs, controls unchanged %.0fs",
                             last_report - sent_at, reply_at is not None,
                             (last_report - stable_since) if stable_since else 0, last_report - sigs_since)
             if await adapter._captcha_visible(page):
-                await adapter._pause(page, "captcha", lambda p: adapter._captcha_visible(p, True))
+                paused = await adapter._pause(page, "captcha", lambda p: adapter._captcha_visible(p, True))
+                paused_total += paused  # time with a human does not count against the wait
             now = time.monotonic()
             sigs = await page.evaluate(_SIGNATURES_JS)
             for sig in sigs:
