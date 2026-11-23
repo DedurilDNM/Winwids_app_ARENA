@@ -97,8 +97,16 @@ _LOCATE_JS = r"""
   const replies = deepest((t) => t.includes(one) && t.includes(two));
   if (!replies.length) return { reply: false };
   const reply = replies[replies.length - 1];
-  const users = deepest((t) => t.includes(ask));
-  const user = users.length ? users[users.length - 1] : null;
+  // our message: copies with the check id that come BEFORE the reply; the bubble holds the
+  // whole prompt, a chat title (header / sidebar) only its start -> most of the prompt wins
+  const prompt = norm(args.prompt || '');
+  const before = (e) => !!(e.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const cov = (e) => { const t = norm(e.textContent); let n = 0;
+    for (const len of [80, 200, 400, prompt.length]) if (len <= prompt.length && t.includes(prompt.slice(0, len))) n += 1;
+    return n; };
+  const users = deepest((t) => t.includes(ask)).filter(before)
+    .map((e, i) => ({ e, i, c: cov(e) })).sort((a, b) => (b.c - a.c) || (b.i - a.i));
+  const user = users.length ? users[0].e : null;
   const up = (e) => { const a = []; for (let x = e; x; x = x.parentElement) a.push(x); return a; };
   const rpath = up(reply);
   let rootIdx = Math.min(rpath.length - 2, 6);
@@ -178,7 +186,8 @@ _LOCATE_JS = r"""
   }
   const rank = { data: 0, role: 0, id: 1, class: 2 };
   good.sort((a, b) => (b.fenced - a.fenced) || (rank[a.kind] - rank[b.kind]) || (a.depth - b.depth) || (a.matches - b.matches));
-  return { reply: true, user: !!user, skip: skip.slice(0, 5),
+  return { reply: true, user: !!user, user_copies: users.length, user_cov: users.length ? users[0].c : 0,
+           candidates: cands.size, skip: skip.slice(0, 5),
            best: good.slice(0, 3).map((g) => ({ sel: g.sel, fenced: g.fenced, kind: g.kind })) };
 }
 """.replace("__NORM__", _NORM_JS).replace("__MESSAGE_TEXT__", _MESSAGE_TEXT_JS.strip())
@@ -193,6 +202,14 @@ def _now_iso() -> str:
 def profile_key(settings) -> str:
     """Profiles are per chat modality (Text / Code ...): pages differ between them."""
     return (getattr(settings, "ADAPTER_MODALITY", "") or "").strip() or "default"
+
+
+def _shape(text: str, limit: int = 60) -> str:
+    """Letters -> a/A, digits -> 9: the form of a text without the text."""
+    import re
+
+    t = re.sub(r"[a-zа-яё]", "a", re.sub(r"[A-ZА-ЯЁ]", "A", re.sub(r"\d", "9", (text or "")[:limit])))
+    return t.replace("\n", "/")
 
 
 def _norm(text: str) -> str:
@@ -278,7 +295,7 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
         final = set(await page.evaluate(_SIGNATURES_JS))
         busy = _pick_busy(timeline, before, final, sent_at, reply_at)
         profile["busy"] = busy or ""
-        located = await page.evaluate(_LOCATE_JS, {"one": one, "two": two, "ask": ask})
+        located = await page.evaluate(_LOCATE_JS, {"one": one, "two": two, "ask": ask, "prompt": prompt})
         best = (located or {}).get("best") or []
         if best:
             profile["reader"], profile["message"] = "selector", best[0]["sel"]
@@ -305,6 +322,17 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
         profile["ok"] = ok_markers
         if not ok_markers:
             profile["reason"] = "the answer is on the page but could not be read back"
+            diag = {}
+            try:
+                diag = await page.evaluate(_REPLY_FALLBACK_JS, {"head": prompt[:400], "skip": profile.get("skip") or []})
+            except Exception:
+                pass
+            logger.info(
+                "Calibration diagnostics (no text): own message copies=%s coverage=%s, selector candidates=%s "
+                "good=%s, anchor: %s anchors=%s cov=%s read_len=%s, read shape=%s",
+                located.get("user_copies"), located.get("user_cov"), located.get("candidates"), len(best),
+                (diag or {}).get("why", "found"), (diag or {}).get("anchors"), (diag or {}).get("cov"),
+                len(text or ""), _shape(text))
         return profile
     except Exception as exc:  # a page problem: report, never crash the caller
         logger.warning("Calibration failed: %s", type(exc).__name__, exc_info=True)

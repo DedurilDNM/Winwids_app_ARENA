@@ -139,33 +139,55 @@ _REPLY_FALLBACK_JS = r"""
 (args) => {
   const msgText = __MESSAGE_TEXT__;
   if (args.mark) { document.querySelectorAll('body *').forEach((e) => e.setAttribute('data-aidd-seen', '')); return null; }
-  const norm = (t) => (t || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9\u0430-\u044f\u0451]/g, '');
-  const head = norm(args.head).slice(0, 80);
-  if (head.length < 12) return { count: 0, text: '' };
-  const skip = (e) => e.closest('textarea, input, [contenteditable="true"], script, style');
-  const hits = [...document.querySelectorAll('body *')].filter((e) => !skip(e) && norm(e.textContent).includes(head));
+  const norm = (t) => (t || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9а-яё]/g, '');
+  const full = norm(args.head);
+  const head = full.slice(0, 80);
+  if (head.length < 12) return { count: 0, text: '', why: 'short' };
+  const skipEl = (e) => e.closest('textarea, input, [contenteditable="true"], script, style');
   const shown = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden'; };
-  // a site may keep an older chat (with the same prompt) hidden in the page: only a VISIBLE
-  // copy counts, and one that appeared after we sent (not marked «seen») wins
+  const hits = [...document.querySelectorAll('body *')].filter((e) => !skipEl(e) && norm(e.textContent).includes(head));
+  // copies of our message: a site may keep an older chat hidden, and a chat TITLE (header,
+  // sidebar) may hold the first words too. Rank: visible, then how much of the message the
+  // copy holds (the message bubble holds it all, a title only its start), then «appeared
+  // after we sent», then the latest.
   const deep = hits.filter((e) => ![...e.children].some((c) => norm(c.textContent).includes(head)) && shown(e));
-  if (!deep.length) return { count: 0, text: '' };
-  const fresh = deep.filter((e) => !e.hasAttribute('data-aidd-seen'));
-  const bubble = (fresh.length ? fresh : deep)[(fresh.length ? fresh : deep).length - 1];
-  const top = bubble.getBoundingClientRect().top;
-  let row = bubble;
-  for (let up = 0; up < 14 && row.parentElement && row.parentElement !== document.body; up++) {
-    const parent = row.parentElement;
-    const sibs = [...parent.children];
-    const after = sibs.slice(sibs.indexOf(row) + 1).filter((x) => !x.hasAttribute('data-aidd-seen')
-      && !x.querySelector('textarea, input, [contenteditable="true"]') && !norm(x.textContent).includes(head)
-      && (x.innerText || '').trim().length > 0 && shown(x) && x.getBoundingClientRect().top >= top);
-    if (after.length) {
-      return { count: after.length, text: after.map((x) => msgText(x, args.skip || [])).filter(Boolean).join('\n\n').trim() };
+  if (!deep.length) return { count: 0, text: '', why: 'no-anchor' };
+  const coverage = (e) => { const t = norm(e.textContent); let n = 0;
+    for (const len of [150, 300, 600, full.length]) if (len <= full.length && t.includes(full.slice(0, len))) n += 1;
+    return n; };
+  const ranked = deep.map((e, i) => ({ e, i, cov: coverage(e), fresh: !e.hasAttribute('data-aidd-seen') }))
+    .sort((a, b) => (b.cov - a.cov) || (b.fresh - a.fresh) || (b.i - a.i));
+  const readAfter = (bubble, useSeen) => {
+    const top = bubble.getBoundingClientRect().top;
+    let row = bubble;
+    for (let up = 0; up < 14 && row.parentElement && row.parentElement !== document.body; up++) {
+      const parent = row.parentElement;
+      const rr = row.getBoundingClientRect();
+      const sibs = [...parent.children];
+      const after = sibs.slice(sibs.indexOf(row) + 1).filter((x) => {
+        if (useSeen && x.hasAttribute('data-aidd-seen')) return false;
+        if (x.querySelector('textarea, input, [contenteditable="true"]') || norm(x.textContent).includes(head)) return false;
+        if (!(x.innerText || '').trim().length || !shown(x)) return false;
+        const xr = x.getBoundingClientRect();
+        return xr.top >= top && xr.left < rr.right && xr.right > rr.left;  // below our message, same column
+      });
+      if (after.length) {
+        return { count: after.length, text: after.map((x) => msgText(x, args.skip || [])).filter(Boolean).join('\n\n').trim() };
+      }
+      row = parent;
     }
-    row = parent;
+    return null;
+  };
+  // first only blocks that appeared after sending; a site that REUSES old elements for the new
+  // reply gets a second pass without that filter (still strictly below our message)
+  for (const useSeen of [true, false]) {
+    for (const c of ranked.slice(0, 4)) {
+      const found = readAfter(c.e, useSeen);
+      if (found && found.text) return { ...found, anchors: deep.length, cov: c.cov, seenFilter: useSeen };
+    }
   }
-  return { count: 0, text: '' };
+  return { count: 0, text: '', why: 'nothing-after', anchors: deep.length, cov: ranked[0].cov };
 }
 """.replace("__MESSAGE_TEXT__", _MESSAGE_TEXT_JS.strip())
 
@@ -301,13 +323,13 @@ _NAV_JS = r"""
   if (args.selector) {
     el = [...document.querySelectorAll(args.selector)].find(vis) || null;
   } else if (args.kind === 'history') {
-    el = [...document.querySelectorAll('a[href]')].filter(vis).find((a) => {
+    el = [...document.querySelectorAll('a[href]')].filter(vis).filter((a) => {
       try {
         const u = new URL(a.href, location.href);
         return u.origin === location.origin && u.pathname !== location.pathname
           && /[0-9a-f]{8}-[0-9a-f]{4}|[0-9a-z_-]{16,}/i.test(u.pathname.split('/').pop() || '');
       } catch (e) { return false; }
-    }) || null;
+    })[args.index || 0] || null;
   } else if (args.kind === 'sidebar') {
     const btns = [...document.querySelectorAll('button, [role="button"]')].filter(vis);
     el = btns.find((b) => /sidebar|side bar|history|menu|panel|navigation/i.test(meta(b)))
@@ -778,13 +800,13 @@ class Adapter:
                 pass
         return steps["shown"]
 
-    async def _nav(self, page, kind: str) -> bool:
+    async def _nav(self, page, kind: str, index: int = 0) -> bool:
         """Click a navigation control found by _NAV_JS (or by an ADAPTER_*_SELECTOR)."""
         setting = {"sidebar": "ADAPTER_SIDEBAR_SELECTOR", "history": "ADAPTER_HISTORY_LINK_SELECTOR",
                    "new": "ADAPTER_NEW_CHAT_SELECTOR"}[kind]
         selector = (getattr(self.settings, setting, "") or "").strip()
         try:
-            if not await page.evaluate(_NAV_JS, {"kind": kind, "selector": selector}):
+            if not await page.evaluate(_NAV_JS, {"kind": kind, "selector": selector, "index": index}):
                 return False
             await page.click("[data-aidd-nav]", timeout=5_000)
             await asyncio.sleep(2.0)
@@ -792,17 +814,24 @@ class Adapter:
         except Exception:
             return False
 
-    async def _new_chat_in_app(self, page) -> bool:
+    async def _new_chat_in_app(self, page, index: int = 0) -> bool:
         """Some services fill the model list only after in-app navigation: open the
-        most recent chat (opening the sidebar if needed), then a new chat - without
-        reloading the page."""
-        if not await self._nav(page, "history"):
-            if await self._nav(page, "sidebar"):
-                await self._nav(page, "history")
+        index-th recent chat (opening the sidebar if needed), switch IT to our mode /
+        modality (the list follows the chat that was open: after an Agent-mode chat the
+        Text list stays empty), then a new chat - without reloading the page."""
+        history = await self._nav(page, "history", index)
+        if not history and await self._nav(page, "sidebar"):
+            history = await self._nav(page, "history", index)
+        if history:
+            await self._wait_ready(page)
+            try:
+                await self._setup_chat(page)  # Chat + Text in the old chat as well
+            except Exception:
+                logger.debug("setup in the history chat failed", exc_info=True)
         opened = await self._nav(page, "new")
         if not opened and await self._nav(page, "sidebar"):  # the sidebar may have closed again
             opened = await self._nav(page, "new")
-        logger.info("Model list workaround: new chat opened in the app: %s", opened)
+        logger.info("Model list workaround #%d: history chat opened=%s, new chat opened=%s", index + 1, history, opened)
         if opened:
             await self._wait_ready(page)
         return opened
@@ -820,13 +849,16 @@ class Adapter:
         if await self._auto_pick_model(page, model):
             logger.info("Model selected: %s", model)
             return
-        if getattr(self.settings, "ADAPTER_MODEL_AUTO", True) and await self._new_chat_in_app(page):
+        tries = int(getattr(self.settings, "ADAPTER_MODEL_HISTORY_TRIES", 4) or 0)
+        for index in range(tries if getattr(self.settings, "ADAPTER_MODEL_AUTO", True) else 0):
+            if not await self._new_chat_in_app(page, index):
+                break  # no history / no «new chat»: nothing else to try
             try:
                 await self._setup_chat(page)
             except Exception:
                 logger.warning("Chat setup failed", exc_info=True)
             if await self._model_is(page, model, 3) or await self._auto_pick_model(page, model):
-                logger.info("Model selected after the in-app new chat: %s", model)
+                logger.info("Model selected after the in-app new chat (history chat #%d): %s", index + 1, model)
                 return
         clicks = (getattr(self.settings, "ADAPTER_MODEL_CLICKS", "") or "").replace("{model}", model.replace('"', ""))
         for selector in [part.strip() for part in clicks.split("||") if part.strip()]:

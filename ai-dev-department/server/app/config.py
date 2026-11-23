@@ -191,6 +191,9 @@ class Settings(BaseSettings):
     ADAPTER_MODEL_AUTO: bool = True
     # Multi-select model lists: the option that clears the selection first.
     ADAPTER_MODEL_CLEAR_LABEL: str = "Deselect all"
+    # Empty model list on a fresh page: try this many recent chats (each switched to our
+    # mode/modality first), then a new chat, until the model can be picked.
+    ADAPTER_MODEL_HISTORY_TRIES: int = 4
     # Chat toolbar setup by visible labels, before every new chat:
     # ADAPTER_CHAT_MODE - the mode to select (e.g. Chat); ADAPTER_CHAT_MODES - all
     # labels the mode button can show; ADAPTER_MODALITY - the option of the menu

@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(not (os.path.exists(CHROME) or shutil.which("chr
 SERVICE = "https://service.example.com/"
 
 
-def _page(variant: str, busy: bool = True, hidden_old: bool = False) -> str:
+def _page(variant: str, busy: bool = True, hidden_old: bool = False, title: bool = False) -> str:
     user_attrs = {"data": 'data-author="user"', "class": 'class="row"', "plain": ""}[variant]
     bot_attrs = {"data": 'data-author="assistant"', "class": 'class="row"', "plain": ""}[variant]
     body_cls = {"data": "", "class": ' class="answer"', "plain": ""}[variant]
@@ -28,7 +28,7 @@ def _page(variant: str, busy: bool = True, hidden_old: bool = False) -> str:
     return """<!doctype html><meta charset="utf-8">
 <main><div id="list"></div></main>""" + old + """
 <textarea id="box"></textarea><button id="send">Send</button>
-<footer><p>Answers may contain mistakes.</p></footer>
+<footer><p>Answers may contain mistakes.</p></footer>""" + ("<script>window.TITLE = true;</script>" if title else "") + """
 <script>
 const list = document.getElementById("list");
 const BUSY = """ + ("true" if busy else "false") + """;
@@ -36,6 +36,13 @@ document.getElementById("send").onclick = () => {
   const text = document.getElementById("box").value; document.getElementById("box").value = "";
   const u = document.createElement("div"); u.innerHTML = '<div USER><div><p></p></div></div>'.replace("USER", '""" + user_attrs.replace("'", "\\'") + """');
   u.querySelector("p").textContent = text; list.append(u.firstChild);
+  if (window.TITLE && !document.getElementById("title")) {
+    // the chat page header is created when the chat opens: a NEW element after the messages
+    // whose text is our whole first message (cut by CSS only)
+    const t = document.createElement("header"); t.id = "title"; t.textContent = text;
+    t.style.cssText = "position:fixed;top:0;left:0;width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#fff";
+    document.body.append(t);
+  }
   let stop = null;
   if (BUSY) { stop = document.createElement("button"); stop.setAttribute("aria-label", "Stop generating");
               stop.textContent = "■"; document.body.append(stop); }
@@ -222,3 +229,75 @@ def test_old_calibration_is_not_fresh():
     assert not _calibration_fresh({"ok": True, "checked_at": "2000-01-01T00:00:00"}, s)
     assert not _calibration_fresh({"ok": False, "checked_at": "2099-01-01T00:00:00"}, s)
     assert not _calibration_fresh(None, s)
+
+
+def test_chat_title_holding_our_whole_message_is_not_taken_for_it():
+    """The header shows the chat title (= our first message, cut by CSS but complete in
+    the DOM) and comes AFTER the messages in the page: the bubble must still win."""
+    profile, reply, _ = _calibrate(_page("plain", busy=False, title=True))
+    assert profile["ok"], profile
+    assert profile["reader"] == "anchor" and profile["checks"]["markers"]
+    assert reply.startswith("FILE: a.txt") and "SUMMARY: made a.txt" in reply
+
+
+HISTORY_SPA = """<!doctype html><meta charset="utf-8">
+<button id="toggle" aria-label="Open sidebar" style="position:fixed;left:4px;top:4px">=</button>
+<nav id="side" style="display:none;margin-top:40px">
+  <a id="newchat" href="/">New chat</a>
+  <a class="h" data-mode="Agent" href="/c/0aa1b2c3-d4e5-4f60-8a9b-000000000001">Older agent chat</a>
+  <a class="h" data-mode="Text" href="/c/0aa1b2c3-d4e5-4f60-8a9b-000000000002">Older text chat</a>
+</nav>
+<textarea id="box"></textarea><button id="send">Send</button>
+<div class="bar"><button id="mode" aria-haspopup="menu">Chat</button>
+  <button id="modality" aria-haspopup="menu"><svg width="12" height="12"></svg></button>
+  <div id="model" style="cursor:pointer;display:inline-block"><span>Model</span></div></div>
+<div id="layer"></div>
+<script>
+// like the real service: the model list is filled only after a NEW chat is opened in the
+// app from a chat in text mode; in an agent-mode chat the modality cannot be changed
+const st = { chatMode: "Text", loaded: false, model: "", visits: [] }; window.st = st;
+const layer = document.getElementById("layer");
+const go = (e, path) => { e.preventDefault(); history.pushState({}, "", path); };
+document.getElementById("toggle").onclick = () => { document.getElementById("side").style.display = ""; };
+for (const a of document.querySelectorAll("a.h")) a.onclick = (e) => { go(e, a.getAttribute("href"));
+  st.chatMode = a.dataset.mode; st.visits.push(a.dataset.mode);
+  document.getElementById("modality").style.display = a.dataset.mode === "Agent" ? "none" : ""; };
+document.getElementById("newchat").onclick = (e) => { go(e, "/"); st.loaded = st.chatMode === "Text";
+  document.getElementById("modality").style.display = ""; };
+const menu = (items, pick, search) => { layer.innerHTML = ""; const m = document.createElement("div");
+  m.setAttribute("role", "dialog");
+  if (search) { const s = document.createElement("input"); s.placeholder = "Search models"; m.append(s); }
+  for (const t of items) { const it = document.createElement("div"); it.innerHTML = "<span>" + t + "</span>";
+    it.onclick = () => { pick(t); layer.innerHTML = ""; }; m.append(it); }
+  layer.append(m); };
+document.getElementById("mode").onclick = () => menu(["Chat", "Agent"], (t) => { document.getElementById("mode").textContent = t; });
+document.getElementById("modality").onclick = () => menu(["Text", "Code"], (t) => { st.chatMode = t; });
+document.getElementById("model").onclick = () => menu(st.loaded ? ["gemini-4-argon-high", "claude-sonnet-5-5-high"] : [],
+  (t) => { st.model = t; document.querySelector("#model span").textContent = t; }, st.loaded);
+</script>"""
+
+
+def test_empty_model_list_tries_older_chats_until_the_models_appear():
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic.adapter import Adapter
+
+    async def go():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            context = await browser.new_context()
+
+            async def serve(route):
+                await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=HISTORY_SPA)
+
+            await context.route("https://service.example.com/**", serve)
+            a = Adapter(settings=_settings(ADAPTER_CHAT_MODE="Chat", ADAPTER_MODALITY="Text"))
+            a.expected_model = "claude-sonnet-5-5-high"
+            page = await a.open_chat(context, "task-1")
+            state = await page.evaluate("({...window.st})")
+            await browser.close()
+            return state
+
+    state = asyncio.run(go())
+    assert state["model"] == "claude-sonnet-5-5-high" and state["loaded"]
+    assert state["visits"] == ["Agent", "Text"]  # the agent-mode chat did not help, the text one did
