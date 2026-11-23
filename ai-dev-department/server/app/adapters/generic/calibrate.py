@@ -328,8 +328,16 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
         fenced = any(i % 2 == 1 and _norm(two) in _norm(part) for i, part in enumerate(text.split("```")))
         profile["checks"] = {"clean_start": _norm(text).startswith(_norm(one)), "markers": ok_markers, "code_block": fenced, "status_line": "status:done" in _norm(text).replace(" ", "")
                              or "statusdone" in _norm(text), "own_message_found": bool(located.get("user"))}
-        profile["ok"] = ok_markers
-        if not ok_markers:
+        # the «copy» button under the answer: the most reliable reader when the service has one
+        copied = ""
+        if adapter._copy_on(page):
+            await step("checking the copy button")
+            copied = await adapter._copy_reply(page) or ""
+        profile["copy"] = bool(copied) and _norm(one) in _norm(copied) and _norm(two) in _norm(copied)
+        profile["ok"] = ok_markers or profile["copy"]
+        if not ok_markers and profile["copy"]:
+            logger.info("Calibration: the page reader failed but the copy button reads the answer")
+        if not profile["ok"]:
             profile["reason"] = "the answer is on the page but could not be read back"
             diag = {}
             try:
@@ -349,9 +357,9 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
         return profile
     finally:
         profile["seconds"] = round(time.monotonic() - started, 1)
-        logger.info("Calibration: ok=%s reader=%s busy=%s markers=%s seconds=%s", profile.get("ok"),
+        logger.info("Calibration: ok=%s reader=%s busy=%s markers=%s copy=%s seconds=%s", profile.get("ok"),
                     profile.get("reader"), bool(profile.get("busy")), (profile.get("checks") or {}).get("markers"),
-                    profile.get("seconds"))
+                    profile.get("copy"), profile.get("seconds"))
         if page is not None:
             from app.adapters.generic.adapter import release_page
 

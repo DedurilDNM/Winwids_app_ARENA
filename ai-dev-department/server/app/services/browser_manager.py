@@ -28,6 +28,19 @@ except Exception:  # pragma: no cover - import-time guard
     AsyncCamoufox = None  # type: ignore[assignment]
 
 
+def _supports_main_world_eval() -> bool:
+    """Camoufox versions that know the «main_world_eval» launch option (older ones would
+    refuse to start with an unknown option)."""
+    try:
+        import inspect
+
+        from camoufox.utils import launch_options
+
+        return "main_world_eval" in inspect.signature(launch_options).parameters
+    except Exception:
+        return False
+
+
 class BrowserUnavailableError(RuntimeError):
     """Raised when a browser cannot be launched (camoufox missing / launch failed)."""
 
@@ -97,6 +110,13 @@ class BrowserManager:
         handle = self._handles.get(account_id)
         return handle.display if handle else None
 
+    def display_for_context(self, context) -> str | None:
+        """X display of the browser that owns `context` (None: headless / unknown)."""
+        for handle in self._handles.values():
+            if handle.context is context:
+                return None if handle.headless else handle.display
+        return None
+
     def is_running(self, account_id: int) -> bool:
         return account_id in self._handles
 
@@ -143,6 +163,8 @@ class BrowserManager:
                 kwargs["env"] = env
                 kwargs["window"] = (settings.VNC_WIDTH, settings.VNC_HEIGHT)
 
+            if _supports_main_world_eval():
+                kwargs["main_world_eval"] = True  # «mw:» scripts: read what a copy button copied
             camoufox = AsyncCamoufox(**kwargs)
             try:
                 browser = await camoufox.start()

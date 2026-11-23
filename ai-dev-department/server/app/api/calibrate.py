@@ -48,6 +48,7 @@ def public_result(profile: dict | None) -> dict | None:
         "ok": bool(profile.get("ok")),
         "reader": profile.get("reader"),
         "busy_found": bool(profile.get("busy")),
+        "copy": bool(profile.get("copy")),
         "checks": profile.get("checks") or {},
         "reply_seconds": profile.get("reply_seconds"),
         "seconds": profile.get("seconds"),

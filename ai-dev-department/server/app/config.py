@@ -244,6 +244,10 @@ class Settings(BaseSettings):
     # No message matches ADAPTER_MESSAGE_SELECTOR (e.g. another chat mode): read
     # the blocks right after our own sent message as the reply.
     ADAPTER_REPLY_FALLBACK: bool = True
+    # Read a finished reply with its «copy» button (the whole answer, as markdown); the
+    # page reader is the fallback. ADAPTER_COPY_SELECTOR: that button, if the guess fails.
+    ADAPTER_COPY_READER: bool = True
+    ADAPTER_COPY_SELECTOR: str = ""
     # How often the «pulse» of a waiting agent is sent to the app (seconds).
     ADAPTER_PROGRESS_SECONDS: float = 10
     # One server IP for all accounts: at least this long between page loads (all accounts

@@ -27,7 +27,7 @@ apt-get install -y --no-install-recommends \
   python3 python3-venv python3-pip python3-dev \
   git curl ca-certificates \
   redis-server \
-  xvfb x11vnc novnc websockify \
+  xvfb x11vnc novnc websockify xclip \
   fonts-liberation fonts-dejavu-core \
   sqlite3
 

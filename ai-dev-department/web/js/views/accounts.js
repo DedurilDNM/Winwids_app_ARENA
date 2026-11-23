@@ -95,6 +95,7 @@ const STEP_LABELS = {
   "waiting for the answer": "жду ответ",
   "finding the answer on the page": "ищу ответ на странице",
   "checking that the answer is read correctly": "проверяю, что ответ читается",
+  "checking the copy button": "проверяю кнопку «Копировать» под ответом",
   "waiting for a human": "нужна ваша помощь в браузере аккаунта (вход или капча) — см. баннер сверху",
 };
 
@@ -117,6 +118,8 @@ function calibrationDetails(res) {
         : "Ответ читается (по соседству с вашим сообщением)")
       : `Ответ не прочитан${res.reason ? `: ${res.reason}` : ""}`),
     row(checks.code_block, "Блоки кода сохраняются"),
+    row(res.copy, res.copy ? "Кнопка «Копировать» под ответом работает (основной способ чтения)"
+      : "Кнопка «Копировать» не сработала — ответ читается со страницы"),
     row(res.busy_found, res.busy_found ? "Найден индикатор «сервис пишет»"
       : "Индикатор «пишет» не найден — сервер ждёт, пока текст перестанет меняться"),
     res.reply_seconds != null ? h("li", {}, `⏱ ответ начался через ${res.reply_seconds} с`) : null);

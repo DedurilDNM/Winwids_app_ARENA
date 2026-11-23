@@ -27,6 +27,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import secrets
 import time
 import weakref
 from urllib.parse import urlsplit
@@ -215,6 +216,127 @@ _REPLY_FALLBACK_JS = r"""
   return { count: 0, text: '', why: 'nothing-after', anchors: deep.length, cov: ranked[0].cov };
 }
 """.replace("__MESSAGE_TEXT__", _MESSAGE_TEXT_JS.strip())
+
+# The «copy» buttons under whole messages (not the ones of code blocks). Recognised by
+# their attributes / icon only, never by page text. {mark}: mark all present ones as old;
+# {target}: tag the last NEW one (data-aidd-copy-target) and its visible host for hovering.
+# Returns {total, fresh, visible}.
+_COPY_BUTTONS_JS = r"""
+(arg) => {
+  arg = arg || {};
+  const attrs = (b) => ['aria-label', 'title', 'data-testid', 'data-tooltip', 'data-tooltip-content', 'name', 'id']
+    .map((a) => b.getAttribute(a) || '').join(' ');
+  const isCopy = (b) => {
+    if (arg.sel) { try { return b.matches(arg.sel); } catch (e) { return false; } }
+    const a = attrs(b);
+    if (/code|link|url|share|email|address/i.test(a)) return false;
+    if (/copy|копир/i.test(a)) return true;
+    if (a.trim()) return false;
+    for (const svg of b.querySelectorAll('svg, i, span[class*="icon"]')) {
+      const use = svg.querySelector('use');
+      const c = [svg.getAttribute('class'), svg.getAttribute('data-icon'), svg.getAttribute('data-testid'),
+                 use && (use.getAttribute('href') || use.getAttribute('xlink:href'))].join(' ');
+      if (/copy|clipboard/i.test(c)) return true;
+    }
+    return false;
+  };
+  const inCode = (b) => {
+    if (b.closest('pre, code')) return true;
+    let host = b.parentElement;
+    while (host && !host.querySelector('pre')) host = host.parentElement;
+    if (!host) return false;
+    const r = b.getBoundingClientRect();
+    for (const pre of host.querySelectorAll('pre')) {
+      if (b.compareDocumentPosition(pre) & Node.DOCUMENT_POSITION_FOLLOWING) return true;  // a code header
+      const p = pre.getBoundingClientRect();
+      if (r.height > 0 && p.height > 0 && r.top < p.bottom - 1) return true;  // laid over the code
+    }
+    return false;
+  };
+  const all = [...document.querySelectorAll('button, [role="button"]')]
+    .filter((b) => !b.closest('#aidd-clip-pad') && isCopy(b) && !inCode(b));
+  if (arg.mark) all.forEach((b) => b.setAttribute('data-aidd-old-copy', '1'));
+  const fresh = all.filter((b) => !b.hasAttribute('data-aidd-old-copy'));
+  document.querySelectorAll('[data-aidd-copy-target], [data-aidd-copy-host]').forEach((e) => {
+    e.removeAttribute('data-aidd-copy-target'); e.removeAttribute('data-aidd-copy-host'); });
+  let visible = false;
+  if (arg.target && fresh.length) {
+    const b = fresh[fresh.length - 1];
+    b.setAttribute('data-aidd-copy-target', '1');
+    visible = b.getClientRects().length > 0;
+    let host = b.parentElement;
+    for (let i = 0; host && i < 6 && !(host.getClientRects().length && host.getBoundingClientRect().height > 30); i++)
+      host = host.parentElement;
+    if (host) host.setAttribute('data-aidd-copy-host', '1');
+  }
+  return { total: all.length, fresh: fresh.length, visible };
+}
+"""
+
+# Remember what the page puts on the clipboard (navigator.clipboard / a «copy» event).
+# An expression (not a function): it also runs in the page's own world ("mw:" prefix).
+_CLIP_HOOK_JS = r"""(() => {
+  const w = window;
+  w.__aiddClip = null;
+  if (w.__aiddClipHooked) return true;
+  w.__aiddClipHooked = true;
+  try {
+    const C = w.Clipboard && w.Clipboard.prototype;
+    if (C && C.writeText) {
+      const orig = C.writeText;
+      C.writeText = function (t) { try { w.__aiddClip = String(t); } catch (e) {} return orig.apply(this, arguments); };
+    }
+    if (C && C.write) {
+      const orig2 = C.write;
+      C.write = function (items) {
+        try {
+          (async () => {
+            for (const it of items || []) {
+              if (it && it.types && it.types.includes('text/plain')) {
+                const blob = await it.getType('text/plain'); w.__aiddClip = await blob.text(); return;
+              }
+            }
+          })().catch(() => {});
+        } catch (e) {}
+        return orig2.apply(this, arguments);
+      };
+    }
+  } catch (e) {}
+  document.addEventListener('copy', (e) => {
+    try {
+      const d = e.clipboardData && e.clipboardData.getData('text/plain');
+      if (d) { w.__aiddClip = d; return; }
+      const s = String(w.getSelection() || '');
+      if (s) w.__aiddClip = s;
+    } catch (x) {}
+  });
+  return true;
+})()"""
+
+_CLIP_READ_JS = "(() => (typeof window.__aiddClip === 'string' ? window.__aiddClip : null))()"
+
+# Our own off-screen text field to read the clipboard by a real paste (Ctrl+V); its key and
+# clipboard events never reach the page's handlers.
+_CLIP_PAD_JS = r"""
+(arg) => {
+  let pad = document.getElementById('aidd-clip-pad');
+  if (arg.op === 'remove') { if (pad) pad.remove(); return true; }
+  if (!pad) {
+    pad = document.createElement('textarea');
+    pad.id = 'aidd-clip-pad';
+    pad.setAttribute('aria-hidden', 'true');
+    pad.style.cssText = 'position:fixed;left:-9999px;top:0;width:200px;height:50px;opacity:0;';
+    for (const ev of ['keydown', 'keypress', 'keyup', 'paste', 'copy', 'input', 'beforeinput', 'focus', 'blur'])
+      pad.addEventListener(ev, (e) => e.stopPropagation());
+    document.documentElement.appendChild(pad);
+  }
+  if (arg.op === 'read') return pad.value;
+  pad.value = arg.value || '';
+  pad.focus();
+  pad.select();
+  return document.activeElement === pad;
+}
+"""
 
 # An open pop-up list / menu / dialog (not the captcha: that one is handled by a pause).
 _POPUP_OPEN_JS = r"""
@@ -513,6 +635,7 @@ class Adapter:
         # reply: {"waiting": s, "unchanged": s, "reply_len": n, "state": ...} (numbers only)
         self.on_progress = None
         self._fallback_cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+        self._copied: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # page -> replies taken by «copy»
         # Optional: what calibration learned about this account's page (see calibrate.py):
         # {"reader": "selector"|"anchor", "message": css, "busy": css, "input": css}
         self.profile: dict | None = None
@@ -703,6 +826,146 @@ class Adapter:
             await page.evaluate(_REPLY_FALLBACK_JS, {"mark": True})
         except Exception:
             pass
+        await self._copy_buttons(page, mark=True)
+
+    # ------------------------------------------------------- reading by «copy»
+
+    def _copy_on(self, page) -> bool:
+        return bool(getattr(self.settings, "ADAPTER_COPY_READER", True)) and hasattr(page, "locator") \
+            and hasattr(page, "keyboard")
+
+    async def _copy_buttons(self, page, **arg) -> dict:
+        if not self._copy_on(page):
+            return {"total": 0, "fresh": 0, "visible": False}
+        arg["sel"] = getattr(self.settings, "ADAPTER_COPY_SELECTOR", "") or (self.profile or {}).get("copy_sel") or ""
+        try:
+            result = await page.evaluate(_COPY_BUTTONS_JS, arg)
+        except Exception:
+            return {"total": 0, "fresh": 0, "visible": False}
+        return result if isinstance(result, dict) else {"total": 0, "fresh": 0, "visible": False}
+
+    async def _clip_eval(self, page, script: str) -> list:
+        """Run `script` in the script world AND in the page's own world (Camoufox «mw:»):
+        the page's copy code only sees hooks installed in its own world."""
+        out = []
+        for prefix in ("", "mw:"):
+            try:
+                out.append(await page.evaluate(prefix + script))
+            except Exception:
+                out.append(None)
+        return out
+
+    async def _xclip(self, page) -> str | None:
+        """The X clipboard of the browser's own display (headed browsers), via xclip."""
+        import shutil
+
+        if not shutil.which("xclip"):
+            return None
+        try:
+            from app.services.browser_manager import browser_manager
+
+            display = browser_manager.display_for_context(page.context)
+        except Exception:
+            display = None
+        if not display:
+            return None
+        import os
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "xclip", "-o", "-selection", "clipboard", env={**os.environ, "DISPLAY": display},
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+        except Exception:
+            return None
+        return out.decode("utf-8", "replace") if proc.returncode == 0 else None
+
+    async def _clip_pad(self, page, op: str, value: str = ""):
+        try:
+            return await page.evaluate(_CLIP_PAD_JS, {"op": op, "value": value})
+        except Exception:
+            return None
+
+    async def _paste(self, page) -> str | None:
+        """Paste the clipboard into our own field and read it (a real Ctrl+V)."""
+        if not await self._clip_pad(page, "set", ""):
+            return None
+        try:
+            await page.keyboard.press("Control+v")
+        except Exception:
+            return None
+        await asyncio.sleep(0.2)
+        value = await self._clip_pad(page, "read")
+        return value if isinstance(value, str) else None
+
+    async def _copy_reply(self, page) -> str | None:
+        """Click the «copy» button of the newest message and return what it copied (the
+        whole message as the service gives it), or None. Never the stale clipboard: a
+        known text is put on the clipboard first and does not count as a result."""
+        found = await self._copy_buttons(page, target=True)
+        if not found.get("fresh"):
+            return None
+        sentinel = f"aidd-clip-{secrets.token_hex(6)}"
+        pad = False
+        try:
+            # a known text on the clipboard (copied from our own field): a copy that failed
+            # cannot be mistaken for a reply
+            if await self._clip_pad(page, "set", sentinel):
+                try:
+                    await page.keyboard.press("Control+c")
+                    pad = (await self._paste(page)) == sentinel
+                except Exception:
+                    pad = False
+            x_before = await self._xclip(page)
+            await self._clip_eval(page, _CLIP_HOOK_JS)  # also resets the last capture
+            button = page.locator('[data-aidd-copy-target="1"]').first
+            try:
+                if not found.get("visible"):  # the message tools show up on hover
+                    await page.locator('[data-aidd-copy-host="1"]').first.hover(timeout=2000)
+                await button.click(timeout=3000)
+            except Exception:
+                try:
+                    await button.click(timeout=2000, force=True)
+                except Exception:
+                    return None
+            text = None
+            for _ in range(8):
+                await asyncio.sleep(0.25)
+                text = next((t for t in await self._clip_eval(page, _CLIP_READ_JS) if isinstance(t, str) and t), None)
+                if text:
+                    break
+            how = "page"
+            if not text:
+                x = await self._xclip(page)
+                if x and x != sentinel and x != x_before:
+                    text, how = x, "display clipboard"
+            if not text and pad:
+                pasted = await self._paste(page)
+                if pasted and pasted != sentinel:
+                    text, how = pasted, "paste"
+            if text:
+                logger.debug("Copy button: %d chars via %s", len(text), how)
+            return text or None
+        finally:
+            await self._clip_pad(page, "remove")
+
+    def _copy_usable(self, page, text: str | None, sent: str, before_text: str) -> bool:
+        if not text or not text.strip():
+            return False
+        if _is_echo(text, sent) or (sent and _alnum(text) == _alnum(sent)):
+            return False  # our own message's copy button
+        if before_text and _alnum(text) == _alnum(before_text):
+            return False
+        return text not in self._copied.get(page, ())
+
+    def _take_copy(self, page, text: str, seconds: float) -> str:
+        logger.info("Reply read by the copy button (%d chars, %.0fs)", len(text), seconds)
+        try:
+            self._copied.setdefault(page, []).append(text)
+            del self._copied[page][:-20]
+        except TypeError:
+            pass
+        return text.strip()
 
     # ---------------------------------------------------------------- protocol
 
@@ -1764,6 +2027,9 @@ class Adapter:
         last_report = start
         last_pulse = start
         resends = 0
+        # the «copy» button under a finished reply: the whole answer, independent of selectors
+        copy_on = self._copy_on(page)
+        copy_candidate, copy_since, last_copy_try, copy_fails, echo_fresh = "", 0.0, 0.0, 0, -1
 
         def paused(seconds: float) -> None:
             nonlocal hard_deadline, last_progress
@@ -1805,17 +2071,20 @@ class Adapter:
                 last_pulse = now
                 try:
                     await self.on_progress({"waiting": round(now - start), "unchanged": round(now - last_change),
-                                            "reply_len": len(after_text or "") if (after_count > before_count) else 0,
+                                            "reply_len": max(len(after_text or "") if (after_count > before_count)
+                                                             else 0, len(copy_candidate)),
                                             "state": state})
                 except Exception:
                     logger.debug("progress callback failed", exc_info=True)
             if now - last_report >= 60:  # numbers only, never the text
                 last_report = now
+                buttons = await self._copy_buttons(page) if copy_on else {}
                 logger.info(
                     "Waiting for the reply %.0fs: state=%s messages=%d (before %d) last_len=%d new=%s echo=%s "
-                    "unchanged=%.0fs", now - start, state, after_count, before_count, len(after_text or ""),
+                    "unchanged=%.0fs copy_buttons=%s new_copy=%s copy_len=%d copy_fails=%d", now - start, state,
+                    after_count, before_count, len(after_text or ""),
                     bool(after_text) and after_text != before_text, bool(after_text) and _is_echo(after_text, sent),
-                    now - last_change)
+                    now - last_change, buttons.get("total"), buttons.get("fresh"), len(copy_candidate), copy_fails)
             if (after_count, after_text) != seen:
                 last_change = now
             if state == "generating" or (after_count, after_text) != seen:
@@ -1827,6 +2096,26 @@ class Adapter:
                 if await self._refresh_chat(page):
                     candidate = ""
                     continue
+
+            if copy_on and copy_fails < 6 and now - last_copy_try >= settle and (
+                    state != "generating" or now - last_change >= 60):
+                buttons = await self._copy_buttons(page)
+                if buttons.get("fresh") and buttons["fresh"] != echo_fresh:
+                    last_copy_try = now
+                    text = await self._copy_reply(page)
+                    if self._copy_usable(page, text, sent, before_text):
+                        if text == copy_candidate:
+                            if complete is None or complete(text) or now - copy_since >= incomplete_settle:
+                                return self._take_copy(page, text, now - start)
+                        else:
+                            copy_candidate, copy_since = text, now
+                            last_change = last_progress = now
+                    elif text:  # the copy button of our own message: wait for the next one
+                        echo_fresh = buttons["fresh"]
+                    else:
+                        copy_fails += 1
+                        if copy_fails == 6:
+                            logger.info("The copy button gave nothing 6 times; reading the page only")
 
             fresh = bool(
                 state != "generating"
@@ -1846,9 +2135,15 @@ class Adapter:
                 if now - candidate_since >= wait_for:
                     if wait_for > settle:
                         logger.info("Taking an unfinished-looking reply after %.0fs without changes", wait_for)
+                    if copy_on and copy_fails < 6:  # the whole answer as the service copies it
+                        text = await self._copy_reply(page)
+                        if self._copy_usable(page, text, sent, before_text):
+                            return self._take_copy(page, text, now - start)
                     return candidate
 
             if now - last_progress >= timeout or now >= hard_deadline:
+                if copy_candidate:
+                    return self._take_copy(page, copy_candidate, now - start)
                 if candidate:
                     return candidate
                 if now >= hard_deadline:
