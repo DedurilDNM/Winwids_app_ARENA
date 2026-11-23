@@ -426,7 +426,13 @@ async def _preflight(accounts: list, *, project_id: int, user_id: int, settings,
         finally:
             await _close_page(page)
 
-    return [p for p in await asyncio.gather(*(check(a) for a in accounts)) if p]
+    limit = asyncio.Semaphore(max(1, int(getattr(settings, "PREFLIGHT_PARALLEL", 2) or 1)))
+
+    async def limited(account) -> str | None:
+        async with limit:  # one IP for all accounts: not everything at once
+            return await check(account)
+
+    return [p for p in await asyncio.gather(*(limited(a) for a in accounts)) if p]
 
 
 async def _retryable_sleep(attempt: int, settings) -> None:
@@ -627,12 +633,10 @@ class _Chat:
 
 
 async def _close_page(page) -> None:
-    close = getattr(page, "close", None)
-    if close is not None:
-        try:
-            await close()
-        except Exception:
-            pass
+    """Done with a chat page: the account's kept chat tab stays open for the next chat."""
+    from app.adapters.generic.adapter import release_page
+
+    await release_page(page)
 
 
 async def _ask(adapter, context, *, chat_ref: str, prompt: str, timeout: int, notify=None, should_continue=None,

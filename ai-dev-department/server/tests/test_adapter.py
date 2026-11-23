@@ -36,6 +36,7 @@ def make_settings(*, overrides=None) -> SimpleNamespace:
         ADAPTER_NAVIGATE_TIMEOUT_SECONDS=30.0,
         ADAPTER_MAX_RETRIES=3,
         ADAPTER_RETRY_BACKOFF_SECONDS=2.0,
+        ADAPTER_MIN_NAV_INTERVAL_SECONDS=0,
     )
     base.update(overrides or {})
     return SimpleNamespace(**base)

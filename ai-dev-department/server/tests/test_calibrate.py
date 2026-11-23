@@ -390,3 +390,99 @@ def test_logged_out_account_without_a_password_reports_login_not_model():
     state, error = _open_logged_out(None)
     assert isinstance(error, NeedsHumanError) and "login" in str(error).lower()
     assert "is not selected" not in str(error)
+
+
+# ------------------------------------------------- rate limits and fewer page loads
+
+RATE_LIMITED_THEN_OK = """<!doctype html><meta charset="utf-8"><title>CHAT</title>
+<script>
+const n = Number(sessionStorage.getItem("loads") || 0) + 1; sessionStorage.setItem("loads", String(n));
+window.LOADS = n;
+if (n <= 2) { document.title = "Access denied | used Cloudflare to restrict access";
+  document.write("<h1>Error 1015</h1><p>You are being rate limited</p>"); }
+else { document.write('<textarea id="box"></textarea><button id="send">Send</button><a id="nc" href="/">New chat</a>'); }
+</script>"""
+
+
+def test_rate_limit_page_pauses_everyone_then_continues():
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic import adapter as mod
+
+    async def go():
+        mod._RATE.update(until=0.0, level=0)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            context = await browser.new_context()
+
+            async def serve(route):
+                await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=RATE_LIMITED_THEN_OK)
+
+            await context.route("https://service.example.com/**", serve)
+            a = mod.Adapter(settings=_settings(ADAPTER_RATE_LIMIT_WAIT_SECONDS=0.5))
+            t0 = asyncio.get_running_loop().time()
+            page = await a.open_chat(context, "task-1")
+            took = asyncio.get_running_loop().time() - t0
+            loads = await page.evaluate("window.LOADS")
+            await browser.close()
+            return loads, took
+
+    loads, took = asyncio.run(go())
+    assert loads == 3  # two rate-limited loads, waited, then the chat
+    assert took >= 1.4  # 0.5 s, then 1 s (the wait grows when it repeats)
+
+
+def test_page_loads_are_paced_across_accounts():
+    from app.adapters.generic import adapter as mod
+
+    async def go():
+        mod._RATE.update(until=0.0, level=0, last_nav=0.0)
+        a = mod.Adapter(settings=_settings(ADAPTER_MIN_NAV_INTERVAL_SECONDS=0.3))
+        b = mod.Adapter(settings=_settings(ADAPTER_MIN_NAV_INTERVAL_SECONDS=0.3))
+        loop = asyncio.get_running_loop()
+        times = []
+
+        async def nav(adapter):
+            await adapter._pace()
+            times.append(loop.time())
+
+        await asyncio.gather(nav(a), nav(b), nav(a), nav(b))
+        return sorted(times)
+
+    times = asyncio.run(go())
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    assert all(g >= 0.28 for g in gaps), gaps
+
+
+def test_the_account_tab_is_reused_with_the_site_new_chat_button():
+    from playwright.async_api import async_playwright
+
+    from app.adapters.generic import adapter as mod
+
+    html = """<!doctype html><meta charset="utf-8"><script>
+      window.LOADS = Number(sessionStorage.getItem("l") || 0) + 1; sessionStorage.setItem("l", String(window.LOADS));
+    </script><a id="nc" href="/">New chat</a><textarea id="box"></textarea><button id="send">Send</button>
+    <script>document.getElementById("nc").onclick = (e) => { e.preventDefault(); window.NEW = (window.NEW || 0) + 1; };</script>"""
+
+    async def go():
+        mod._RATE.update(until=0.0, level=0)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(executable_path=CHROME, args=["--no-sandbox"])
+            context = await browser.new_context()
+
+            async def serve(route):
+                await route.fulfill(status=200, content_type="text/html; charset=utf-8", body=html)
+
+            await context.route("https://service.example.com/**", serve)
+            a = mod.Adapter(settings=_settings())
+            first = await a.open_chat(context, "task-1")
+            await mod.release_page(first)
+            second = await mod.Adapter(settings=_settings()).open_chat(context, "task-2")
+            result = (first is second, await second.evaluate("window.LOADS"), await second.evaluate("window.NEW || 0"),
+                      len(context.pages), first.is_closed())
+            await browser.close()
+            return result
+
+    same, loads, new_clicks, pages, closed = asyncio.run(go())
+    assert same and not closed and pages == 1
+    assert loads == 1 and new_clicks == 1  # the second chat: the site's «new chat» button, no page load

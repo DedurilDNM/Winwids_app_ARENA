@@ -122,6 +122,7 @@ class Settings(BaseSettings):
     # chat setup, input) and calibrate the ones without a fresh calibration.
     PREFLIGHT_ENABLED: bool = True
     PREFLIGHT_CALIBRATION_MAX_AGE_HOURS: float = 72
+    PREFLIGHT_PARALLEL: int = 2  # accounts checked at the same time (all share one IP)
 
     # CI (GitHub Actions) after every round: wait for the run of the latest commit
     CI_TIMEOUT_SECONDS: float = 1200
@@ -241,6 +242,13 @@ class Settings(BaseSettings):
     ADAPTER_REPLY_FALLBACK: bool = True
     # How often the «pulse» of a waiting agent is sent to the app (seconds).
     ADAPTER_PROGRESS_SECONDS: float = 10
+    # One server IP for all accounts: at least this long between page loads (all accounts
+    # together); a «rate limited» page (Cloudflare 1015) pauses everyone, then reloads.
+    ADAPTER_MIN_NAV_INTERVAL_SECONDS: float = 2.0
+    ADAPTER_RATE_LIMIT_WAIT_SECONDS: float = 120
+    ADAPTER_RATE_LIMIT_MAX_WAIT_SECONDS: float = 1800
+    # Reuse the account's chat tab: a new chat via the site's «new chat» button (no page load).
+    ADAPTER_REUSE_TAB: bool = True
     # After each reply: press Escape (closes rating/feedback panels) and click
     # ADAPTER_DISMISS_SELECTOR if it is visible.
     ADAPTER_AFTER_REPLY_ESCAPE: bool = True

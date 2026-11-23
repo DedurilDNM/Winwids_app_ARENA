@@ -70,6 +70,30 @@ _CAPTCHA_JS = """
 MAX_RESENDS = 5  # resends of one message after page reloads
 _AUTO_LOGINS: dict[str, list[float]] = {}  # sha256(email) -> recent auto-login attempt times
 
+# All accounts share ONE server IP: page loads are paced process-wide and a
+# rate-limit page («Error 1015») pauses every account, not only the one that saw it.
+_RATE = {"until": 0.0, "level": 0, "last_nav": 0.0}
+_LOOP_LOCKS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _nav_lock() -> asyncio.Lock:
+    """One pacing lock per event loop (asyncio primitives are bound to a loop)."""
+    loop = asyncio.get_running_loop()
+    lock = _LOOP_LOCKS.get(loop)
+    if lock is None:
+        lock = _LOOP_LOCKS[loop] = asyncio.Lock()
+    return lock
+
+
+# Cloudflare-style «you are being rate limited» page: short page, mentions 1015 + rate limit.
+_RATE_LIMIT_JS = r"""
+() => {
+  const body = document.body ? (document.body.innerText || '') : '';
+  const t = ((document.title || '') + ' ' + body.slice(0, 4000)).toLowerCase();
+  return body.length < 6000 && /\b1015\b/.test(t) && /rate.?limit/.test(t);
+}
+"""
+
 _BLOCKED_MESSAGES = {
     "captcha": "Service is showing a captcha that did not clear by itself",
     "dialog": "Service is showing a pop-up window that blocks sending",
@@ -386,6 +410,32 @@ def _is_echo(candidate: str, sent: str) -> bool:
     return len(ca) >= 20 and (ca == sa or sa.startswith(ca))
 
 
+def _closed(page) -> bool:
+    try:
+        return page.is_closed()
+    except Exception:
+        return True
+
+
+async def release_page(page) -> None:
+    """A chat is done with its page: the account's kept chat tab stays open (free for
+    the next chat), any other page is closed."""
+    if page is None:
+        return
+    if getattr(page, "_aidd_keep", False):
+        try:
+            page._aidd_busy = False
+        except Exception:
+            pass
+        return
+    close = getattr(page, "close", None)
+    if close is not None:
+        try:
+            await close()
+        except Exception:
+            pass
+
+
 class Adapter:
     """Selector-driven adapter for a generic chat-based AI service."""
 
@@ -599,25 +649,131 @@ class Adapter:
 
     # ---------------------------------------------------------------- protocol
 
+    async def _pace(self) -> None:
+        """Before a page load: wait out a rate-limit cooldown, then keep at least
+        ADAPTER_MIN_NAV_INTERVAL_SECONDS between page loads of ALL accounts."""
+        while True:
+            left = _RATE["until"] - _MONOTONIC()
+            if left <= 0:
+                break
+            await asyncio.sleep(min(left, 5.0))
+        interval = float(getattr(self.settings, "ADAPTER_MIN_NAV_INTERVAL_SECONDS", 2.0) or 0)
+        if interval <= 0:
+            return
+        async with _nav_lock():
+            wait = _RATE["last_nav"] + interval - _MONOTONIC()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _RATE["last_nav"] = _MONOTONIC()
+
+    async def _rate_limited(self, page) -> bool:
+        if not hasattr(page, "evaluate"):
+            return False
+        try:
+            return bool(await page.evaluate(_RATE_LIMIT_JS))
+        except Exception:
+            return False
+
+    async def _rate_limit_guard(self, page) -> None:
+        """The service answered «rate limited» (e.g. Cloudflare 1015): pause EVERY account
+        (the limit is per IP), 2 min first, longer if it repeats, then reload. Never
+        hammer the site with retries - they only extend the block."""
+        start = _MONOTONIC()
+        max_wait = float(getattr(self.settings, "ADAPTER_RATE_LIMIT_MAX_WAIT_SECONDS", 1800) or 1800)
+        while await self._rate_limited(page):
+            base = float(getattr(self.settings, "ADAPTER_RATE_LIMIT_WAIT_SECONDS", 120) or 120)
+            _RATE["level"] = min(_RATE["level"] + 1, 4)
+            wait = min(base * (2 ** (_RATE["level"] - 1)), 900)
+            _RATE["until"] = max(_RATE["until"], _MONOTONIC() + wait)
+            logger.warning("Rate limited by the service: all accounts wait %.0fs (level %d)", wait, _RATE["level"])
+            if _MONOTONIC() - start + wait > max_wait:
+                raise TransientAdapterError("The service rate-limits this server (too many requests): try again later")
+            while _MONOTONIC() < _RATE["until"]:
+                if self.should_continue is not None and not await self.should_continue():
+                    raise StoppedError("Stopped by the user while waiting for the rate limit")
+                await asyncio.sleep(min(5.0, max(0.1, _RATE["until"] - _MONOTONIC())))
+            await self._pace()
+            try:
+                await page.reload(wait_until="domcontentloaded",
+                                  timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS))
+            except Exception:
+                logger.debug("reload after the rate limit failed", exc_info=True)
+        if _MONOTONIC() - start > 1 or _RATE["level"]:
+            _RATE["level"] = max(0, _RATE["level"] - 1)  # it passed: ease the next wait
+
+    async def _goto(self, page, url: str) -> None:
+        await self._pace()
+        await page.goto(url, wait_until="domcontentloaded",
+                        timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS))
+        await self._rate_limit_guard(page)
+
+    async def _reuse_tab(self, context):
+        """The account's chat tab from an earlier chat, if it is free: a new chat there is
+        opened with the site's own «new chat» button - no page load, and the model list
+        (filled after in-app navigation) stays filled."""
+        if not getattr(self.settings, "ADAPTER_REUSE_TAB", True):
+            return None
+        home = getattr(context, "_aidd_home", None)
+        if home is None or getattr(home, "_aidd_busy", False):
+            return None
+        try:
+            if home.is_closed():
+                return None
+        except Exception:
+            return None
+        home._aidd_busy = True
+        try:
+            await self._pace()
+            if await self._nav(home, "new") or (await self._nav(home, "sidebar") and await self._nav(home, "new")):
+                await self._rate_limit_guard(home)
+                await self._wait_ready(home)
+                if await self._is_login_required(home):
+                    await self._handle_login(home)
+                    await self._goto(home, self.settings.SERVICE_URL)
+                await self.prepare_page(home)
+                logger.info("Chat opened in the existing tab (no page load)")
+                return home
+        except Exception:
+            logger.info("Reusing the chat tab failed; loading the page", exc_info=True)
+        home._aidd_busy = False
+        return None
+
     async def open_chat(self, context, chat_ref: str):
-        """Open the service chat in a new page and wait until ready."""
-        page = await context.new_page()
+        """Open the service chat (a new chat in the account's tab, or a new page) and wait until ready."""
+        reused = await self._reuse_tab(context)
+        if reused is not None:
+            return reused
+        home = getattr(context, "_aidd_home", None)
+        if home is not None and not getattr(home, "_aidd_busy", False):
+            try:
+                page = home if not home.is_closed() else None
+            except Exception:
+                page = None
+        else:
+            page = None
+        if page is None:
+            page = await context.new_page()
+            if getattr(self.settings, "ADAPTER_REUSE_TAB", True) and (home is None or _closed(home)):
+                try:
+                    context._aidd_home = page
+                    page._aidd_keep = True
+                except Exception:
+                    pass
+        try:
+            page._aidd_busy = True
+        except Exception:
+            pass
         # Most chat services start a new conversation on their home page.
         # ADAPTER_NEW_CHAT_URL may override it ({base} and {chat_ref} placeholders).
         template = getattr(self.settings, "ADAPTER_NEW_CHAT_URL", "") or ""
         base = self.settings.SERVICE_URL.rstrip("/")
         url = template.format(base=base, chat_ref=chat_ref) if template else self.settings.SERVICE_URL
-        await page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS),
-        )
+        await self._goto(page, url)
         # logged out? log in FIRST (auto-login, else ask a human): without a login the page
         # has no chat toolbar, and choosing the mode / model would fail for the wrong reason
         if await self._wait_chat_or_login(page):
             await self._handle_login(page)
-            await page.goto(url, wait_until="domcontentloaded",
-                            timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS))
+            await self._goto(page, url)
         ready_sel = self._selectors["ready"]
         wait_sel = ready_sel or self._selectors["input"]
         if wait_sel:
@@ -838,6 +994,8 @@ class Adapter:
         try:
             if not await page.evaluate(_NAV_JS, {"kind": kind, "selector": selector, "index": index}):
                 return False
+            if kind != "sidebar":
+                await self._pace()
             await page.click("[data-aidd-nav]", timeout=5_000)
             await asyncio.sleep(2.0)
             return True
@@ -1156,9 +1314,7 @@ class Adapter:
         template = getattr(self.settings, "ADAPTER_NEW_CHAT_URL", "") or ""
         base = self.settings.SERVICE_URL.rstrip("/")
         try:
-            await page.goto(template.format(base=base, chat_ref="") if template else self.settings.SERVICE_URL,
-                            wait_until="domcontentloaded",
-                            timeout=self._timeout_ms(self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS))
+            await self._goto(page, template.format(base=base, chat_ref="") if template else self.settings.SERVICE_URL)
             await self.prepare_page(page)
         except Exception:
             logger.warning("Could not reopen a new chat after the pause", exc_info=True)
@@ -1218,8 +1374,10 @@ class Adapter:
             return False
         logger.info("Chat looks stuck (no new text for a while): refreshing the page")
         try:
+            await self._pace()
             await page.reload(wait_until="domcontentloaded", timeout=self._timeout_ms(
                 self.settings.ADAPTER_NAVIGATE_TIMEOUT_SECONDS))
+            await self._rate_limit_guard(page)
         except Exception:
             logger.warning("Chat refresh failed", exc_info=True)
             return False

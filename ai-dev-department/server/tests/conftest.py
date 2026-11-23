@@ -27,6 +27,7 @@ os.environ["PROXY_URL"] = "http://user:pass@1.2.3.4:8080"  # parsed, never diale
 os.environ["NOVNC_PUBLIC_BASE_URL"] = "http://127.0.0.1:6080"
 os.environ["GITHUB_TOKEN"] = ""  # never use a real token from the developer environment
 os.environ["AUTO_RESUME_INTERRUPTED"] = "false"  # tests decide themselves (see test_projects)
+os.environ["ADAPTER_MIN_NAV_INTERVAL_SECONDS"] = "0"  # no pacing between page loads in tests (own tests below)
 
 os.environ["TEST_DB_PATH"] = str(_TMP / "test.db")
 

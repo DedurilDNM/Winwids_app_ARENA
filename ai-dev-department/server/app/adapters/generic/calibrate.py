@@ -344,10 +344,9 @@ async def calibrate(adapter, context, *, timeout: float = 300, progress=None) ->
                     profile.get("reader"), bool(profile.get("busy")), (profile.get("checks") or {}).get("markers"),
                     profile.get("seconds"))
         if page is not None:
-            try:
-                await page.close()
-            except Exception:
-                pass
+            from app.adapters.generic.adapter import release_page
+
+            await release_page(page)
 
 
 def _pick_busy(timeline: dict, before: set, final: set, sent_at: float, reply_at: float) -> str | None:
