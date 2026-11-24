@@ -28,6 +28,7 @@ const ICONS = {
   refresh: "M23 4v6h-6M1 20v-6h6m14.49-5A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15",
   external: "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6m4-3h6v6M10 14 21 3",
   close: "M18 6 6 18M6 6l12 12",
+  team: "M12 2 3 7l9 5 9-5-9-5zM3 17l9 5 9-5M3 12l9 5 9-5",
 };
 
 export function icon(name) {

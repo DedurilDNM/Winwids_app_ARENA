@@ -7,12 +7,14 @@ import * as loginView from "./views/login.js";
 import * as accountsView from "./views/accounts.js";
 import * as githubView from "./views/github.js";
 import * as projectsView from "./views/projects.js";
+import * as departmentView from "./views/department.js";
 import * as profileView from "./views/profile.js";
 
 const ROUTES = [
   { path: "accounts", label: "Аккаунты", icon: "users", view: accountsView },
   { path: "github", label: "GitHub", icon: "github", view: githubView },
   { path: "projects", label: "Проекты", icon: "folder", view: projectsView },
+  { path: "department", label: "Отдел", icon: "team", view: departmentView },
   { path: "profile", label: "Профиль", icon: "user", view: profileView },
 ];
 const DEFAULT_ROUTE = "accounts";

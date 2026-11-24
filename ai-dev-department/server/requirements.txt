@@ -20,3 +20,5 @@ redis>=5.0.0
 camoufox>=0.4.0
 # websockify serves noVNC and routes VNC tokens to x11vnc backends
 websockify>=0.13.0
+anthropic>=2.13,<3
+PyYAML>=6

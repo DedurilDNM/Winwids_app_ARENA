@@ -77,13 +77,14 @@ export const auth = {
 
 async function send(method, path, body, token) {
   const headers = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const form = typeof FormData !== "undefined" && body instanceof FormData;
+  if (body !== undefined && !form) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = `Bearer ${token}`;
   try {
     return await fetch(path, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body === undefined ? undefined : form ? body : JSON.stringify(body),
       cache: "no-store",
     });
   } catch (err) {
@@ -133,7 +134,7 @@ export async function accessTokenForWs({ forceRefresh = false } = {}) {
   return accessToken;
 }
 
-export async function request(method, path, body, { authRequired = true } = {}) {
+export async function request(method, path, body, { authRequired = true, raw = false } = {}) {
   let res = await send(method, path, body, authRequired ? accessToken : null);
   if (authRequired && res.status === 401) {
     if (await refreshSession()) {
@@ -144,6 +145,7 @@ export async function request(method, path, body, { authRequired = true } = {}) 
     }
   }
   if (!res.ok) throw await readError(res);
+  if (raw) return res;
   if (res.status === 204) return null;
   const text = await res.text();
   return text ? JSON.parse(text) : null;
@@ -194,4 +196,30 @@ export const api = {
   stopProject: (id) => request("POST", `/api/projects/${id}/stop`),
   resumeProject: (id) => request("POST", `/api/projects/${id}/resume`),
   deleteProject: (id) => request("DELETE", `/api/projects/${id}`),
+
+  // API department: key pool, roles, skills, runs
+  providers: () => request("GET", "/api/keys/providers"),
+  listKeys: () => request("GET", "/api/keys"),
+  addKey: (data) => request("POST", "/api/keys", data),
+  updateKey: (id, data) => request("PATCH", `/api/keys/${id}`, data),
+  deleteKey: (id) => request("DELETE", `/api/keys/${id}`),
+  checkKey: (id) => request("POST", `/api/keys/${id}/check`),
+  providerModels: (provider) => request("GET", `/api/keys/models?provider=${encodeURIComponent(provider)}`),
+  listRoles: () => request("GET", "/api/agent-roles"),
+  saveRole: (role, data) => request("PUT", `/api/agent-roles/${encodeURIComponent(role)}`, data),
+  resetRole: (role) => request("DELETE", `/api/agent-roles/${encodeURIComponent(role)}`),
+  listSkills: () => request("GET", "/api/skills"),
+  getSkill: (name) => request("GET", `/api/skills/${encodeURIComponent(name)}`),
+  addSkillText: (text) => request("POST", "/api/skills", { text }),
+  addSkillFile: (file) => { const f = new FormData(); f.append("file", file); return request("POST", "/api/skills", f); },
+  deleteSkill: (name) => request("DELETE", `/api/skills/${encodeURIComponent(name)}`),
+  listRuns: () => request("GET", "/api/runs"),
+  createRun: (data) => request("POST", "/api/runs", data),
+  getRun: (id) => request("GET", `/api/runs/${id}`),
+  runEvents: (id, after) => request("GET", `/api/runs/${id}/events?after=${after || 0}`),
+  stopRun: (id) => request("POST", `/api/runs/${id}/stop`),
+  deleteRun: (id) => request("DELETE", `/api/runs/${id}`),
+  runFiles: (id) => request("GET", `/api/runs/${id}/files`),
+  runFile: async (id, path) => (await request("GET", `/api/runs/${id}/file?path=${encodeURIComponent(path)}`, undefined, { raw: true })).text(),
+  runArchive: async (id) => (await request("GET", `/api/runs/${id}/archive`, undefined, { raw: true })).blob(),
 };

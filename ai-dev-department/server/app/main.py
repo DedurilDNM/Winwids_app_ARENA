@@ -30,6 +30,8 @@ from app.api import auth as auth_api
 from app.api import attention as attention_api
 from app.api import github as github_api
 from app.api import calibrate as calibrate_api
+from app.api import department as department_api
+from app.api import keys as keys_api
 from app.api import probe as probe_api
 from app.api import projects as projects_api
 from app.api import vnc as vnc_api
@@ -232,12 +234,26 @@ async def lifespan(app: FastAPI):
         logger.warning("Active account restore failed: %s", exc)
 
     logger.info("AI Dev Department API started (env=%s, service=%s)", settings.ENVIRONMENT, settings.SERVICE_DISPLAY_NAME)
+    try:
+        from app.agents.department import mark_interrupted
+
+        if (n := await mark_interrupted()):
+            logger.warning("%d API department run(s) were interrupted by the restart", n)
+    except Exception:
+        logger.warning("Could not mark interrupted runs", exc_info=True)
+    checker_task = None
+    if settings.KEYPOOL_CHECKER_ENABLED:  # limited API keys come back by themselves
+        from app.agents.keypool import key_pool
+
+        checker_task = asyncio.create_task(key_pool.run_checker())
     resume_task = None
     if interrupted:
         resume_task = asyncio.create_task(resume_interrupted_later(interrupted, settings.AUTO_RESUME_DELAY_SECONDS))
     yield
     if resume_task is not None and not resume_task.done():
         resume_task.cancel()
+    if checker_task is not None:
+        checker_task.cancel()
 
     # Shutdown: stop browsers, Xvfb displays and websockify.
     try:
@@ -279,6 +295,8 @@ app.include_router(github_api.router)
 app.include_router(attention_api.router)
 app.include_router(probe_api.router)
 app.include_router(calibrate_api.router)
+app.include_router(keys_api.router)
+app.include_router(department_api.router)
 app.include_router(ws_api.router)
 
 

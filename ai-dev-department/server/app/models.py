@@ -197,3 +197,89 @@ class AgentMessage(Base):
     text: Mapped[str] = mapped_column(Text)
     delivered_to: Mapped[list] = mapped_column(JSON, default=list)  # account ids that got it
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+# --- API department: key pool, role configs, runs -------------------------------
+
+API_KEY_STATUSES = ("available", "limited", "invalid", "disabled")
+
+
+class ApiKey(Base):
+    """A provider API key in the user's common pool («котёл»). The secret is
+    Fernet-encrypted and never returned or logged; only `key_tail` is shown."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    label: Mapped[str] = mapped_column(String(120), default="")
+    key_encrypted: Mapped[bytes] = mapped_column(LargeBinary)
+    key_tail: Mapped[str] = mapped_column(String(8), default="")
+    base_url: Mapped[str | None] = mapped_column(String(300), nullable=True)  # «custom» provider only
+    status: Mapped[str] = mapped_column(String(16), default="available", index=True)
+    status_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)  # no secrets, no page text
+    limited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AgentRole(Base):
+    """How one role of the API department works: provider, model, tools, skills."""
+
+    __tablename__ = "agent_roles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(32))
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(200))
+    effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tools: Mapped[list | None] = mapped_column(JSON, nullable=True)  # None = the role's defaults
+    skills: Mapped[list | None] = mapped_column(JSON, nullable=True)  # None = every skill
+    instructions: Mapped[str] = mapped_column(Text, default="")
+    max_turns: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class AgentRun(Base):
+    """One job for the API department: a lead agent and its sub-agents in a workspace."""
+
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    prompt: Mapped[str] = mapped_column(Text)
+    lead_role: Mapped[str] = mapped_column(String(32), default="Orchestrator")
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)  # queued|running|done|failed|stopped
+    workspace: Mapped[str] = mapped_column(String(500), default="")
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AgentRunEvent(Base):
+    """What happened in a run: agents starting/finishing, tool calls, texts, files, key rotations."""
+
+    __tablename__ = "agent_run_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True)
+    agent_id: Mapped[str] = mapped_column(String(64), default="")
+    type: Mapped[str] = mapped_column(String(32))
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

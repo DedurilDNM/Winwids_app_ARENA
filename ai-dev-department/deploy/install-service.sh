@@ -14,6 +14,8 @@ set -euo pipefail
 SERVER_DIR="$(cd "$(dirname "$0")/../server" && pwd)"
 # xclip: reading what a reply's «copy» button put on the browser's clipboard
 command -v xclip >/dev/null 2>&1 || apt-get install -y -qq xclip >/dev/null 2>&1 || echo "note: xclip not installed"
+# bubblewrap: a sandbox for the shell commands of the API-department agents
+command -v bwrap >/dev/null 2>&1 || apt-get install -y -qq bubblewrap >/dev/null 2>&1 || echo "note: bubblewrap not installed"
 RUN_USER="${SUDO_USER:-$(stat -c %U "$SERVER_DIR")}"
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 mkdir -p "$SERVER_DIR/data/tmp"

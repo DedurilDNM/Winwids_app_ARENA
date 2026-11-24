@@ -246,6 +246,20 @@ class Settings(BaseSettings):
     ADAPTER_REPLY_FALLBACK: bool = True
     # Read a finished reply with its «copy» button (the whole answer, as markdown); the
     # page reader is the fallback. ADAPTER_COPY_SELECTOR: that button, if the guess fails.
+    # --- API department: the common key pool -------------------------------------------
+    # limited keys are re-checked this often (sooner if the provider gave Retry-After)
+    KEYPOOL_CHECK_SECONDS: float = 300
+    KEYPOOL_INVALID_CHECK_SECONDS: float = 3600
+    KEYPOOL_TICK_SECONDS: float = 15
+    KEYPOOL_MAX_PARALLEL_PER_KEY: int = 4  # 0 = unlimited
+    KEYPOOL_MAX_WAIT_SECONDS: float = 1800  # every key limited: wait this long for one to come back
+    KEYPOOL_CHECKER_ENABLED: bool = True
+    # --- API department: agents ---
+    AGENT_MAX_TURNS: int = 60  # model calls per agent
+    AGENT_MAX_DEPTH: int = 1  # 1 = only the lead starts sub-agents
+    AGENT_MAX_PARALLEL: int = 4  # sub-agents working at the same time in one run
+    AGENT_BASH_TIMEOUT_SECONDS: float = 120
+    AGENT_BASH_SANDBOX: str = "auto"  # auto (bwrap when installed) | bwrap (required) | off
     ADAPTER_COPY_READER: bool = True
     ADAPTER_COPY_SELECTOR: str = ""
     # How often the «pulse» of a waiting agent is sent to the app (seconds).
