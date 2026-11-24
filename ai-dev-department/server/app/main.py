@@ -107,8 +107,9 @@ class WebSecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-            if request.url.path.endswith(("sw.js", "index.html")) or request.url.path in ("/app", "/app/"):
-                response.headers["Cache-Control"] = "no-cache"
+            # every app file is revalidated (ETag): after an update the browser and any CDN in
+            # front (e.g. Cloudflare caches .js/.css by default) never serve the old code
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
 
