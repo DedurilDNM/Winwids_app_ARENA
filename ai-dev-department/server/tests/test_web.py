@@ -11,9 +11,10 @@ def test_web_app_served_with_security_headers() -> None:
     with TestClient(app) as client:
         res = client.get("/app/")
         assert res.status_code == 200
-        assert "AI Dev Department" in res.text
+        assert "<title>AIDD</title>" in res.text
         csp = res.headers["content-security-policy"]
         assert "script-src 'self'" in csp and "unsafe-inline" not in csp
+        assert "font-src 'self' https://fonts.gstatic.com" in csp  # the app's fonts, nothing else
         assert "http://127.0.0.1:6080" in csp  # noVNC iframe origin
         assert res.headers["referrer-policy"] == "no-referrer"
         assert res.headers["cache-control"] == "no-cache"

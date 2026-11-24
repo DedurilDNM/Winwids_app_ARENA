@@ -34,6 +34,19 @@ def reply(role: str, turn: int, messages: list) -> dict:
         return {"content": "Готово: **hello.py** написан, тестер проверил запуск."}
     if role == "Coder":
         prompt = next((m["content"] for m in reversed(messages) if m["role"] == "user" and isinstance(m.get("content"), str)), "")
+        if "прототип" in prompt.lower():
+            if turn == 0:
+                html = ("<!doctype html><meta charset=utf-8><title>Таймер</title><body style='font-family:sans-serif'>"
+                        "<h1 id=t>25:00</h1><button id=go onclick=\"document.getElementById('t').textContent='24:59'\">Старт</button>")
+                xlsx = ("from openpyxl import Workbook; wb=Workbook(); ws=wb.active; ws.title='Итоги'; "
+                        "ws.append(['Месяц','Сессий']); ws.append(['Январь',42]); ws.append(['Февраль',57]); "
+                        "import os; os.makedirs('out', exist_ok=True); wb.save('out/report.xlsx')")
+                return {"content": None, "tool_calls": [call("Write", 0, path="prototype/index.html", content=html),
+                                                        call("Bash", 1, command=f'python3 -c "{xlsx}"')]}
+            if turn == 1:
+                return {"content": None, "tool_calls": [call("SendFile", 0, path="prototype/index.html", caption="Главный экран"),
+                                                        call("SendFile", 1, path="out/report.xlsx")]}
+            return {"content": "Прототип и таблица готовы."}
         if turn == 0 and "тёмн" in prompt.lower():
             return {"content": None, "tool_calls": [call("Edit", 0, path="hello.py", old_string="Hello", new_string="Hello, dark")]}
         if turn == 0:

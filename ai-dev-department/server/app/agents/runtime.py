@@ -66,6 +66,10 @@ def system_prompt(spec: AgentSpec, ctx: ToolContext) -> str:
         "The project folder is your working directory; file paths are relative to it. You can only change files "
         "there. Use the tools to look at the real files before you change them, and verify your work (build, "
         "tests) when the project has a way to do it.",
+        "When you made something for the user to look at or download - a prototype page, a document, a "
+        "spreadsheet, a presentation, an image, a report - show it with the SendFile tool.",
+        "Documents: write .docx / .xlsx / .pptx / .pdf files with Python (python-docx, openpyxl, python-pptx, "
+        "reportlab, pypdf are installed) through Bash; open the matching skill first when there is one.",
         "When you are done, answer without calling tools: a short report - what you did, which files changed, "
         "how you verified it, and anything left open. Be concrete.",
     ]

@@ -98,8 +98,9 @@ class WebSecurityHeadersMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith("/app"):
             frame_src = " ".join(x for x in ("'self'", _novnc_origin()) if x)
             response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self'; style-src 'self'; "
-                "img-src 'self' data:; connect-src 'self' ws: wss:; "
+                "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com; "
+                "img-src 'self' data: blob:; connect-src 'self' ws: wss:; "
                 f"frame-src {frame_src}; frame-ancestors 'self'; base-uri 'self'; "
                 "form-action 'self'; object-src 'none'"
             )

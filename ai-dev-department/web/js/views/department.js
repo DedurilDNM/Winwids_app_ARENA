@@ -237,7 +237,7 @@ function addKeyDialog(providers, done) {
 
 export async function rolesView(body) {
   const [roles, providers, skills] = await Promise.all([api.listRoles(), api.providers(), api.listSkills()]);
-  const TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "Task"];
+  const TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "SendFile", "Task"];
   const grid = h("div", { class: "grid roles-grid" });
   const autoBox = h("div", { class: "card", hidden: true, "data-testid": "auto-result" });
   const autoBtn = h("button", { class: "primary", "data-testid": "auto-roles", onclick: () => runAuto() }, "Подобрать модели автоматически");
@@ -337,8 +337,18 @@ export async function skillsView(body) {
         try { await api.addSkillText(ta.value); close(true); load(); } catch (e) { err.textContent = errorText(e); }
       } }, "Добавить")));
   }) }, "Написать SKILL.md");
+  const fromGit = h("button", { "data-testid": "skill-github", onclick: () => modal("Скилл по ссылке GitHub", (close) => {
+    const url = h("input", { placeholder: "https://github.com/<владелец>/<репозиторий>/tree/main/<папка скилла>" });
+    const err = h("div", { class: "form-error" });
+    return h("div", {}, h("p", { class: "muted small" }, "Ссылка на папку со SKILL.md: скачается вся папка со скриптами. Проверьте лицензию скилла в репозитории."),
+      url, err, h("div", { class: "modal-actions" }, h("button", { onclick: () => close() }, "Отмена"),
+        h("button", { class: "primary", onclick: async () => {
+          err.textContent = "Скачиваю…";
+          try { const s = await api.importSkill(url.value.trim()); toast(`Скилл ${s.name} добавлен`); close(true); load(); } catch (e) { err.textContent = errorText(e); }
+        } }, "Добавить")));
+  }) }, "По ссылке GitHub");
   body.append(h("p", { class: "muted" }, "Как в Claude Code: агент видит имя и описание скилла и сам открывает инструкции, когда задача подходит."),
-    h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => file.click() }, icon("plus"), "Загрузить .zip или SKILL.md"), paste, file), list);
+    h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => file.click() }, icon("plus"), "Загрузить .zip или SKILL.md"), paste, fromGit, file), list);
   async function load() {
     const skills = await api.listSkills();
     list.replaceChildren(...skills.map((s) => h("div", { class: "card", "data-testid": "skill" },

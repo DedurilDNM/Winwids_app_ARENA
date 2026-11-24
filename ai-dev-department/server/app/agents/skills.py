@@ -167,3 +167,47 @@ def remove(user_id: int, name: str) -> bool:
         return False
     shutil.rmtree(target)
     return True
+
+
+HTTP_TRANSPORT = None  # tests: an httpx transport that serves fake GitHub downloads
+GITHUB_TREE = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+)/tree/([^/]+)/(.+?)/?$")
+GITHUB_BLOB = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+)/blob/([^/]+)/(.+/)?SKILL\.md$")
+RAW = re.compile(r"^https://raw\.githubusercontent\.com/([\w.-]+)/([\w.-]+)/([^/]+)/(.+/)?SKILL\.md$")
+
+
+async def import_from_url(user_id: int, url: str) -> Skill:
+    """A skill folder from GitHub: https://github.com/<owner>/<repo>/tree/<branch>/<path to the folder>
+    (a link to its SKILL.md works too). The folder is downloaded with its files."""
+    import httpx
+
+    url = (url or "").strip()
+    m = GITHUB_TREE.match(url) or GITHUB_BLOB.match(url) or RAW.match(url)
+    if not m:
+        raise SkillError("Give a GitHub link to a skill folder: https://github.com/<owner>/<repo>/tree/<branch>/<folder>")
+    owner, repo, ref, folder = m.group(1), m.group(2), m.group(3), (m.group(4) or "").strip("/")
+    archive = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{ref}"
+    async with httpx.AsyncClient(follow_redirects=True, timeout=60, transport=HTTP_TRANSPORT) as client:
+        resp = await client.get(archive)
+        if resp.status_code == 404:  # a tag or a commit instead of a branch
+            resp = await client.get(f"https://codeload.github.com/{owner}/{repo}/zip/{ref}")
+    if resp.status_code != 200:
+        raise SkillError(f"GitHub did not give the repository ({resp.status_code})")
+    data = resp.content
+    if len(data) > 8 * MAX_ZIP:
+        raise SkillError("The repository archive is larger than 40 MB")
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise SkillError("GitHub did not give a zip archive") from None
+    names = zf.namelist()
+    top = names[0].split("/")[0] + "/" if names else ""
+    prefix = f"{top}{folder}/" if folder else top
+    wanted = [n for n in names if n.startswith(prefix) and not n.endswith("/")]
+    if not any(n == prefix + "SKILL.md" for n in wanted):
+        raise SkillError("There is no SKILL.md in that folder")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as small:
+        for n in wanted:
+            small.writestr(n[len(prefix):], zf.read(n))
+    return install_zip(user_id, out.getvalue())
+

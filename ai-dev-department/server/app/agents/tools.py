@@ -219,7 +219,12 @@ def _bash_argv(ctx: ToolContext, command: str) -> list[str]:
     env_file = SERVER_ROOT / ".env"
     if env_file.exists():
         argv += ["--ro-bind", "/dev/null", str(env_file)]
-    argv += ["--bind", ws, ws, "--chdir", ws, "--unshare-pid", "--die-with-parent", "/bin/bash", "-c", command]
+    argv += ["--bind", ws, ws]
+    for root in ctx.read_roots:  # the skills' own scripts and references, read-only
+        path = str(Path(root).resolve())
+        if path.startswith(str(DATA_DIR)) and Path(path).is_dir():
+            argv += ["--ro-bind", path, path]
+    argv += ["--chdir", ws, "--unshare-pid", "--die-with-parent", "/bin/bash", "-c", command]
     return argv
 
 
@@ -229,6 +234,10 @@ async def _bash(ctx: ToolContext, a: dict) -> str:
         raise ToolError("command is required")
     timeout = min(600.0, max(1.0, float(a.get("timeout") or ctx.bash_timeout)))
     env = {k: os.environ[k] for k in _SAFE_ENV if k in os.environ}
+    import sys
+
+    tools_bin = str(Path(sys.executable).parent)  # python3 / pip with python-docx, openpyxl, python-pptx ...
+    env["PATH"] = f"{tools_bin}:{env.get('PATH', '/usr/local/bin:/usr/bin:/bin')}"
     home = ctx.workspace / ".home"
     home.mkdir(exist_ok=True)
     env.update({"HOME": str(home), "CI": "1", "NO_COLOR": "1"})
@@ -313,6 +322,25 @@ async def _skill(ctx: ToolContext, a: dict) -> str:
     return f"# Skill: {skill.name}\n\n{skill.body()}{extra}"
 
 
+_KINDS = {".html": "html", ".htm": "html", ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image",
+          ".webp": "image", ".svg": "image", ".pdf": "pdf", ".xlsx": "sheet", ".xlsm": "sheet", ".csv": "sheet",
+          ".docx": "document", ".pptx": "slides", ".md": "text", ".txt": "text", ".json": "text"}
+
+
+async def _sendfile(ctx: ToolContext, a: dict) -> str:
+    p = resolve(ctx, a.get("path", ""), write=True)  # only files of the project
+    if not p.is_file():
+        raise ToolError(f"{a.get('path')}: no such file (create it first)")
+    size = p.stat().st_size
+    if size > 50_000_000:
+        raise ToolError("the file is larger than 50 MB")
+    kind = _KINDS.get(p.suffix.lower(), "file")
+    if ctx.emit:
+        await ctx.emit({"type": "attachment", "path": _rel(ctx, p), "kind": kind, "size": size,
+                        "caption": str(a.get("caption") or "")[:300]})
+    return f"Shown to the user in the chat: {_rel(ctx, p)} ({kind}, {size} bytes)"
+
+
 async def _task(ctx: ToolContext, a: dict) -> str:
     if ctx.spawn is None:
         raise ToolError("this agent cannot start sub-agents")
@@ -351,6 +379,10 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
              "required": ["content", "status"], "additionalProperties": False}}}, ["todos"]), _todo),
     Tool("Skill", "Open a skill by name: returns its instructions. Use it when a task matches a skill's description.",
          _schema({"name": {"type": "string"}}, ["name"]), _skill),
+    Tool("SendFile", "Show a finished file to the user in the chat: an HTML prototype opens as a live page, images "
+         "and PDF are shown, spreadsheets as a table, any file can be downloaded. Use it for deliverables "
+         "(prototypes, documents, reports), not for every file you touch.",
+         _schema({"path": {"type": "string"}, "caption": {"type": "string"}}, ["path"]), _sendfile),
     Tool("Task", "Give a piece of work to a sub-agent of another role and get its final report. Several Task calls "
          "in one reply run in parallel. Give each a complete, self-contained prompt: it does not see this chat.",
          _schema({"role": {"type": "string"}, "description": {"type": "string"}, "prompt": {"type": "string"}},

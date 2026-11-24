@@ -151,6 +151,14 @@ export async function request(method, path, body, { authRequired = true, raw = f
   return text ? JSON.parse(text) : null;
 }
 
+function withFiles(data, files) {
+  if (!files || !files.length) return data;
+  const form = new FormData();
+  for (const [k, v] of Object.entries(data)) if (v !== null && v !== undefined) form.append(k, v);
+  for (const f of files) form.append("files", f, f.name);
+  return form;
+}
+
 export const api = {
   async login(email, password, remember) {
     const data = await request("POST", "/api/auth/login", { email, password }, { authRequired: false });
@@ -199,9 +207,13 @@ export const api = {
 
   // chats with the API department
   listChats: () => request("GET", "/api/chats"),
-  createChat: (data) => request("POST", "/api/chats", data),
+  createChat: (data, files) => request("POST", "/api/chats", withFiles(data, files)),
   getChat: (id) => request("GET", `/api/chats/${id}`),
-  sendChatMessage: (id, data) => request("POST", `/api/chats/${id}/messages`, data),
+  sendChatMessage: (id, data, files) => request("POST", `/api/chats/${id}/messages`, withFiles(data, files)),
+  chatFileBlob: async (id, path) => (await request("GET", `/api/chats/${id}/file?path=${encodeURIComponent(path)}`, undefined, { raw: true })).blob(),
+  chatPreview: (id, path) => request("GET", `/api/chats/${id}/preview?path=${encodeURIComponent(path)}`),
+  chatLink: async (id, path) => (await request("POST", `/api/chats/${id}/link`, { path })).url,
+  importSkill: (url) => request("POST", "/api/skills/import", { url }),
   stopChat: (id) => request("POST", `/api/chats/${id}/stop`),
   renameChat: (id, title) => request("PATCH", `/api/chats/${id}`, { title }),
   deleteChat: (id) => request("DELETE", `/api/chats/${id}`),

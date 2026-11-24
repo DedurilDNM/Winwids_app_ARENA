@@ -30,12 +30,12 @@ from app.models import ACCOUNT_ROLES, AgentRole, AgentRun, AgentRunEvent, ApiKey
 logger = logging.getLogger(__name__)
 
 ROLE_TOOLS = {
-    "Orchestrator": ["Read", "Glob", "Grep", "TodoWrite", "Task", "Skill"],
-    "Architect": ["Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Skill", "TodoWrite"],
-    "Coder": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "Skill", "TodoWrite"],
+    "Orchestrator": ["Read", "Glob", "Grep", "TodoWrite", "Task", "Skill", "SendFile"],
+    "Architect": ["Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Skill", "TodoWrite", "SendFile"],
+    "Coder": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "Skill", "TodoWrite", "SendFile"],
     "Reviewer": ["Read", "Glob", "Grep", "Bash", "Skill"],
-    "Tester": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"],
-    "Integrator": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "TodoWrite"],
+    "Tester": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "SendFile"],
+    "Integrator": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "TodoWrite", "SendFile"],
 }
 _RUN_TASKS: dict[int, asyncio.Task] = {}
 _STOP: set[int] = set()
@@ -207,7 +207,7 @@ async def _finish(run_id: int, **fields) -> None:
 
 
 PLAN_TOOLS = ["Read", "Glob", "Grep", "WebFetch", "TodoWrite", "Skill"]
-SOLO_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill"]
+SOLO_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "SendFile"]
 PLAN_NOTE = ("This turn is planning only: study the project and the request, then answer with a clear, "
              "numbered plan (what to change, where, how to verify). Do not change any files.")
 

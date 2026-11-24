@@ -22,6 +22,63 @@ const pref = {
   set(k, v) { try { localStorage.setItem(`aidd.chat.${k}`, v); } catch { /* private mode */ } },
 };
 
+// ------------------------------------------------------------------ files shown in the chat
+
+const KIND_RU = { html: "Прототип", image: "Изображение", pdf: "PDF", sheet: "Таблица", document: "Документ Word",
+  slides: "Презентация", text: "Текст", file: "Файл" };
+const sizeText = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1024))} КБ`);
+
+async function downloadFile(chatId, path) {
+  const blob = await api.chatFileBlob(chatId, path);
+  const a = h("a", { href: URL.createObjectURL(blob), download: path.split("/").pop() });
+  document.body.append(a); a.click(); a.remove();
+}
+
+/** A live page from a signed address with its own sandbox: no same-origin access, so it can never
+ *  touch the app or the session; files next to it (css, js, images) load by relative paths. */
+function liveFrame(url, cls) {
+  return h("iframe", { class: cls, src: url, sandbox: "allow-scripts allow-forms allow-modals allow-popups", referrerpolicy: "no-referrer" });
+}
+
+function attachmentCard(chatId, d) {
+  const name = d.path.split("/").pop();
+  const view = h("div", { class: "att-view" });
+  const full = h("button", { class: "small-btn", hidden: true }, "На весь экран");
+  const card = h("div", { class: "att", "data-testid": "attachment" },
+    h("div", { class: "att-h" }, h("div", { class: "att-name" }, h("b", {}, name), h("span", {}, `${KIND_RU[d.kind] || "Файл"} · ${sizeText(d.size || 0)}`)),
+      h("span", { class: "sp" }), full, h("button", { class: "small-btn", onclick: () => downloadFile(chatId, d.path) }, "Скачать")),
+    d.caption ? h("div", { class: "att-cap" }, d.caption) : null, view);
+  (async () => {
+    try {
+      if (d.kind === "html") {
+        const url = await api.chatLink(chatId, d.path);
+        view.append(liveFrame(url, "att-frame"));
+        full.hidden = false;
+        full.onclick = () => {
+          const close = h("button", { class: "small-btn", onclick: () => box.remove() }, "Закрыть");
+          const box = h("div", { class: "att-full" }, h("div", { class: "att-full-h" }, h("b", {}, name), h("span", { class: "sp" }), close), liveFrame(url, "att-full-frame"));
+          document.body.append(box);
+        };
+      } else if (d.kind === "image") {
+        view.append(h("img", { class: "att-img", alt: name, src: await api.chatLink(chatId, d.path) }));
+      } else if (d.kind === "pdf") {
+        view.append(h("iframe", { class: "att-frame", src: await api.chatLink(chatId, d.path) }));
+      } else if (d.kind === "sheet") {
+        const data = await api.chatPreview(chatId, d.path);
+        const sheet = data.sheets[0];
+        if (sheet) {
+          view.append(h("div", { class: "att-table" }, data.sheets.length > 1 ? h("div", { class: "faint pad-s" }, `Лист «${sheet.name}» (из ${data.sheets.length})`) : null,
+            h("table", {}, sheet.rows.map((r, i) => h("tr", {}, r.map((c) => h(i ? "td" : "th", {}, c)))))));
+        }
+      } else if (d.kind === "text") {
+        const text = await (await api.chatFileBlob(chatId, d.path)).text();
+        view.append(h("pre", { class: "out att-text" }, text.slice(0, 6000)));
+      }
+    } catch { view.append(h("div", { class: "faint pad-s" }, "Просмотр недоступен — файл можно скачать.")); }
+  })();
+  return card;
+}
+
 // ------------------------------------------------------------------ one turn
 
 class Turn {
@@ -36,8 +93,11 @@ class Turn {
     this.lastLeadText = null;
     this.body = h("div", { class: "turn-body" });
     this.thinking = h("div", { class: "thinking" }, "Работаю над задачей…");
+    const [text, attached] = String(turn.prompt).split("\n\nПриложенные файлы (в папке проекта):");
+    const names = (attached || "").split("\n").map((l) => l.replace(/^- /, "").trim()).filter(Boolean);
     this.el = h("div", { class: "turn", "data-testid": "turn" },
-      h("div", { class: "user-msg" }, h("div", {}, turn.prompt)), this.body);
+      h("div", { class: "user-msg" }, h("div", {}, text,
+        names.length ? h("div", { class: "user-files" }, names.map((n) => h("span", { class: "chip-file" }, n))) : null)), this.body);
     this.body.append(this.thinking);
   }
 
@@ -113,6 +173,8 @@ class Turn {
       a.status.textContent = ok ? `✓ ${a.count} ${a.count === 1 ? "шаг" : a.count < 5 ? "шага" : "шагов"}` : d.status === "stopped" ? "остановлен" : "✗ ошибка";
       if (ok) a.el.classList.remove("open");
       if (d.summary && ok) a.el.append(h("div", { class: "agent-sum" }, d.summary.split("\n")[0].slice(0, 220)));
+    } else if (e.type === "attachment") {
+      this.put(attachmentCard(this.chat, d));
     } else if (e.type === "key_rotation") {
       this.note(`Ключ ••••${d.from_tail} упёрся в лимит — запросы перешли на ••••${d.to_tail}`);
     } else if (e.type === "model_switch") {
@@ -166,12 +228,24 @@ export async function render(main, { params, setTopbar, refreshChats }) {
   const thread = h("div", { class: "thread", "data-testid": "thread" });
   const scroll = h("div", { class: "chat-scroll" }, thread);
   const input = h("textarea", { rows: 2, placeholder: chatId ? "Ответить или добавить задачу…" : "Опишите задачу…", "data-testid": "chat-input" });
+  let files = [];
+  const chips = h("div", { class: "chips-files", hidden: true });
+  const picker = h("input", { type: "file", multiple: true, hidden: true, "data-testid": "attach-input", onchange: () => {
+    files = [...files, ...picker.files].slice(0, 10);
+    picker.value = "";
+    paintFiles();
+  } });
+  const attach = h("button", { class: "attach", title: "Прикрепить файлы", "aria-label": "Прикрепить файлы", onclick: () => picker.click() }, "+");
+  function paintFiles() {
+    chips.hidden = !files.length;
+    chips.replaceChildren(...files.map((f, i) => h("span", { class: "chip-file" }, f.name, h("button", { "aria-label": "Убрать", onclick: () => { files.splice(i, 1); paintFiles(); } }, "×"))));
+  }
   const sendBtn = h("button", { class: "go", "aria-label": "Отправить", "data-testid": "send", onclick: () => (running ? stop() : send()) });
   const modeSeg = h("div", { class: "seg" });
   const modelBtn = h("button", { class: "model-btn", onclick: (e) => { e.stopPropagation(); pop.hidden = !pop.hidden; } });
   const pop = h("div", { class: "popover", hidden: true });
-  const composer = h("div", { class: "composer-wrap" }, h("div", { class: "composer" }, input,
-    h("div", { class: "row" }, modeSeg, h("span", { class: "sp" }), h("div", { class: "pop-host" }, modelBtn, pop), sendBtn)));
+  const composer = h("div", { class: "composer-wrap" }, h("div", { class: "composer" }, chips, input,
+    h("div", { class: "row" }, attach, picker, modeSeg, h("span", { class: "sp" }), h("div", { class: "pop-host" }, modelBtn, pop), sendBtn)));
   const panel = h("aside", { class: "changes-panel", hidden: true, "data-testid": "changes-panel" });
   main.append(h("div", { class: "chat-wrap" }, h("div", { class: "chat-col" }, scroll, composer), panel));
   document.addEventListener("click", closePop);
@@ -209,14 +283,17 @@ export async function render(main, { params, setTopbar, refreshChats }) {
     try {
       const body = { prompt, mode, model: model === "auto" ? null : model };
       if (!chatId) {
-        const chat = await api.createChat(body);
+        const chat = await api.createChat(body, files);
         input.value = "";
+        files = [];
         refreshChats();
         location.hash = `#/chat/${chat.id}`;
         return;
       }
-      await api.sendChatMessage(chatId, body);
+      await api.sendChatMessage(chatId, body, files);
       input.value = "";
+      files = [];
+      paintFiles();
       autosize();
       await refresh(true);
       toBottom();

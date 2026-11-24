@@ -68,6 +68,27 @@ const second = page.locator("[data-testid=turn]").nth(1);
 assert.match(await second.locator("[data-testid=changes-card]").innerText(), /hello\.py[\s\S]*\+1[\s\S]*−1/);
 if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-done.png` });
 
+// files: an attachment goes with the message; the department sends back a live prototype and a table
+const fs = await import("node:fs");
+fs.writeFileSync("/tmp/aidd-e2e-brief.csv", "задача,срок\nтаймер,1 день\n");
+await page.setInputFiles("[data-testid=attach-input]", "/tmp/aidd-e2e-brief.csv");
+assert.match(await page.locator(".chips-files").innerText(), /aidd-e2e-brief\.csv/);
+await page.fill("[data-testid=chat-input]", "Сделай прототип экрана и таблицу итогов");
+await page.keyboard.press("Enter");
+await page.waitForFunction(() => document.querySelectorAll("[data-testid=attachment]").length === 2, null, { timeout: 60000 });
+const frame = page.frameLocator(".att-frame").first();
+await frame.locator("#go").click();
+assert.equal(await frame.locator("#t").innerText(), "24:59");  // the prototype is live
+assert.match(await page.locator(".att-table").innerText(), /Январь\s+42/);
+assert.equal(await page.evaluate(() => { try { return document.querySelector(".att-frame").contentWindow.document.title; } catch { return "blocked"; } }), "blocked");
+const third = await page.evaluate(() => document.querySelectorAll("[data-testid=turn]")[2].innerText);
+assert.match(third, /uploads\/aidd-e2e-brief\.csv/);
+assert.ok(await page.locator(".user-files .chip-file").count() === 1, "the attachment is shown as a chip");
+if (SHOTS) {
+  await page.locator("[data-testid=attachment]").first().scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${SHOTS}/chat-files.png` });
+}
+
 // settings pages render in the new shell
 for (const tab of ["models", "skills", "accounts", "github", "profile"]) {
   await page.goto(`${BASE}/app/#/settings/${tab}`);

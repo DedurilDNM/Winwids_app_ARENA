@@ -201,6 +201,20 @@ async def add_skill(request: Request, user: Annotated[User, Depends(get_current_
     return _skill_out(skill)
 
 
+class SkillImportIn(BaseModel):
+    url: str = Field(min_length=10, max_length=500)
+
+
+@router.post("/api/skills/import", status_code=status.HTTP_201_CREATED)
+async def import_skill(body: SkillImportIn, user: Annotated[User, Depends(get_current_user)]) -> dict:
+    """A skill folder from a GitHub link (with its scripts and references)."""
+    try:
+        skill = await skills_mod.import_from_url(user.id, body.url)
+    except skills_mod.SkillError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+    return _skill_out(skill)
+
+
 @router.delete("/api/skills/{name}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_skill(name: str, user: Annotated[User, Depends(get_current_user)]) -> None:
     if not skills_mod.remove(user.id, name):
