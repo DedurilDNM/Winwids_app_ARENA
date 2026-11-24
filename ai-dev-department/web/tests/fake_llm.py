@@ -27,10 +27,15 @@ def reply(role: str, turn: int, messages: list) -> dict:
             return {"content": "Разбиваю задачу: кодер пишет, тестер проверяет.", "tool_calls": [
                 call("TodoWrite", 0, todos=[{"content": "Написать hello.py", "status": "in_progress"},
                                             {"content": "Проверить запуск", "status": "pending"}]),
-                call("Task", 1, role="Coder", description="hello.py", prompt="Create hello.py printing Hello"),
+                call("Task", 1, role="Coder", description="hello.py", prompt=next(
+                    (m["content"] for m in reversed(messages) if m["role"] == "user" and isinstance(m.get("content"), str)),
+                    "Create hello.py")),
                 call("Task", 2, role="Tester", description="проверка", prompt="Run hello.py and report")]}
         return {"content": "Готово: **hello.py** написан, тестер проверил запуск."}
     if role == "Coder":
+        prompt = next((m["content"] for m in reversed(messages) if m["role"] == "user" and isinstance(m.get("content"), str)), "")
+        if turn == 0 and "тёмн" in prompt.lower():
+            return {"content": None, "tool_calls": [call("Edit", 0, path="hello.py", old_string="Hello", new_string="Hello, dark")]}
         if turn == 0:
             time.sleep(1.0)
             return {"content": None, "tool_calls": [call("Write", 0, path="hello.py", content="print('Hello')\n")]}
@@ -81,7 +86,10 @@ class Handler(BaseHTTPRequestHandler):
                 call("report_ready", 0, ready=True)]}, "finish_reason": "tool_calls"}],
                 "usage": {"prompt_tokens": 20, "completion_tokens": 5}})
         role = (re.search(r"You are the (\w+)", system) or [None, "?"])[1]
-        turn = sum(1 for m in messages if m["role"] == "assistant")
+        # replies since the current prompt (a chat sends the earlier messages first)
+        last = max((i for i, m in enumerate(messages) if m["role"] == "user" and isinstance(m.get("content"), str)),
+                   default=0)
+        turn = sum(1 for m in messages[last:] if m["role"] == "assistant")
         msg = reply(role, turn, messages)
         finish = "tool_calls" if msg.get("tool_calls") else "stop"
         self._send(200, {"model": body.get("model"), "choices": [{"message": {"role": "assistant", **msg},

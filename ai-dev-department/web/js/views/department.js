@@ -165,7 +165,7 @@ async function runView(body, runId, every) {
 
 // ---------------------------------------------------------------- key pool
 
-async function keysView(body, every) {
+export async function keysView(body, every) {
   const providers = await api.providers();
   const summary = h("div", { class: "stats", "data-testid": "key-summary" });
   const list = h("div", { class: "grid", "data-testid": "keys" });
@@ -235,7 +235,7 @@ function addKeyDialog(providers, done) {
 
 // ---------------------------------------------------------------- roles
 
-async function rolesView(body) {
+export async function rolesView(body) {
   const [roles, providers, skills] = await Promise.all([api.listRoles(), api.providers(), api.listSkills()]);
   const TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "Task"];
   const grid = h("div", { class: "grid roles-grid" });
@@ -322,7 +322,7 @@ async function rolesView(body) {
 
 // ---------------------------------------------------------------- skills
 
-async function skillsView(body) {
+export async function skillsView(body) {
   const list = h("div", { class: "grid" });
   const file = h("input", { type: "file", accept: ".md,.zip", hidden: true, onchange: async () => {
     if (!file.files[0]) return;

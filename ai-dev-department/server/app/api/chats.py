@@ -122,6 +122,7 @@ async def create_chat(body: MessageIn, user: Annotated[User, Depends(get_current
     await db.commit()
     await db.refresh(chat)
     chat.workspace = str(department.chat_workspace(chat.id))
+    shutil.rmtree(chat.workspace, ignore_errors=True)  # a folder left from an old database is not this chat's
     await db.commit()
     try:
         await _start_turn(db, user, chat, body)

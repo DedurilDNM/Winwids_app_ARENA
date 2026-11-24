@@ -197,6 +197,19 @@ export const api = {
   resumeProject: (id) => request("POST", `/api/projects/${id}/resume`),
   deleteProject: (id) => request("DELETE", `/api/projects/${id}`),
 
+  // chats with the API department
+  listChats: () => request("GET", "/api/chats"),
+  createChat: (data) => request("POST", "/api/chats", data),
+  getChat: (id) => request("GET", `/api/chats/${id}`),
+  sendChatMessage: (id, data) => request("POST", `/api/chats/${id}/messages`, data),
+  stopChat: (id) => request("POST", `/api/chats/${id}/stop`),
+  renameChat: (id, title) => request("PATCH", `/api/chats/${id}`, { title }),
+  deleteChat: (id) => request("DELETE", `/api/chats/${id}`),
+  chatEvents: (id, after) => request("GET", `/api/chats/${id}/events?after=${after || 0}`),
+  chatChanges: (id, run) => request("GET", `/api/chats/${id}/changes${run ? `?run=${run}` : ""}`),
+  chatDiff: async (id, path, run) => (await request("GET", `/api/chats/${id}/diff?path=${encodeURIComponent(path)}${run ? `&run=${run}` : ""}`, undefined, { raw: true })).text(),
+  chatArchive: async (id) => (await request("GET", `/api/chats/${id}/archive`, undefined, { raw: true })).blob(),
+
   // API department: key pool, roles, skills, runs
   providers: () => request("GET", "/api/keys/providers"),
   listKeys: () => request("GET", "/api/keys"),

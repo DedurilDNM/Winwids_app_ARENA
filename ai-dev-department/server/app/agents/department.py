@@ -339,7 +339,13 @@ async def create_run(db, user_id: int, prompt: str, title: str = "", lead_role: 
     db.add(run)
     await db.commit()
     await db.refresh(run)
-    run.workspace = chat.workspace if chat is not None else str(workspace_for(run.id))
+    if chat is not None:
+        run.workspace = chat.workspace
+    else:
+        run.workspace = str(workspace_for(run.id))
+        import shutil
+
+        shutil.rmtree(run.workspace, ignore_errors=True)  # left from an old database: not this run's
     await db.commit()
     return run
 
