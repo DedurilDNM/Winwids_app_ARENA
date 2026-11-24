@@ -30,13 +30,15 @@ from app.models import ACCOUNT_ROLES, AgentRole, AgentRun, AgentRunEvent, ApiKey
 logger = logging.getLogger(__name__)
 
 ROLE_TOOLS = {
-    "Orchestrator": ["Read", "Glob", "Grep", "TodoWrite", "Task", "Skill", "SendFile"],
-    "Architect": ["Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Skill", "TodoWrite", "SendFile"],
-    "Coder": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "Skill", "TodoWrite", "SendFile"],
-    "Reviewer": ["Read", "Glob", "Grep", "Bash", "Skill"],
-    "Tester": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "SendFile"],
-    "Integrator": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "TodoWrite", "SendFile"],
+    "Orchestrator": ["Read", "Glob", "Grep", "TodoWrite", "Task", "Skill", "SendFile", "Screenshot"],
+    "Architect": ["Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Skill", "TodoWrite", "SendFile", "Screenshot"],
+    "Coder": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "Skill", "TodoWrite", "SendFile", "Screenshot"],
+    "Reviewer": ["Read", "Glob", "Grep", "Bash", "Skill", "Screenshot"],
+    "Tester": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "SendFile", "Screenshot"],
+    "Integrator": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "TodoWrite", "SendFile", "Screenshot"],
 }
+# the tools that existed before tools_seen was kept: a role saved then gets the newer ones
+TOOLS_BEFORE_SEEN = {"Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "SendFile", "Task"}
 _RUN_TASKS: dict[int, asyncio.Task] = {}
 _STOP: set[int] = set()
 
@@ -55,6 +57,15 @@ async def has_keys(db, user_id: int) -> bool:
     return row is not None
 
 
+def _role_tools(r) -> list[str]:
+    """The saved tools, plus the role's default tools added after it was saved (a tool the
+    user unchecked stays off: it is in tools_seen)."""
+    if r.tools is None:
+        return list(ROLE_TOOLS[r.role])
+    seen = set(r.tools_seen) if r.tools_seen else TOOLS_BEFORE_SEEN
+    return list(r.tools) + [t for t in ROLE_TOOLS[r.role] if t not in r.tools and t not in seen]
+
+
 async def role_specs(db, user_id: int) -> dict[str, AgentSpec]:
     """The roles that are set up (by hand or by the model picker). No vendor is assumed."""
     saved = {r.role: r for r in (await db.execute(select(AgentRole).where(AgentRole.user_id == user_id))).scalars()}
@@ -65,7 +76,7 @@ async def role_specs(db, user_id: int) -> dict[str, AgentSpec]:
             if not r.enabled:
                 continue
             specs[role] = AgentSpec(role=role, provider=r.provider, model=r.model, effort=r.effort,
-                                    tools=list(r.tools) if r.tools is not None else list(ROLE_TOOLS[role]),
+                                    tools=_role_tools(r),
                                     skills=list(r.skills) if r.skills is not None else None,
                                     instructions=r.instructions or "",
                                     max_turns=int(r.max_turns or _s("AGENT_MAX_TURNS", 60)),
@@ -207,7 +218,7 @@ async def _finish(run_id: int, **fields) -> None:
 
 
 PLAN_TOOLS = ["Read", "Glob", "Grep", "WebFetch", "TodoWrite", "Skill"]
-SOLO_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "SendFile"]
+SOLO_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "SendFile", "Screenshot"]
 PLAN_NOTE = ("This turn is planning only: study the project and the request, then answer with a clear, "
              "numbered plan (what to change, where, how to verify). Do not change any files.")
 

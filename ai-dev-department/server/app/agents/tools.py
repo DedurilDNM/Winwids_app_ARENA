@@ -22,6 +22,7 @@ from typing import Any, Awaitable, Callable
 from app.config import DATA_DIR, SERVER_ROOT
 
 MAX_READ_LINES = 2000
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 MAX_LINE = 2000
 MAX_OUTPUT = 30_000
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache"}
@@ -106,6 +107,14 @@ async def _read(ctx: ToolContext, a: dict) -> str:
         return "\n".join(f"{x.name}/" if x.is_dir() else x.name for x in items) or "(empty folder)"
     if not p.exists():
         raise ToolError(f"{a.get('path')}: no such file")
+    if p.suffix.lower() in IMAGE_SUFFIXES:  # the model sees the picture itself
+        from app.agents.screenshot import ScreenshotError, ToolOutput, image_block
+
+        try:
+            kind, data64, (w, h) = image_block(p)
+        except ScreenshotError as exc:
+            raise ToolError(f"{a.get('path')}: {exc}") from None
+        return ToolOutput(f"Image {_rel(ctx, p)} ({w}x{h}); it is attached to this result.", [(kind, data64)])
     data = p.read_bytes()
     if b"\0" in data[:8000]:
         return f"(binary file, {len(data)} bytes)"
@@ -328,6 +337,34 @@ async def _skill(ctx: ToolContext, a: dict) -> str:
     return f"# Skill: {skill.name}\n\n{skill.body()}{extra}"
 
 
+async def _screenshot(ctx: ToolContext, a: dict) -> str:
+    from app.agents import screenshot
+
+    p = resolve(ctx, a.get("path", ""))
+    if p.is_dir():
+        p = p / "index.html"
+    if not p.is_file() or p.suffix.lower() not in (".html", ".htm", ".svg"):
+        raise ToolError(f"{a.get('path')}: give an .html file in the project (e.g. prototype/index.html)")
+    view = a.get("viewport") or "both"
+    names = ["desktop", "phone"] if view == "both" else [view] if view in screenshot.VIEWPORTS else None
+    if not names:
+        raise ToolError("viewport: desktop, phone or both")
+    rel = p.resolve().relative_to(ctx.workspace.resolve()).as_posix()
+    try:
+        shots = await screenshot.take(ctx.workspace, rel, ctx.workspace / "screenshots", viewports=names,
+                                      full_page=bool(a.get("full_page")))
+    except (screenshot.ScreenshotError, asyncio.TimeoutError) as exc:
+        raise ToolError(f"Screenshot failed: {exc or 'the page did not load in time'}") from None
+    images, lines = [], []
+    for shot, name in zip(shots, names):
+        kind, data64, (w, h) = screenshot.image_block(shot)
+        images.append((kind, data64))
+        lines.append(f"{name}: {_rel(ctx, shot)} ({w}x{h})")
+    return screenshot.ToolOutput("Screenshots (attached, look at them):\n" + "\n".join(lines)
+                                 + "\nCheck the layout, spacing, text and contrast; fix what looks wrong and "
+                                 "take them again. SendFile a screenshot to show it to the user.", images)
+
+
 _KINDS = {".html": "html", ".htm": "html", ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image",
           ".webp": "image", ".svg": "image", ".pdf": "pdf", ".xlsx": "sheet", ".xlsm": "sheet", ".csv": "sheet",
           ".docx": "document", ".pptx": "slides", ".md": "text", ".txt": "text", ".json": "text"}
@@ -358,7 +395,7 @@ async def _task(ctx: ToolContext, a: dict) -> str:
 
 TOOLS: dict[str, Tool] = {t.name: t for t in (
     Tool("Read", "Read a file of the project (numbered lines) or list a folder. Paths are relative to the project "
-         "root. Use offset/limit for long files.",
+         "root. Use offset/limit for long files. An image (png, jpg, webp, gif) is returned as a picture you can see.",
          _schema({"path": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, ["path"]),
          _read),
     Tool("Write", "Create or overwrite a file (path first, then content). For a big file (over ~300 lines) "
@@ -393,6 +430,12 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
          "and PDF are shown, spreadsheets as a table, any file can be downloaded. Use it for deliverables "
          "(prototypes, documents, reports), not for every file you touch.",
          _schema({"path": {"type": "string"}, "caption": {"type": "string"}}, ["path"]), _sendfile),
+    Tool("Screenshot", "Open an HTML page of the project in a browser and look at it: returns screenshots "
+         "(desktop 1440x900 and phone 390x844) as images you can see, saved in screenshots/. Use it to check "
+         "a prototype or a web page you made before you call it done.",
+         _schema({"path": {"type": "string"}, "viewport": {"type": "string", "enum": ["both", "desktop", "phone"]},
+                  "full_page": {"type": "boolean", "description": "the whole page (up to 3 screens), not one screen"}},
+                 ["path"]), _screenshot),
     Tool("Task", "Give a piece of work to a sub-agent of another role and get its final report. Several Task calls "
          "in one reply run in parallel. Give each a complete, self-contained prompt: it does not see this chat.",
          _schema({"role": {"type": "string"}, "description": {"type": "string"}, "prompt": {"type": "string"}},

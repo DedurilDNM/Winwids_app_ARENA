@@ -43,9 +43,16 @@ def reply(role: str, turn: int, messages: list) -> dict:
                         "import os; os.makedirs('out', exist_ok=True); wb.save('out/report.xlsx')")
                 return {"content": None, "tool_calls": [call("Write", 0, path="prototype/index.html", content=html),
                                                         call("Bash", 1, command=f'python3 -c "{xlsx}"')]}
-            if turn == 1:
+            if turn == 1:  # look at the page
+                return {"content": None, "tool_calls": [call("Screenshot", 0, path="prototype/index.html", viewport="desktop")]}
+            if turn == 2:
+                saw = any(isinstance(m.get("content"), list) and any(p.get("type") == "image_url"
+                          and p["image_url"]["url"].startswith("data:image/") for p in m["content"]) for m in messages)
+                if not saw:
+                    return {"content": "Скриншот не дошёл до модели."}
                 return {"content": None, "tool_calls": [call("SendFile", 0, path="prototype/index.html", caption="Главный экран"),
-                                                        call("SendFile", 1, path="out/report.xlsx")]}
+                                                        call("SendFile", 1, path="out/report.xlsx"),
+                                                        call("SendFile", 2, path="screenshots/prototype-desktop.png", caption="Скриншот")]}
             return {"content": "Прототип и таблица готовы."}
         if turn == 0 and "тёмн" in prompt.lower():
             return {"content": None, "tool_calls": [call("Edit", 0, path="hello.py", old_string="Hello", new_string="Hello, dark")]}

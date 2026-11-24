@@ -138,17 +138,30 @@ def _to_openai_messages(system: str, messages: list[dict]) -> list[dict]:
             if isinstance(content, str):
                 out.append({"role": "user", "content": content})
                 continue
-            texts = []
+            texts, images = [], []
             for b in content:
                 if b.get("type") == "tool_result":
                     body = b.get("content")
-                    if not isinstance(body, str):
+                    if isinstance(body, list):  # text and images: tool messages take text only, so the
+                        parts = []              # images follow in a user message
+                        for part in body:
+                            if part.get("type") == "image":
+                                src = part.get("source") or {}
+                                images.append({"type": "image_url", "image_url": {
+                                    "url": f"data:{src.get('media_type', 'image/png')};base64,{src.get('data', '')}"}})
+                            elif part.get("type") == "text":
+                                parts.append(part.get("text", ""))
+                        body = "\n".join(parts)
+                    elif not isinstance(body, str):
                         body = json.dumps(body, ensure_ascii=False)
                     out.append({"role": "tool", "tool_call_id": b["tool_use_id"],
                                 "content": ("ERROR: " if b.get("is_error") else "") + body})
                 elif b.get("type") == "text":
                     texts.append(b["text"])
-            if texts:
+            if images:
+                lead = "\n\n".join(texts + ["The images from the tool results above:"])
+                out.append({"role": "user", "content": [{"type": "text", "text": lead}] + images})
+            elif texts:
                 out.append({"role": "user", "content": "\n\n".join(texts)})
         else:
             blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]

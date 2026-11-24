@@ -243,6 +243,7 @@ class AgentRole(Base):
     model: Mapped[str] = mapped_column(String(200))
     effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
     tools: Mapped[list | None] = mapped_column(JSON, nullable=True)  # None = the role's defaults
+    tools_seen: Mapped[list | None] = mapped_column(JSON, nullable=True)  # the tools there were when saved
     skills: Mapped[list | None] = mapped_column(JSON, nullable=True)  # None = every skill
     instructions: Mapped[str] = mapped_column(Text, default="")
     max_turns: Mapped[int | None] = mapped_column(Integer, nullable=True)

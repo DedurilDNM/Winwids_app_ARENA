@@ -1,6 +1,6 @@
 ---
 name: html-prototype
-description: Build an interactive prototype or a small web page as ONE self-contained HTML file and show it live in the chat - landing pages, app screens, dashboards, mock-ups to look at and click. Use when the user wants to see a design or a prototype.
+description: Build an interactive prototype or a small web page in HTML, look at it with screenshots and show it live in the chat - landing pages, app screens, dashboards, mock-ups to look at and click. Use when the user wants to see a design or a prototype.
 ---
 
 # HTML prototypes
@@ -8,7 +8,7 @@ description: Build an interactive prototype or a small web page as ONE self-cont
 The chat shows an HTML file live (in a sandbox) when you send it with **SendFile**. Make it worth looking at.
 
 ## Rules of the format
-- ONE file: CSS in `<style>`, JS in `<script>`. Other files next to it are not loaded in the chat preview.
+- A folder per prototype: `prototype/index.html`, with `style.css` and `app.js` next to it when the page is big (the chat preview loads files next to the page by relative paths). A small page can be one file.
 - External code only from a CDN with an exact version (e.g. `https://cdn.jsdelivr.net/npm/chart.js@4.4.1`), fonts from Google Fonts. No build step.
 - Mock data inside the file; no calls to real APIs.
 - Works at 360 px wide (16 px side margins, no sideways scroll) and on a desktop.
@@ -19,6 +19,6 @@ The chat shows an HTML file live (in a sandbox) when you send it with **SendFile
 - Real states: hover, focus, empty, loading - and make the main buttons do something (switch tabs, open a dialog, add an item).
 
 ## Steps
-1. Write `prototype/index.html` (a big page in parts: the first ~300 lines, then Write with `append: true`; or keep the CSS and JS in `prototype/style.css` and `prototype/app.js`).
-2. Check it if a browser is available (`python3 -c "import playwright"`): open it, look for console errors, take a screenshot at 390 and 1440 px.
-3. **SendFile** `prototype/index.html` with a one-line caption of what to look at.
+1. Write the page (`prototype/index.html`; several variants: `prototype/a/index.html`, `prototype/b/...`). A big file in parts: the first ~300 lines, then Write with `append: true`.
+2. **Look at it**: `Screenshot` the page (desktop and phone). Study the pictures like a designer would: alignment, spacing, overflow, text that is cut or unreadable, contrast, what draws the eye first, the phone layout. Fix what is wrong and take the screenshots again - at least one round of fixes is normal.
+3. **SendFile** the page (it opens live in the chat) with a one-line caption of what to look at, and SendFile the desktop screenshot (`screenshots/<name>-desktop.png`) so the user sees it at a glance.

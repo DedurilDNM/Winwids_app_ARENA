@@ -26,7 +26,8 @@ export DATABASE_URL="sqlite+aiosqlite:///$S/app.db" VNC_HEADLESS=false REDIS_URL
   SERVICE_URL="${E2E_SERVICE_URL:-http://127.0.0.1:9100/}" \
   NOVNC_PUBLIC_BASE_URL=http://127.0.0.1:6080 NOVNC_WEB_ROOT=/usr/share/novnc \
   GITHUB_GIT_URL="file://$S/remotes" \
-  E2E_CHROMIUM="${E2E_CHROMIUM:-/opt/pw-browsers/chromium-1243/chrome-linux64/chrome}" E2E_FAKE_GITHUB=1
+  E2E_CHROMIUM="${E2E_CHROMIUM:-/opt/pw-browsers/chromium-1243/chrome-linux64/chrome}" E2E_FAKE_GITHUB=1 \
+  AGENT_SCREENSHOT_CHROMIUM="${E2E_CHROMIUM:-/opt/pw-browsers/chromium-1243/chrome-linux64/chrome}"
 nohup "$PY" "$HERE/e2e_server.py" >> "$S/srv.log" 2>&1 &
 for i in $(seq 1 40); do curl -sf 127.0.0.1:8000/health >/dev/null && echo up && exit 0; sleep 0.5; done
 echo FAILED; tail -20 "$S/srv.log"; exit 1

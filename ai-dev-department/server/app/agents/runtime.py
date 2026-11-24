@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
-from app.agents.llm import LLMResponse, Request
+from app.agents.llm import REQUEST, LLMError, LLMResponse, Request
 from app.agents.tools import normalize_args, TOOLS, ToolContext, describe_call, run_tool
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,8 @@ def system_prompt(spec: AgentSpec, ctx: ToolContext) -> str:
         "tests) when the project has a way to do it.",
         "When you made something for the user to look at or download - a prototype page, a document, a "
         "spreadsheet, a presentation, an image, a report - show it with the SendFile tool.",
+        "When you made a web page or a prototype, look at it with the Screenshot tool (if you have it) before you "
+        "call it done, and fix what looks wrong; Read shows image files as pictures.",
         "Documents: write .docx / .xlsx / .pptx / .pdf files with Python (python-docx, openpyxl, python-pptx, "
         "reportlab, pypdf are installed) through Bash; open the matching skill first when there is one.",
         "When you are done, answer without calling tools: a short report - what you did, which files changed, "
@@ -100,6 +102,21 @@ def _trim(messages: list[dict]) -> None:
         body = block.get("content")
         if isinstance(body, str) and len(body) > TRIM_TO:
             block["content"] = body[:TRIM_TO] + f"\n…[shortened: {len(body) - TRIM_TO} characters of an old result]"
+
+
+KEEP_IMAGES = 4  # the latest images stay in the conversation; older ones become a note
+NO_IMAGE = "[an image was here; it was removed to keep the conversation small - take or read it again if needed]"
+
+
+def drop_images(messages: list[dict], keep: int) -> int:
+    """Replace all but the last `keep` images in tool results with a note; the number removed."""
+    spots = [(b["content"], k) for m in messages if m["role"] == "user" and isinstance(m["content"], list)
+             for b in m["content"] if b.get("type") == "tool_result" and isinstance(b.get("content"), list)
+             for k, part in enumerate(b["content"]) if part.get("type") == "image"]
+    old = spots[:-keep] if keep else spots
+    for content, k in old:
+        content[k] = {"type": "text", "text": NO_IMAGE}
+    return len(old)
 
 
 # complete(spec, request): one model call for this agent (the spec's provider, then its fallbacks)
@@ -149,14 +166,24 @@ async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Co
             except Exception:
                 logger.debug("agent event failed", exc_info=True)
 
+    no_images = False
     for turn in range(1, spec.max_turns + 1):
         if should_continue is not None and not await should_continue():
             raise asyncio.CancelledError("stopped")
         if spec.provider != "anthropic" or spec.fallbacks:
             _trim(messages)
+        drop_images(messages, keep=0 if no_images else KEEP_IMAGES)
         await emit({"type": "waiting", "role": spec.role, "model": spec.model})  # the UI shows who waits for which model
-        resp = await complete(spec, Request(model=spec.model, messages=messages, system=system,
-                                            tools=tool_specs, max_tokens=spec.max_tokens, effort=spec.effort))
+        try:
+            resp = await complete(spec, Request(model=spec.model, messages=messages, system=system,
+                                                tools=tool_specs, max_tokens=spec.max_tokens, effort=spec.effort))
+        except LLMError as exc:
+            if exc.outcome != REQUEST or no_images or not drop_images(messages, keep=0):
+                raise
+            no_images = True  # this model does not take images: go on without them
+            logger.info("%s: %s does not accept images (%s); going on without them", spec.role, spec.model, exc)
+            resp = await complete(spec, Request(model=spec.model, messages=messages, system=system,
+                                                tools=tool_specs, max_tokens=spec.max_tokens, effort=spec.effort))
         tokens_in += resp.tokens_in
         tokens_out += resp.tokens_out
         messages.append({"role": "assistant", "content": resp.content, "_raw": resp.raw})
@@ -196,7 +223,12 @@ async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Co
                 text, is_error = await run_tool(ctx, name, args)
             await emit({"type": "tool_done", "tool": name, "id": call["id"], "ok": not is_error,
                         "note": text[:200] if is_error else "", **tool_detail(name, args, text, is_error)})
-            return {"type": "tool_result", "tool_use_id": call["id"], "content": text, "is_error": is_error}
+            images = getattr(text, "images", None)
+            if images and not is_error:
+                content = [{"type": "text", "text": str(text)}] + [
+                    {"type": "image", "source": {"type": "base64", "media_type": kind, "data": data}} for kind, data in images]
+                return {"type": "tool_result", "tool_use_id": call["id"], "content": content, "is_error": False}
+            return {"type": "tool_result", "tool_use_id": call["id"], "content": str(text), "is_error": is_error}
 
         results = await asyncio.gather(*(one(c) for c in calls))
         messages.append({"role": "user", "content": list(results)})

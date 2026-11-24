@@ -238,7 +238,7 @@ function addKeyDialog(providers, done) {
 
 export async function rolesView(body) {
   const [roles, providers, skills] = await Promise.all([api.listRoles(), api.providers(), api.listSkills()]);
-  const TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "SendFile", "Task"];
+  const TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "SendFile", "Screenshot", "Task"];
   const grid = h("div", { class: "grid roles-grid" });
   const autoBox = h("div", { class: "card", hidden: true, "data-testid": "auto-result" });
   const autoBtn = h("button", { class: "primary", "data-testid": "auto-roles", onclick: () => runAuto() }, "Подобрать модели автоматически");

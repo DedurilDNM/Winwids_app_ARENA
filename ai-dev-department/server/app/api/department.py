@@ -97,6 +97,7 @@ async def save_role(role: str, body: RoleIn, user: Annotated[User, Depends(get_c
     changed = (r.provider, r.model) != (body.provider, body.model.strip())
     r.provider, r.model, r.effort = body.provider, body.model.strip(), body.effort or None
     r.tools, r.skills, r.instructions = body.tools, body.skills, body.instructions
+    r.tools_seen = list(ALL_TOOL_NAMES)  # a tool left unchecked now stays off when new tools come
     r.max_turns, r.enabled = body.max_turns, body.enabled
     if r.auto and changed:
         r.auto, r.fallbacks = False, None  # chosen by hand now

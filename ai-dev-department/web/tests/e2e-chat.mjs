@@ -109,11 +109,15 @@ await page.setInputFiles("[data-testid=attach-input]", "/tmp/aidd-e2e-brief.csv"
 assert.match(await page.locator(".chips-files").innerText(), /aidd-e2e-brief\.csv/);
 await page.fill("[data-testid=chat-input]", "Сделай прототип экрана и таблицу итогов");
 await page.keyboard.press("Enter");
-await page.waitForFunction(() => document.querySelectorAll("[data-testid=attachment]").length === 2, null, { timeout: 60000 });
+await page.waitForFunction(() => document.querySelectorAll("[data-testid=attachment]").length === 3, null, { timeout: 90000 });
 const frame = page.frameLocator(".att-frame").first();
 await frame.locator("#go").click();
 assert.equal(await frame.locator("#t").innerText(), "24:59");  // the prototype is live
 assert.match(await page.locator(".att-table").innerText(), /Январь\s+42/);
+// the agent looked at its page: the screenshot reached the model and came back as a picture
+const shot = page.locator("[data-testid=attachment] img").first();
+await shot.waitFor();
+assert.ok(await shot.evaluate((img) => img.complete && img.naturalWidth === 1440), "the screenshot is shown");
 assert.equal(await page.evaluate(() => { try { return document.querySelector(".att-frame").contentWindow.document.title; } catch { return "blocked"; } }), "blocked");
 const third = await page.evaluate(() => document.querySelectorAll("[data-testid=turn]")[2].innerText);
 assert.match(third, /uploads\/aidd-e2e-brief\.csv/);

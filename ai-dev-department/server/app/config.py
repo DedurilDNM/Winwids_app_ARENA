@@ -264,6 +264,7 @@ class Settings(BaseSettings):
     # every key of a role's provider limited this long -> the role's next fallback model takes over
     AGENT_FALLBACK_AFTER_SECONDS: float = 60
     AGENT_BASH_SANDBOX: str = "auto"  # auto (bwrap when installed) | bwrap (required) | off
+    AGENT_SCREENSHOT_CHROMIUM: str = ""  # a Chromium binary for agent screenshots; empty = Playwright's, else Camoufox
     ADAPTER_COPY_READER: bool = True
     ADAPTER_COPY_SELECTOR: str = ""
     # How often the «pulse» of a waiting agent is sent to the app (seconds).
