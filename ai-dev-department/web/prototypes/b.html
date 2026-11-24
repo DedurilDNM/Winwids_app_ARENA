@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AIDD · Студия</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f6f1e9; --card: #fffdf9; --ink: #1f1b16; --muted: #786e63; --line: #e8dfd2; --soft: #efe7da;
+  --ok: #2f9e6b; --warn: #d98a1c; --bad: #d3453f; --info: #3b6fd8;
+  --shadow: 0 1px 0 #fff inset, 0 10px 30px -18px #6b4f2a55, 0 2px 6px -2px #6b4f2a22;
+  --display: Unbounded, Manrope, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 Manrope, system-ui, sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+.top { display: flex; align-items: center; gap: 16px; padding: 16px 28px; max-width: 1280px; margin: 0 auto; }
+.brand { font: 700 18px var(--display); display: flex; align-items: center; gap: 10px; }
+.brand i { width: 30px; height: 30px; border-radius: 10px; background: radial-gradient(circle at 30% 30%, #ffd68a, #f08a4b 60%, #c2410c); box-shadow: 0 6px 16px -6px #c2410c99; display: block; }
+.tabs { display: flex; gap: 4px; background: var(--soft); padding: 4px; border-radius: 999px; margin: 0 auto; }
+.tabs button { border: 0; background: none; padding: 8px 16px; border-radius: 999px; cursor: pointer; font-weight: 600; color: var(--muted); }
+.tabs button.on { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+.faces { display: flex; }
+.faces span { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; border: 2px solid var(--bg); margin-left: -8px; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 8px 28px 110px; }
+.view { display: none; } .view.on { display: block; animation: fade .3s ease-out; }
+@keyframes fade { from { opacity: 0; transform: translateY(6px); } }
+h2 { font: 700 26px/1.2 var(--display); margin: 10px 0 4px; letter-spacing: -.01em; }
+.sub { color: var(--muted); margin: 0 0 20px; }
+.card { background: var(--card); border-radius: 22px; box-shadow: var(--shadow); border: 1px solid var(--line); }
+.hero { display: grid; grid-template-columns: auto 1fr auto; gap: 20px; align-items: center; padding: 20px 24px; margin-bottom: 20px; }
+.ring { --p: 40; width: 76px; height: 76px; border-radius: 50%; background: conic-gradient(var(--ok) calc(var(--p) * 1%), var(--soft) 0); display: grid; place-items: center; }
+.ring div { width: 58px; height: 58px; border-radius: 50%; background: var(--card); display: grid; place-items: center; font: 700 15px var(--display); }
+.meta { display: flex; gap: 22px; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
+.meta b { color: var(--ink); display: block; font: 700 18px var(--display); }
+.btn { border: 1px solid var(--line); background: var(--card); padding: 10px 16px; border-radius: 14px; cursor: pointer; font-weight: 700; box-shadow: var(--shadow); }
+.btn.dark { background: var(--ink); color: #fff8ee; border-color: var(--ink); }
+.desks { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; }
+.desk { padding: 18px; display: flex; flex-direction: column; gap: 12px; cursor: pointer; transition: transform .15s, box-shadow .15s; position: relative; overflow: hidden; }
+.desk:hover { transform: translateY(-2px); }
+.desk.sel { outline: 3px solid var(--ink); }
+.desk .who { display: flex; align-items: center; gap: 12px; }
+.ava { width: 46px; height: 46px; border-radius: 16px; display: grid; place-items: center; font-size: 18px; position: relative; flex: none; }
+.ava.working::after { content: ""; position: absolute; inset: -4px; border-radius: 19px; border: 2px solid currentColor; opacity: .35; animation: breathe 1.6s infinite; }
+@keyframes breathe { 50% { transform: scale(1.08); opacity: .1; } }
+.who b { font-size: 16px; display: block; }
+.who .t { color: var(--muted); font-size: 13px; }
+.bubble { background: var(--soft); border-radius: 14px 14px 14px 4px; padding: 10px 12px; font-size: 13.5px; min-height: 44px; }
+.bubble code { font: 600 12.5px ui-monospace, monospace; }
+.state { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px; padding: 4px 10px; border-radius: 999px; }
+.state.working { background: #e3ecff; color: var(--info); } .state.done { background: #def3e8; color: var(--ok); }
+.state.waiting { background: #fbebd2; color: var(--warn); } .state.queued { background: var(--soft); color: var(--muted); }
+.state.available { background: #def3e8; color: var(--ok); } .state.limited { background: #fbebd2; color: var(--warn); } .state.invalid { background: #fbe0de; color: var(--bad); }
+.meter { height: 6px; border-radius: 3px; background: var(--soft); overflow: hidden; } .meter span { display: block; height: 100%; border-radius: 3px; transition: width .6s; }
+.foot { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12.5px; }
+.lead { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(200px, auto) 1fr minmax(220px, auto); align-items: center; gap: 16px; }
+.lead .foot { gap: 10px; }
+.feed { margin-top: 22px; padding: 8px 0; }
+.feed h3 { font: 700 15px var(--display); margin: 10px 22px; }
+.ev { display: grid; grid-template-columns: 34px 1fr auto; gap: 12px; align-items: center; padding: 10px 22px; }
+.ev + .ev { border-top: 1px dashed var(--line); }
+.ev .ava { width: 34px; height: 34px; border-radius: 12px; font-size: 13px; }
+.ev.new { animation: fade .5s ease-out; background: linear-gradient(90deg, #fff4dd, transparent); }
+.ev small { color: var(--muted); }
+/* the pool */
+.pool { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+.tankcard { padding: 22px; display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; }
+.tank { width: 210px; height: 230px; border-radius: 40px 40px 70px 70px; border: 6px solid var(--ink); position: relative; overflow: hidden; background: #fff; }
+.tank::before { content: ""; position: absolute; top: -6px; left: 30px; right: 30px; height: 14px; background: var(--ink); border-radius: 0 0 10px 10px; z-index: 2; }
+.liquid { position: absolute; left: 0; right: 0; bottom: 0; background: linear-gradient(180deg, #5fd3a0, #2f9e6b); transition: height 1s cubic-bezier(.3,1.4,.5,1); }
+.liquid::before { content: ""; position: absolute; left: -50%; width: 200%; top: -14px; height: 28px; background: radial-gradient(circle at 25% 100%, transparent 14px, #5fd3a0 15px) 0 0 / 56px 28px repeat-x; animation: wave 3s linear infinite; }
+@keyframes wave { to { transform: translateX(56px); } }
+.tank .num { position: absolute; inset: 0; display: grid; place-items: center; font: 700 44px var(--display); color: #fff; text-shadow: 0 2px 10px #0004; z-index: 1; }
+.tank .num small { display: block; font: 600 13px Manrope; }
+.legend { display: flex; gap: 14px; justify-content: center; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.group { padding: 18px 20px; margin-bottom: 16px; }
+.group h3 { margin: 0 0 12px; font: 700 15px var(--display); display: flex; align-items: center; gap: 10px; }
+.group h3 .pv { width: 26px; height: 26px; border-radius: 8px; color: #fff; display: grid; place-items: center; font: 800 10px Manrope; }
+.keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.key { border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px; display: grid; grid-template-columns: 1fr auto; gap: 6px; background: #fffaf2; transition: background .5s; }
+.key.flash { background: #fff1cc; }
+.key b { font-size: 14px; } .key .mask { font: 12px ui-monospace, monospace; color: var(--muted); }
+.cool { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font: 700 10px Manrope; color: var(--warn); }
+.roles { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+.role { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.role .head { display: flex; gap: 12px; align-items: center; }
+.role .head b { font: 700 18px var(--display); }
+.sel2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.sel2 label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+select { appearance: none; background: var(--soft) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23786e63' stroke-width='3'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center; border: 0; border-radius: 12px; padding: 9px 30px 9px 12px; font-weight: 600; font-size: 13px; width: 100%; }
+.toggles { display: flex; flex-wrap: wrap; gap: 6px; }
+.tg { border: 1.5px solid var(--line); background: none; border-radius: 10px; padding: 5px 10px; font-size: 12.5px; font-weight: 700; cursor: pointer; color: var(--muted); }
+.tg.on { background: var(--ink); color: #fff8ee; border-color: var(--ink); }
+.lib { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+.book { overflow: hidden; display: flex; flex-direction: column; }
+.book .cov { height: 86px; padding: 14px 18px; display: flex; align-items: flex-end; font: 700 17px var(--display); }
+.book .body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+.book .body p { margin: 0; color: var(--muted); font-size: 14px; }
+.toasts { position: fixed; left: 50%; transform: translateX(-50%); bottom: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 20; width: min(440px, calc(100vw - 32px)); }
+.toast { background: var(--ink); color: #fff8ee; border-radius: 16px; padding: 12px 16px; font-size: 14px; box-shadow: 0 14px 40px -10px #0007; animation: fade .3s ease-out; display: flex; gap: 10px; align-items: center; }
+.toast i { font-style: normal; font-size: 18px; }
+.mtabs { display: none; }
+@media (max-width: 860px) {
+  .top { padding: 14px 16px; } .tabs { display: none; } .faces { margin-left: auto; }
+  .wrap { padding: 4px 16px 110px; }
+  h2 { font-size: 21px; }
+  .hero { grid-template-columns: auto 1fr; } .hero .btn { grid-column: 1 / -1; }
+  .pool { grid-template-columns: 1fr; }
+  .roles { grid-template-columns: 1fr; }
+  .lead { grid-template-columns: auto 1fr; } .lead > :last-child { grid-column: 1 / -1; }
+  .mtabs { display: flex; position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); background: var(--ink); border-radius: 20px; padding: 6px; z-index: 10; box-shadow: 0 14px 40px -10px #0008; }
+  .mtabs button { flex: 1; border: 0; background: none; color: #bfb3a3; font-weight: 700; font-size: 12px; padding: 10px 4px; border-radius: 14px; }
+  .mtabs button.on { background: #fff8ee; color: var(--ink); }
+  .toasts { bottom: 90px; }
+}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand"><i></i>Студия AIDD</div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="faces" id="faces"></div>
+</div>
+<div class="wrap">
+  <section class="view on" id="v-run">
+    <h2 id="runTitle"></h2>
+    <p class="sub">Отдел работает: ведущий агент раздаёт задачи, субагенты трудятся параллельно.</p>
+    <div class="card hero">
+      <div class="ring" id="ring"><div id="ringTxt">0%</div></div>
+      <div class="meta"><span><b id="mTime">0:00</b>в работе</span><span><b id="mAgents">0</b>агентов</span><span><b id="mTok">0</b>токенов</span><span><b id="mKeys">0</b>ключей в котле</span></div>
+      <button class="btn">Остановить</button>
+    </div>
+    <div class="desks" id="desks"></div>
+    <div class="card feed"><h3 id="feedTitle">Что происходит</h3><div id="feed"></div></div>
+  </section>
+
+  <section class="view" id="v-keys">
+    <h2>Котёл ключей</h2>
+    <p class="sub">Кидайте ключи в общий котёл — агенты сами разберут свободные. Ключ упёрся в лимит — остывает и проверяется раз в 5 минут.</p>
+    <div class="pool">
+      <div class="card tankcard">
+        <div class="tank"><div class="liquid" id="liquid"></div><div class="num" id="tankNum"></div></div>
+        <div class="legend"><span><i style="background:var(--ok)"></i>доступны</span><span><i style="background:var(--warn)"></i>остывают</span><span><i style="background:var(--bad)"></i>недействительны</span></div>
+        <button class="btn dark" style="width:100%">+ Бросить ключ в котёл</button>
+      </div>
+      <div id="groups"></div>
+    </div>
+  </section>
+
+  <section class="view" id="v-roles">
+    <h2>Роли отдела</h2>
+    <p class="sub">Кто чем занимается: агрегатор, модель, инструменты и скиллы для каждой роли.</p>
+    <div class="roles" id="roles"></div>
+  </section>
+
+  <section class="view" id="v-skills">
+    <h2>Библиотека скиллов</h2>
+    <p class="sub">Как в Claude Code: папка со SKILL.md. Агент сам открывает нужный скилл, когда задача подходит под описание.</p>
+    <div class="lib" id="lib"></div>
+  </section>
+</div>
+<nav class="mtabs" id="mtabs"></nav>
+<div class="toasts" id="toasts"></div>
+<script src="mock.js"></script>
+<script>
+const M = window.AIDD_MOCK, $ = (s) => document.querySelector(s);
+const VIEWS = [["run", "Отдел"], ["keys", "Котёл"], ["roles", "Роли"], ["skills", "Скиллы"]];
+let cur = "run", sel = null;
+const H = (role) => (M.roleOf(role) || { hue: 30 }).hue;
+const ava = (role, st) => `<div class="ava ${st || ""}" style="background:hsl(${H(role)} 75% 91%);color:hsl(${H(role)} 50% 36%)">${(M.roleOf(role) || {}).glyph || "?"}</div>`;
+const ST = { working: "работает", done: "готово", waiting: "ждёт", queued: "в очереди" };
+function go(id) { cur = id; document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.id === "v-" + id)); tabs(); }
+function tabs() { const html = VIEWS.map(([id, t]) => `<button class="${cur === id ? "on" : ""}" onclick="go('${id}')">${t}</button>`).join(""); $("#tabs").innerHTML = html; $("#mtabs").innerHTML = html; }
+function lastAction(id) {
+  const s = M.run.steps.filter((x) => x.agent === id).slice(-1)[0];
+  if (!s) return "Ждёт своей очереди…";
+  if (s.kind === "text") return s.text;
+  const verb = { Read: "Читает", Write: "Пишет", Edit: "Правит", Bash: "Запускает", Glob: "Ищет файлы", Grep: "Ищет в коде", Skill: "Открыл скилл", Task: "Поручил", TodoWrite: "Составил план", WebFetch: "Читает страницу" }[s.tool] || s.tool;
+  return `${verb} <code>${s.arg}</code>${s.ok === false ? " — не вышло" : ""}`;
+}
+function renderRun() {
+  const r = M.run, done = r.agents.filter((a) => a.status === "done").length, pct = Math.round(done / r.agents.length * 100);
+  $("#runTitle").textContent = r.title;
+  $("#ring").style.setProperty("--p", pct); $("#ringTxt").textContent = pct + "%";
+  $("#mTime").textContent = M.elapsed(); $("#mAgents").textContent = r.agents.length;
+  $("#mTok").textContent = (r.agents.reduce((s, a) => s + a.tokens, 0) / 1000).toFixed(1) + "k";
+  $("#mKeys").textContent = M.keys.filter((k) => k.status === "available").length + "/" + M.keys.length;
+  const max = Math.max(...r.agents.map((a) => a.tokens), 1);
+  $("#desks").innerHTML = r.agents.map((a) => `<div class="card desk ${a.parent ? "" : "lead"} ${sel === a.id ? "sel" : ""}" onclick="pick('${a.id}')">
+    <div class="who">${ava(a.role, a.status)}<div><b>${a.role}${r.agents.filter((x) => x.role === a.role).length > 1 ? " " + (r.agents.filter((x) => x.role === a.role).indexOf(a) + 1) : ""}</b><span class="t">${a.task}</span></div></div>
+    <div class="bubble">${lastAction(a.id)}</div>
+    <div><div class="foot"><span class="state ${a.status}">${ST[a.status]}</span><span>${(a.tokens / 1000).toFixed(1)}k токенов</span></div>
+    <div class="meter" style="margin-top:8px"><span style="width:${a.tokens / max * 100}%;background:hsl(${H(a.role)} 60% 55%)"></span></div></div>
+  </div>`).join("");
+  $("#faces").innerHTML = r.agents.filter((a) => a.status === "working").map((a) => `<span style="background:hsl(${H(a.role)} 75% 88%);color:hsl(${H(a.role)} 50% 36%)">${M.roleOf(a.role).glyph}</span>`).join("");
+}
+function renderFeed(flash) {
+  const steps = M.run.steps.filter((s) => !sel || s.agent === sel).slice(-12).reverse();
+  $("#feedTitle").textContent = sel ? "Шаги: " + M.run.agents.find((a) => a.id === sel).role : "Что происходит";
+  $("#feed").innerHTML = steps.map((s, i) => { const a = M.run.agents.find((x) => x.id === s.agent);
+    const text = s.kind === "text" ? s.text : `${s.tool} · <code>${s.arg}</code>${s.note ? " · " + s.note : ""}`;
+    return `<div class="ev ${i === 0 && flash ? "new" : ""}">${ava(a.role)}<div><small>${a.role}</small><div>${text}</div></div><span>${s.kind === "text" ? "💬" : s.ok ? "✅" : "⚠️"}</span></div>`; }).join("");
+}
+function pick(id) { sel = sel === id ? null : id; renderRun(); renderFeed(); }
+function renderKeys(flashId) {
+  const c = { available: 0, limited: 0, invalid: 0 }; M.keys.forEach((k) => c[k.status]++);
+  $("#liquid").style.height = Math.round(c.available / M.keys.length * 100) + "%";
+  $("#tankNum").innerHTML = `<div>${c.available}<small>из ${M.keys.length} готовы к работе</small></div>`;
+  const L = { available: "доступен", limited: "остывает", invalid: "недействителен" };
+  $("#groups").innerHTML = Object.entries(M.PROVIDERS).map(([id, p]) => {
+    const ks = M.keys.filter((k) => k.provider === id); if (!ks.length) return "";
+    return `<div class="card group"><h3><span class="pv" style="background:${p.color}">${p.short}</span>${p.name}<span style="margin-left:auto;font:600 13px Manrope;color:var(--muted)">${ks.filter((k) => k.status === "available").length}/${ks.length}</span></h3><div class="keys">${ks.map((k) => {
+      const left = k.nextCheck ? Math.max(0, (k.nextCheck - Date.now()) / 300e3) : 0;
+      return `<div class="key ${flashId === k.id ? "flash" : ""}"><div><b>${k.label}</b><div class="mask">••••${k.tail} · ${k.used.toLocaleString("ru-RU")} запр.</div><div style="margin-top:6px"><span class="state ${k.status}">${L[k.status]}</span></div>${k.reason ? `<div class="mask" style="margin-top:4px">${k.reason}</div>` : ""}</div>
+        ${k.status === "limited" ? `<div class="cool" style="background:conic-gradient(var(--warn) ${Math.min(1, left) * 360}deg, var(--soft) 0)"><div style="width:30px;height:30px;border-radius:50%;background:#fffaf2;display:grid;place-items:center">${M.fmtLeft(k.nextCheck)}</div></div>` : k.busy ? `<div class="cool" style="color:var(--info)" title="в работе">${"●".repeat(k.busy)}</div>` : "<span></span>"}</div>`; }).join("")}</div></div>`;
+  }).join("");
+}
+function renderRoles() {
+  $("#roles").innerHTML = M.roles.map((r, ri) => `<div class="card role">
+    <div class="head">${ava(r.role)}<div><b>${r.role}</b><div style="color:var(--muted);font-size:13px">${r.model}</div></div></div>
+    <div class="sel2"><label>Агрегатор<select>${Object.entries(M.PROVIDERS).map(([id, p]) => `<option ${id === r.provider ? "selected" : ""}>${p.name}</option>`).join("")}</select></label>
+    <label>Модель<select><option>${r.model}</option><option>…список с сервера агрегатора</option></select></label></div>
+    <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Инструменты</div><div class="toggles">${M.TOOLS.map((t) => `<button class="tg ${r.tools.includes(t) ? "on" : ""}" onclick="tog(M.roles[${ri}].tools,'${t}')">${t}</button>`).join("")}</div></div>
+    <div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">Скиллы</div><div class="toggles">${M.skills.map((s) => `<button class="tg ${r.skills.includes(s.name) ? "on" : ""}" onclick="tog(M.roles[${ri}].skills,'${s.name}')">${s.name}</button>`).join("")}</div></div>
+  </div>`).join("");
+}
+function tog(a, v) { a.includes(v) ? a.splice(a.indexOf(v), 1) : a.push(v); renderRoles(); }
+function renderLib() {
+  const hues = [265, 150, 330, 35, 200];
+  $("#lib").innerHTML = M.skills.map((s, i) => `<div class="card book"><div class="cov" style="background:linear-gradient(135deg,hsl(${hues[i % 5]} 80% 88%),hsl(${hues[i % 5] + 30} 80% 80%));color:hsl(${hues[i % 5]} 50% 25%)">${s.name}</div>
+    <div class="body"><p>${s.desc}</p><div class="toggles">${s.roles.map((r) => `<span class="state queued">${r}</span>`).join("")}<span class="state ${s.source === "ваш" ? "working" : "done"}" style="margin-left:auto">${s.source}</span></div></div></div>`).join("")
+    + `<div class="card book" style="border:2px dashed var(--line);box-shadow:none;display:grid;place-items:center;min-height:200px;color:var(--muted);text-align:center;padding:20px"><div><div style="font:700 28px var(--display)">+</div>Перетащите SKILL.md<br>или .zip со скиллом</div></div>`;
+}
+function toast(icon, text) { const t = document.createElement("div"); t.className = "toast"; t.innerHTML = `<i>${icon}</i><span>${text}</span>`; $("#toasts").append(t); setTimeout(() => t.remove(), 4800); }
+M.on((ev) => {
+  if (ev.type === "rotation") { toast("🔁", `Ключ ${ev.from.label} ••••${ev.from.tail} остывает — работа перешла на ${ev.to.label}`); renderKeys(ev.from.id); }
+  else if (ev.type === "recovered") { toast("✨", `Ключ ${ev.key.label} снова в строю`); renderKeys(ev.key.id); }
+  else { renderRun(); renderFeed(true); }
+});
+setInterval(() => { renderRun(); if (cur === "keys") renderKeys(); }, 1000);
+tabs(); renderRun(); renderFeed(); renderKeys(); renderRoles(); renderLib(); M.start();
+</script>
+</body>
+</html>
