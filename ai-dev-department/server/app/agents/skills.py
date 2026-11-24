@@ -170,29 +170,55 @@ def remove(user_id: int, name: str) -> bool:
 
 
 HTTP_TRANSPORT = None  # tests: an httpx transport that serves fake GitHub downloads
-GITHUB_TREE = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+)/tree/([^/]+)/(.+?)/?$")
-GITHUB_BLOB = re.compile(r"^https://github\.com/([\w.-]+)/([\w.-]+)/blob/([^/]+)/(.+/)?SKILL\.md$")
-RAW = re.compile(r"^https://raw\.githubusercontent\.com/([\w.-]+)/([\w.-]+)/([^/]+)/(.+/)?SKILL\.md$")
+MAX_IMPORT = 20
+_URL = re.compile(r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?(?:/(tree|blob)/([^/]+)(?:/(.*))?)?/?$")
+_RAW = re.compile(r"^https?://raw\.githubusercontent\.com/([\w.-]+)/([\w.-]+)/([^/]+)/(.*)$")
 
 
-async def import_from_url(user_id: int, url: str) -> Skill:
-    """A skill folder from GitHub: https://github.com/<owner>/<repo>/tree/<branch>/<path to the folder>
-    (a link to its SKILL.md works too). The folder is downloaded with its files."""
+def parse_github_url(url: str) -> tuple[str, str, str | None, str]:
+    """(owner, repo, ref or None, folder inside the repository) from any GitHub link:
+    the repository, a folder (tree), a file (blob, e.g. its SKILL.md) or a raw file."""
+    url = (url or "").strip().split("#")[0].split("?")[0]
+    m = _URL.match(url)
+    if m:
+        owner, repo, kind, ref, path = m.groups()
+        path = (path or "").strip("/")
+        if kind == "blob":  # a file: its folder
+            path = path.rsplit("/", 1)[0] if "/" in path else ""
+        return owner, repo, ref, path
+    m = _RAW.match(url)
+    if m:
+        owner, repo, ref, path = m.groups()
+        return owner, repo, ref, path.rsplit("/", 1)[0] if "/" in path else ""
+    raise SkillError("Give a GitHub link: a repository, a folder with SKILL.md or the SKILL.md file itself")
+
+
+async def import_from_url(user_id: int, url: str, token: str | None = None) -> list[Skill]:
+    """Every skill (a folder with SKILL.md, with all its files) found under a GitHub link."""
     import httpx
 
-    url = (url or "").strip()
-    m = GITHUB_TREE.match(url) or GITHUB_BLOB.match(url) or RAW.match(url)
-    if not m:
-        raise SkillError("Give a GitHub link to a skill folder: https://github.com/<owner>/<repo>/tree/<branch>/<folder>")
-    owner, repo, ref, folder = m.group(1), m.group(2), m.group(3), (m.group(4) or "").strip("/")
-    archive = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{ref}"
-    async with httpx.AsyncClient(follow_redirects=True, timeout=60, transport=HTTP_TRANSPORT) as client:
-        resp = await client.get(archive)
-        if resp.status_code == 404:  # a tag or a commit instead of a branch
-            resp = await client.get(f"https://codeload.github.com/{owner}/{repo}/zip/{ref}")
-    if resp.status_code != 200:
-        raise SkillError(f"GitHub did not give the repository ({resp.status_code})")
-    data = resp.content
+    owner, repo, ref, folder = parse_github_url(url)
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "aidd-server"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    async with httpx.AsyncClient(follow_redirects=True, timeout=90, transport=HTTP_TRANSPORT) as client:
+        if not ref:
+            info = await client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
+            if info.status_code == 404:
+                raise SkillError(f"{owner}/{repo}: no such repository (or it is private and GitHub is not connected)")
+            ref = (info.json() or {}).get("default_branch") if info.status_code == 200 else None
+        data = None
+        for candidate in ([ref] if ref else ["main", "master"]):
+            for archive in (f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{candidate}",
+                            f"https://codeload.github.com/{owner}/{repo}/zip/{candidate}"):
+                resp = await client.get(archive, headers={k: v for k, v in headers.items() if k != "Accept"})
+                if resp.status_code == 200:
+                    data = resp.content
+                    break
+            if data:
+                break
+    if data is None:
+        raise SkillError(f"GitHub did not give {owner}/{repo} (is the link right?)")
     if len(data) > 8 * MAX_ZIP:
         raise SkillError("The repository archive is larger than 40 MB")
     try:
@@ -202,12 +228,24 @@ async def import_from_url(user_id: int, url: str) -> Skill:
     names = zf.namelist()
     top = names[0].split("/")[0] + "/" if names else ""
     prefix = f"{top}{folder}/" if folder else top
-    wanted = [n for n in names if n.startswith(prefix) and not n.endswith("/")]
-    if not any(n == prefix + "SKILL.md" for n in wanted):
-        raise SkillError("There is no SKILL.md in that folder")
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w") as small:
-        for n in wanted:
-            small.writestr(n[len(prefix):], zf.read(n))
-    return install_zip(user_id, out.getvalue())
-
+    skill_dirs = sorted({n[: -len("SKILL.md")] for n in names if n.startswith(prefix) and n.endswith("/SKILL.md")})
+    if not skill_dirs:
+        raise SkillError("No SKILL.md found there")
+    installed: list[Skill] = []
+    seen: set[str] = set()
+    for d in skill_dirs[:MAX_IMPORT]:
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as small:
+            for n in names:
+                if n.startswith(d) and not n.endswith("/"):
+                    small.writestr(n[len(d):], zf.read(n))
+        try:
+            skill = install_zip(user_id, out.getvalue())
+        except SkillError:
+            continue  # a broken SKILL.md among many: skip it
+        if skill.name not in seen:
+            seen.add(skill.name)
+            installed.append(skill)
+    if not installed:
+        raise SkillError("The SKILL.md files there could not be read (front matter with name and description?)")
+    return installed

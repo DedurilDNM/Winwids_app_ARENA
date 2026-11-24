@@ -169,11 +169,31 @@ def _openai_tools(tools: list[dict]) -> list[dict]:
             for t in tools]
 
 
+NOT_AN_API = ("the address answered with a web page, not an API: use the API address from the aggregator's "
+              "documentation (it usually ends with /v1), not the address of its site")
+
+
+def _looks_like_page(resp: httpx.Response) -> bool:
+    kind = resp.headers.get("content-type", "")
+    return "html" in kind or resp.text.lstrip()[:15].lower().startswith(("<!doctype", "<html"))
+
+
+def _json(resp: httpx.Response):
+    """The JSON body, or a clear error (a web page, an empty answer) - never a raw HTML dump."""
+    try:
+        return resp.json()
+    except ValueError:
+        if _looks_like_page(resp):
+            raise LLMError(REQUEST, NOT_AN_API, status=resp.status_code) from None
+        raise LLMError(TRANSIENT if not resp.content else REQUEST,
+                       f"the service did not answer with JSON (HTTP {resp.status_code})", status=resp.status_code) from None
+
+
 def _error_message(resp: httpx.Response) -> str:
     try:
         data = resp.json()
     except Exception:
-        return resp.text[:300]
+        return NOT_AN_API if _looks_like_page(resp) else resp.text[:300]
     err = data.get("error") if isinstance(data, dict) else None
     if isinstance(err, dict):
         return str(err.get("message") or err.get("code") or err)[:300]
@@ -205,8 +225,10 @@ class OpenAICompatible:
         if resp.status_code >= 400:
             message = _error_message(resp)
             outcome, retry = classify(resp.status_code, message, resp.headers, self.provider.id)
+            if message == NOT_AN_API and outcome != TRANSIENT:
+                outcome = REQUEST  # a wrong address is not a bad key
             raise LLMError(outcome, message, status=resp.status_code, retry_after=retry)
-        data = resp.json()
+        data = _json(resp)
         # some aggregators answer 200 with an error object (e.g. an upstream limit)
         if isinstance(data, dict) and data.get("error") and not data.get("choices"):
             err = data["error"] if isinstance(data["error"], dict) else {"message": str(data["error"])}
@@ -262,9 +284,14 @@ class OpenAICompatible:
         if resp.status_code >= 400:
             message = _error_message(resp)
             outcome, retry = classify(resp.status_code, message, resp.headers, self.provider.id)
+            if message == NOT_AN_API and outcome != TRANSIENT:
+                outcome = REQUEST
             raise LLMError(outcome, message, status=resp.status_code, retry_after=retry)
+        data = _json(resp)  # a 200 web page is not an API either
+        if path == "/models" and not (isinstance(data, list) or (isinstance(data, dict) and "data" in data)):
+            raise LLMError(REQUEST, "the address answered, but not with a list of models: is it an OpenAI-compatible API?")
         if self.provider.id == "openrouter" and path == "/key":
-            info = (resp.json() or {}).get("data") or {}
+            info = (data or {}).get("data") or {}
             remaining = info.get("limit_remaining")
             if remaining is not None and float(remaining) <= 0:
                 raise LLMError(NO_CREDITS, "key spending limit reached", status=402)
@@ -280,7 +307,7 @@ class OpenAICompatible:
         if resp.status_code >= 400:
             outcome, retry = classify(resp.status_code, _error_message(resp), resp.headers, self.provider.id)
             raise LLMError(outcome, "models list failed", status=resp.status_code, retry_after=retry)
-        data = resp.json()
+        data = _json(resp)
         items = data.get("data") if isinstance(data, dict) else data
         out: dict[str, dict] = {}
         for m in items or []:

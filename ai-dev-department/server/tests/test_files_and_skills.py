@@ -74,34 +74,46 @@ def test_a_users_skill_scripts_are_readable_in_the_sandbox(tmp_path, monkeypatch
     assert "from-skill" in out and not (skill.path / "x").exists()  # readable, not writable
 
 
-def _github_zip(files: dict) -> bytes:
+def _github_zip(files: dict, top: str = "ui-kit-main") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for name, text in files.items():
-            zf.writestr(f"skills-main/{name}", text)
+            zf.writestr(f"{top}/{name}", text)
     return buf.getvalue()
 
 
-def test_a_skill_from_a_github_link(tmp_path, monkeypatch):
+def test_skills_from_any_github_link(tmp_path, monkeypatch):
+    """A repository link finds every SKILL.md (here in .claude/skills/, like popular skill
+    repositories); a folder link or a SKILL.md link installs that one skill with its files."""
     monkeypatch.setattr(skills_mod, "DATA_DIR", tmp_path / "data")
-    archive = _github_zip({"skills/demo/SKILL.md": "---\nname: demo\ndescription: A demo skill.\n---\nRun scripts/x.py",
-                           "skills/demo/scripts/x.py": "print(1)", "skills/other/SKILL.md": "---\nname: other\ndescription: o\n---\n",
-                           "README.md": "repo"})
+    archive = _github_zip({
+        ".claude/skills/ui-pro/SKILL.md": "---\nname: ui-pro\ndescription: UI rules.\n---\nRun scripts/search.py",
+        ".claude/skills/ui-pro/scripts/search.py": "print('search')",
+        ".claude/skills/ui-pro/data/styles.csv": "a,b",
+        ".claude/skills/brand/SKILL.md": "---\nname: brand\ndescription: Brand voice.\n---\nUse templates/",
+        ".claude/skills/broken/SKILL.md": "no front matter",
+        "src/data/x.csv": "not a skill", "README.md": "repo"})
     asked = []
 
     def handler(request):
         asked.append(str(request.url))
-        if request.url.host == "codeload.github.com" and request.url.path == "/acme/skills/zip/refs/heads/main":
+        if request.url.host == "api.github.com" and request.url.path == "/repos/acme/ui-kit":
+            return httpx.Response(200, json={"default_branch": "main"})
+        if request.url.host == "codeload.github.com" and request.url.path == "/acme/ui-kit/zip/refs/heads/main":
             return httpx.Response(200, content=archive)
         return httpx.Response(404)
 
     monkeypatch.setattr(skills_mod, "HTTP_TRANSPORT", httpx.MockTransport(handler))
-    skill = asyncio.run(skills_mod.import_from_url(1, "https://github.com/acme/skills/tree/main/skills/demo"))
-    assert skill.name == "demo" and (skill.path / "scripts/x.py").read_text() == "print(1)"
-    assert not (skill.path.parent / "other").exists()  # only the folder that was asked for
-    same = asyncio.run(skills_mod.import_from_url(1, "https://github.com/acme/skills/blob/main/skills/demo/SKILL.md"))
-    assert same.name == "demo"
-    for bad in ("https://example.com/x", "https://github.com/acme/skills/tree/main/nothing-here"):
+    got = asyncio.run(skills_mod.import_from_url(1, "https://github.com/acme/ui-kit"))
+    assert sorted(s.name for s in got) == ["brand", "ui-pro"]  # the broken one is skipped
+    ui = next(s for s in got if s.name == "ui-pro")
+    assert (ui.path / "scripts/search.py").read_text() == "print('search')" and (ui.path / "data/styles.csv").exists()
+    one = asyncio.run(skills_mod.import_from_url(1, "https://github.com/acme/ui-kit/tree/main/.claude/skills/brand"))
+    assert [s.name for s in one] == ["brand"]
+    one = asyncio.run(skills_mod.import_from_url(1, "https://github.com/acme/ui-kit/blob/main/.claude/skills/ui-pro/SKILL.md"))
+    assert [s.name for s in one] == ["ui-pro"]
+    assert skills_mod.parse_github_url("https://github.com/acme/ui-kit.git/") == ("acme", "ui-kit", None, "")
+    for bad in ("https://example.com/x", "https://github.com/acme/ui-kit/tree/main/src"):
         with pytest.raises(skills_mod.SkillError):
             asyncio.run(skills_mod.import_from_url(1, bad))
 

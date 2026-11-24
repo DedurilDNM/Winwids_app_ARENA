@@ -208,11 +208,16 @@ class SkillImportIn(BaseModel):
 @router.post("/api/skills/import", status_code=status.HTTP_201_CREATED)
 async def import_skill(body: SkillImportIn, user: Annotated[User, Depends(get_current_user)]) -> dict:
     """A skill folder from a GitHub link (with its scripts and references)."""
+    from app.api.github import user_token
+    from app.db import SessionLocal
+
+    async with SessionLocal() as db:  # a private repository: the user's GitHub token, when connected
+        token = await user_token(db, user.id)
     try:
-        skill = await skills_mod.import_from_url(user.id, body.url)
+        installed = await skills_mod.import_from_url(user.id, body.url, token)
     except skills_mod.SkillError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
-    return _skill_out(skill)
+    return {"installed": [_skill_out(s) for s in installed]}
 
 
 @router.delete("/api/skills/{name}", status_code=status.HTTP_204_NO_CONTENT)

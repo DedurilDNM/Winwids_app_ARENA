@@ -4,6 +4,7 @@
 // Server data always goes through textContent (h / markdown), never innerHTML.
 
 import { api } from "../api.js";
+import { modelMenu } from "../models.js";
 import { confirmDialog, errorText, h, markdown, toast } from "../ui.js";
 
 const ROLE_RU = { Orchestrator: "Оркестратор", Architect: "Архитектор", Coder: "Кодер", Reviewer: "Ревьюер",
@@ -20,6 +21,7 @@ const kTok = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n || 0));
 const pref = {
   get(k, d) { try { return localStorage.getItem(`aidd.chat.${k}`) || d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(`aidd.chat.${k}`, v); } catch { /* private mode */ } },
+  del(k) { try { localStorage.removeItem(`aidd.chat.${k}`); } catch { /* private mode */ } },
 };
 
 // ------------------------------------------------------------------ files shown in the chat
@@ -246,8 +248,9 @@ export async function render(main, { params, setTopbar, refreshChats }) {
   }
   const sendBtn = h("button", { class: "go", "aria-label": "Отправить", "data-testid": "send", onclick: () => (running ? stop() : send()) });
   const modeSeg = h("div", { class: "seg" });
-  const modelBtn = h("button", { class: "model-btn", onclick: (e) => { e.stopPropagation(); pop.hidden = !pop.hidden; } });
-  const pop = h("div", { class: "popover", hidden: true });
+  const modelBtn = h("button", { class: "model-btn", "data-testid": "model-btn",
+    onclick: (e) => { e.stopPropagation(); pop.hidden = !pop.hidden; if (!pop.hidden) loadModels(); } });
+  const pop = h("div", { class: "popover models", hidden: true, "data-testid": "model-pop" });
   let repo = chatId ? null : pref.get("repo", "") || null;
   const repoBtn = h("button", { class: "model-btn repo-btn", hidden: Boolean(chatId), "data-testid": "repo-btn",
     onclick: (e) => { e.stopPropagation(); repoPop.hidden = !repoPop.hidden; if (!repoPop.hidden) loadRepos(); } });
@@ -281,19 +284,20 @@ export async function render(main, { params, setTopbar, refreshChats }) {
     sendBtn.classList.toggle("stop", running);
     sendBtn.setAttribute("aria-label", running ? "Остановить" : "Отправить");
   }
-  async function loadModels() {
-    let roles = [];
-    try { roles = await api.listRoles(); } catch { /* not set up yet */ }
-    const options = [...new Set(roles.filter((r) => r.provider && r.model).map((r) => `${r.provider}:${r.model}`))];
-    pop.replaceChildren(
-      h("div", { class: "it", onclick: () => pick("auto") }, h("b", {}, "Авто"), h("small", {}, "модели ролей; ведёт самая сильная")),
-      ...options.map((o) => h("div", { class: "it", onclick: () => pick(o) }, h("b", {}, o.split(":").slice(1).join(":")), h("small", {}, o.split(":")[0]))),
-      h("a", { class: "it", href: "#/settings/models" }, h("small", {}, "Модели и роли…")));
+  function loadModels() {
+    pop.replaceChildren(modelMenu({
+      onPick: (provider, name) => pick(`${provider}:${name}`),
+      extra: [{ title: "Авто", sub: "модели ролей; ведёт самая сильная", onclick: () => pick("auto") }],
+    }), h("a", { class: "it", href: "#/settings/models" }, h("small", {}, "Модели и роли…")));
   }
   function pick(value) { model = value; pref.set("model", value); pop.hidden = true; paintControls(); }
 
   const autosize = () => { input.style.height = "auto"; input.style.height = `${Math.min(240, input.scrollHeight)}px`; };
-  input.addEventListener("input", autosize);
+  // an unsent message stays in its chat (and in «Новый чат») until it is sent
+  const draftKey = `draft.${chatId || "new"}`;
+  const saveDraft = () => { if (input.value.trim()) pref.set(draftKey, input.value); else pref.del(draftKey); };
+  input.value = pref.get(draftKey, "");
+  input.addEventListener("input", () => { autosize(); saveDraft(); });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!running) send(); } });
 
   const nearBottom = () => scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 160;
@@ -309,6 +313,7 @@ export async function render(main, { params, setTopbar, refreshChats }) {
         if (repo) body.repo = repo;
         const chat = await api.createChat(body, files);
         input.value = "";
+        pref.del(draftKey);
         files = [];
         refreshChats();
         location.hash = `#/chat/${chat.id}`;
@@ -316,6 +321,7 @@ export async function render(main, { params, setTopbar, refreshChats }) {
       }
       await api.sendChatMessage(chatId, body, files);
       input.value = "";
+      pref.del(draftKey);
       files = [];
       paintFiles();
       autosize();
@@ -417,12 +423,12 @@ export async function render(main, { params, setTopbar, refreshChats }) {
 
   paintControls();
   paintRepo();
-  loadModels();
+  if (input.value) requestAnimationFrame(autosize);
   if (!chatId) {
     setTopbar("Новый чат");
     thread.append(h("div", { class: "empty-chat" }, h("h1", {}, "Что сделаем?"),
       h("p", {}, "Опишите задачу — отдел агентов разберёт её, сделает и покажет всё здесь."),
-      h("div", { class: "sugg" }, SUGGESTIONS.map(([a, b]) => h("button", { onclick: () => { input.value = `${a}: ${b}`; autosize(); input.focus(); } }, h("b", {}, a), h("span", {}, b))))));
+      h("div", { class: "sugg" }, SUGGESTIONS.map(([a, b]) => h("button", { onclick: () => { input.value = `${a}: ${b}`; autosize(); saveDraft(); input.focus(); } }, h("b", {}, a), h("span", {}, b))))));
     input.focus();
   } else {
     try {

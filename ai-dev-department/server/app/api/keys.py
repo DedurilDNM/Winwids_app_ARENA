@@ -111,19 +111,33 @@ async def add_key(body: KeyIn, user: Annotated[User, Depends(get_current_user)],
                                                         ApiKey.provider == provider.id))).scalars():
         if other.key_tail == secret[-4:] and decrypt_str(other.key_encrypted) == secret:
             raise HTTPException(status.HTTP_409_CONFLICT, "This key is already in the pool")
-    client = llm.make_client(provider, secret, base_url)
-    outcome, code = llm.OK, None
-    try:
-        await client.probe(None)
-    except llm.LLMError as exc:
-        outcome, code = exc.outcome, exc.status
-    finally:
+    async def check(url):
+        client = llm.make_client(provider, secret, url)
         try:
-            await client.close()
-        except Exception:
-            pass
+            await client.probe(None)
+            return llm.OK, None, ""
+        except llm.LLMError as exc:
+            return exc.outcome, exc.status, str(exc)
+        finally:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+    outcome, code, why = await check(base_url)
+    if provider.needs_base_url and outcome == llm.REQUEST:
+        # a site address instead of the API one: try the usual API paths
+        for suffix in ("/v1", "/api/v1"):
+            if base_url.endswith(suffix):
+                continue
+            o2, c2, w2 = await check(base_url + suffix)
+            if o2 in (llm.OK, llm.RATE_LIMITED, llm.NO_CREDITS, llm.INVALID):
+                base_url, outcome, code, why = base_url + suffix, o2, c2, w2
+                break
     if outcome == llm.INVALID:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"The provider did not accept this key ({code})")
+    if why == llm.NOT_AN_API or "not with a list of models" in why:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, why)
     if outcome == llm.TRANSIENT or (outcome == llm.REQUEST and code != 404):  # 404: no /models on this service
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Could not check the key now ({code or 'no answer'}); try again")
     now = utcnow()
@@ -177,6 +191,26 @@ async def check_key(key_id: int, user: Annotated[User, Depends(get_current_user)
 
 
 _MODELS_CACHE: dict[tuple[int, str], tuple[float, list[str]]] = {}
+
+
+@router.get("/models/all")
+async def all_models(user: Annotated[User, Depends(get_current_user)],
+                     db: Annotated[AsyncSession, Depends(get_db)]) -> dict:
+    """The models of every provider that has a working key (for the model pickers)."""
+    providers = sorted({k.provider for k in (await db.execute(select(ApiKey).where(
+        ApiKey.user_id == user.id, ApiKey.status.in_(("available", "limited"))))).scalars()})
+
+    async def one(pid: str) -> dict:
+        try:
+            data = await models(pid, user, db)
+            return {"provider": pid, "name": PROVIDERS[pid].name, "models": data.get("models", [])}
+        except HTTPException as exc:
+            return {"provider": pid, "name": PROVIDERS[pid].name, "models": [], "error": str(exc.detail)}
+
+    out = []
+    for pid in providers:  # one by one: they share the db session
+        out.append(await one(pid))
+    return {"providers": out}
 
 
 @router.get("/models")

@@ -323,3 +323,50 @@ def test_keys_api(api, monkeypatch):
     assert api.get("/api/keys/models", params={"provider": "openrouter"}).json()["models"] == ["m-a", "m-b"]
     assert api.delete(f"/api/keys/{good['id']}").status_code == 204
     assert len(api.get("/api/keys").json()["keys"]) == 1
+
+
+def test_a_web_page_instead_of_an_api_gives_a_clear_error():
+    page = "<!DOCTYPE html><html><head><title>Site</title></head><body>hello</body></html>"
+
+    def handler(request):
+        return httpx.Response(200, text=page, headers={"content-type": "text/html"})
+
+    async def go():
+        client = llm.OpenAICompatible(get_provider("custom"), "sk-x", "https://site.example", transport=httpx.MockTransport(handler))
+        errors = []
+        for call in (lambda: client.create(REQ), lambda: client.probe(None), lambda: client.models_meta()):
+            try:
+                await call()
+            except llm.LLMError as exc:
+                errors.append(exc)
+        await client.close()
+        return errors
+
+    errors = asyncio.run(go())
+    assert len(errors) == 3 and all(e.outcome == llm.REQUEST and "<html" not in str(e) for e in errors)
+    assert "ends with /v1" in str(errors[0])
+
+
+def test_adding_a_custom_key_with_the_site_address_finds_the_api(api, monkeypatch):
+    def handler(request):
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "zm-1"}]})
+        return httpx.Response(200, text="<!doctype html><html>site</html>", headers={"content-type": "text/html"})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(llm, "CLIENT_FACTORY", lambda provider, secret, base_url: llm.OpenAICompatible(
+        provider, secret, base_url, transport=transport))
+    r = api.post("/api/keys", json={"provider": "custom", "key": "sk-custom-9999", "base_url": "https://agg.example"})
+    assert r.status_code == 201, r.text
+    assert r.json()["base_url"] == "https://agg.example/v1"
+
+    def site_only(request):
+        return httpx.Response(200, text="<!doctype html><html>site</html>", headers={"content-type": "text/html"})
+
+    transport2 = httpx.MockTransport(site_only)
+    monkeypatch.setattr(llm, "CLIENT_FACTORY", lambda provider, secret, base_url: llm.OpenAICompatible(
+        provider, secret, base_url, transport=transport2))
+    bad = api.post("/api/keys", json={"provider": "custom", "key": "sk-custom-8888", "base_url": "https://only-site.example"})
+    assert bad.status_code == 400 and "/v1" in bad.json()["detail"]
+    models = api.get("/api/keys/models/all").json()["providers"]
+    assert any(p["provider"] == "custom" for p in models)

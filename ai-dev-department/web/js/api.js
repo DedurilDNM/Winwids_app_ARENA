@@ -231,6 +231,7 @@ export const api = {
   updateKey: (id, data) => request("PATCH", `/api/keys/${id}`, data),
   deleteKey: (id) => request("DELETE", `/api/keys/${id}`),
   checkKey: (id) => request("POST", `/api/keys/${id}/check`),
+  allModels: () => request("GET", "/api/keys/models/all"),
   providerModels: (provider) => request("GET", `/api/keys/models?provider=${encodeURIComponent(provider)}`),
   listRoles: () => request("GET", "/api/agent-roles"),
   saveRole: (role, data) => request("PUT", `/api/agent-roles/${encodeURIComponent(role)}`, data),

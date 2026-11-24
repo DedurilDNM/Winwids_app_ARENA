@@ -36,8 +36,42 @@ await page.click("[data-testid=set-models]");
 await page.click("[data-testid=auto-roles]");
 await page.waitForSelector("[data-testid=auto-result] table", { timeout: 60000 });
 
-// a new chat
+// a role's model: a searchable list of the aggregator's models
+await page.locator("[data-testid=role-model]").first().click();
+await page.waitForSelector("[data-testid=model-option]");
+await page.locator("[data-testid=model-search]:visible").fill("mini");
+assert.equal(await page.locator("[data-testid=model-option]:visible").count(), 1);
+await page.locator("[data-testid=model-option]:visible").click();
+assert.equal(await page.locator("[data-testid=role-model]").first().inputValue(), "fake-model-mini");
+await page.locator("[data-testid=role-model]").first().click();
+await page.locator("[data-testid=model-search]:visible").fill("my-own-model");
+await page.getByText("Использовать «my-own-model»").click();
+assert.equal(await page.locator("[data-testid=role-model]").first().inputValue(), "my-own-model");
+
+// an unsent message stays in «Новый чат» after a visit to the settings
 await page.click("[data-testid=new-chat]");
+await page.fill("[data-testid=chat-input]", "черновик задачи");
+await page.click("[data-testid=settings]");
+await page.waitForSelector("[data-testid=key-summary]");
+await page.click("[data-testid=new-chat]");
+assert.equal(await page.locator("[data-testid=chat-input]").inputValue(), "черновик задачи");
+
+// the chat's model: the same list, «Авто» first
+await page.click("[data-testid=model-btn]");
+await page.waitForSelector("[data-testid=model-pop] [data-testid=model-option]");
+assert.equal(await page.locator("[data-testid=model-pop] [data-testid=model-option]").count(), 2);
+await page.locator("[data-testid=model-pop] [data-testid=model-search]").fill("mini");
+await page.locator("[data-testid=model-pop] [data-testid=model-option]").click();
+assert.match(await page.locator("[data-testid=model-btn]").innerText(), /fake-model-mini/);
+await page.click("[data-testid=model-btn]");
+await page.locator("[data-testid=model-pop] [data-testid=model-search]").fill("gpt-6.2-astra");
+await page.locator("[data-testid=model-pop] [data-testid=model-typed]").click();
+assert.match(await page.locator("[data-testid=model-btn]").innerText(), /gpt-6\.2-astra/);
+await page.click("[data-testid=model-btn]");
+await page.locator("[data-testid=model-pop] .it", { hasText: "Авто" }).first().click();
+assert.match(await page.locator("[data-testid=model-btn]").innerText(), /Авто/);
+
+// a new chat
 await page.fill("[data-testid=chat-input]", "Сделай hello.py и проверь запуск");
 await page.keyboard.press("Enter");
 await page.waitForURL(/#\/chat\/\d+/);

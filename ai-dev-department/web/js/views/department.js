@@ -2,6 +2,7 @@
 // Server data always goes through textContent (h), never innerHTML.
 
 import { api } from "../api.js";
+import { modelMenu } from "../models.js";
 import { confirmDialog, emptyState, errorText, fmtDate, h, icon, markdown, modal, toast } from "../ui.js";
 
 const ROLE_RU = { Orchestrator: "Оркестратор", Architect: "Архитектор", Coder: "Кодер", Reviewer: "Ревьюер",
@@ -281,17 +282,22 @@ export async function rolesView(body) {
   async function paintRoles(roles) {
   for (const r of roles) {
     const prov = h("select", {}, providers.map((p) => h("option", { value: p.id, selected: p.id === r.provider }, p.name)));
-    const listId = `models-${r.role}`;
-    const datalist = h("datalist", { id: listId });
-    const model = h("input", { value: r.model || "", list: listId, placeholder: "модель, например claude-opus-5-5" });
-    const loadModels = async () => {
-      try {
-        const m = await api.providerModels(prov.value);
-        datalist.replaceChildren(...m.models.map((x) => h("option", { value: x })));
-      } catch { datalist.replaceChildren(); }
+    const model = h("input", { value: r.model || "", placeholder: "нажмите, чтобы выбрать из списка", autocomplete: "off", "data-testid": "role-model" });
+    // a list of every connected aggregator's models; picking one sets the aggregator too
+    const drop = h("div", { class: "popover models below", hidden: true });
+    const openDrop = (e) => {
+      e?.stopPropagation();
+      if (!drop.hidden) return;
+      document.querySelectorAll(".popover.below").forEach((p) => { p.hidden = true; });
+      drop.replaceChildren(modelMenu({
+        onPick: (provider, name) => { prov.value = provider; model.value = name; drop.hidden = true; },
+        typed: { sub: `как есть, у агрегатора ${prov.selectedOptions[0]?.textContent || ""}`, onclick: (name) => { model.value = name; drop.hidden = true; } },
+      }));
+      drop.hidden = false;
     };
-    prov.addEventListener("change", loadModels);
-    model.addEventListener("focus", () => { if (!datalist.children.length) loadModels(); }, { once: true });
+    model.addEventListener("focus", openDrop);
+    model.addEventListener("click", openDrop);
+    document.addEventListener("click", () => { drop.hidden = true; });
     const effort = h("select", {}, EFFORTS.map((e) => h("option", { value: e, selected: (r.effort || "") === e }, e || "по умолчанию")));
     const toolBoxes = TOOLS.map((t) => h("label", { class: "chip-check" }, h("input", { type: "checkbox", value: t, checked: (r.tools || []).includes(t) }), t));
     const allSkills = r.skills === null || r.skills === undefined;
@@ -312,7 +318,7 @@ export async function rolesView(body) {
         h("span", {}, r.auto ? badge(["авто", "info"]) : null, " ", badge(r.ready ? ["готова", "ok"] : ["не настроена", "warn"]))),
       r.fallbacks?.length ? h("div", { class: "muted small" }, "Запасные: ", r.fallbacks.map((f) => `${f.model} (${f.provider})`).join(", ")) : null,
       h("div", { class: "two" }, h("div", {}, h("label", {}, "Агрегатор"), prov), h("div", {}, h("label", {}, "Усилие"), effort)),
-      h("label", {}, "Модель"), model, datalist,
+      h("label", {}, "Модель"), h("div", { class: "pop-host" }, model, drop),
       h("label", {}, "Инструменты"), h("div", { class: "chips" }, toolBoxes),
       skills.length ? [h("label", {}, "Скиллы"), h("div", { class: "chips" }, skillBoxes)] : null,
       instr, h("div", { class: "actions" }, save, reset)));
@@ -338,13 +344,18 @@ export async function skillsView(body) {
       } }, "Добавить")));
   }) }, "Написать SKILL.md");
   const fromGit = h("button", { "data-testid": "skill-github", onclick: () => modal("Скилл по ссылке GitHub", (close) => {
-    const url = h("input", { placeholder: "https://github.com/<владелец>/<репозиторий>/tree/main/<папка скилла>" });
+    const url = h("input", { placeholder: "https://github.com/<владелец>/<репозиторий>", "data-testid": "skill-url" });
     const err = h("div", { class: "form-error" });
-    return h("div", {}, h("p", { class: "muted small" }, "Ссылка на папку со SKILL.md: скачается вся папка со скриптами. Проверьте лицензию скилла в репозитории."),
+    return h("div", {}, h("p", { class: "muted small" }, "Любая ссылка: на репозиторий, папку или сам SKILL.md. Найду все скиллы (папки со SKILL.md) и скачаю их целиком со скриптами и данными. Проверьте лицензию в репозитории."),
       url, err, h("div", { class: "modal-actions" }, h("button", { onclick: () => close() }, "Отмена"),
         h("button", { class: "primary", onclick: async () => {
           err.textContent = "Скачиваю…";
-          try { const s = await api.importSkill(url.value.trim()); toast(`Скилл ${s.name} добавлен`); close(true); load(); } catch (e) { err.textContent = errorText(e); }
+          try {
+            const res = await api.importSkill(url.value.trim());
+            const names = (res.installed || []).map((x) => x.name);
+            toast(names.length > 1 ? `Добавлено скиллов: ${names.length} (${names.join(", ")})` : `Скилл ${names[0]} добавлен`);
+            close(true); load();
+          } catch (e) { err.textContent = errorText(e); }
         } }, "Добавить")));
   }) }, "По ссылке GitHub");
   body.append(h("p", { class: "muted" }, "Как в Claude Code: агент видит имя и описание скилла и сам открывает инструкции, когда задача подходит."),
