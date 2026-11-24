@@ -208,6 +208,8 @@ export const api = {
   listRoles: () => request("GET", "/api/agent-roles"),
   saveRole: (role, data) => request("PUT", `/api/agent-roles/${encodeURIComponent(role)}`, data),
   resetRole: (role) => request("DELETE", `/api/agent-roles/${encodeURIComponent(role)}`),
+  autoRoles: (check = true) => request("POST", "/api/agent-roles/auto", { check }),
+  autoRolesStatus: () => request("GET", "/api/agent-roles/auto"),
   listSkills: () => request("GET", "/api/skills"),
   getSkill: (name) => request("GET", `/api/skills/${encodeURIComponent(name)}`),
   addSkillText: (text) => request("POST", "/api/skills", { text }),

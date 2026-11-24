@@ -75,6 +75,11 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("max_tokens") == 1:  # a key check
             return self._send(200, {"choices": [{"message": {"content": "p"}, "finish_reason": "length"}]})
         system = next((m["content"] for m in messages if m["role"] == "system"), "")
+        tools = [t["function"]["name"] for t in body.get("tools") or []]
+        if not system and "report_ready" in tools:  # the model picker's check: call the tool
+            return self._send(200, {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
+                call("report_ready", 0, ready=True)]}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 5}})
         role = (re.search(r"You are the (\w+)", system) or [None, "?"])[1]
         turn = sum(1 for m in messages if m["role"] == "assistant")
         msg = reply(role, turn, messages)

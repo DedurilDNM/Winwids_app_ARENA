@@ -10,12 +10,14 @@ run events (agents, tool calls, files, texts, key rotations) for the live view.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import select
 
+from app.agents import llm
 from app.agents.keypool import key_pool
 from app.agents.llm import LLMError
 from app.agents.providers import PROVIDERS
@@ -35,7 +37,6 @@ ROLE_TOOLS = {
     "Tester": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill"],
     "Integrator": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "TodoWrite"],
 }
-_PREFERRED_PROVIDERS = ("anthropic", "openrouter")
 _RUN_TASKS: dict[int, asyncio.Task] = {}
 _STOP: set[int] = set()
 
@@ -48,18 +49,15 @@ def workspace_for(run_id: int) -> Path:
     return DATA_DIR / "workspaces" / f"run-{int(run_id)}"
 
 
-async def _providers_with_keys(db, user_id: int) -> list[str]:
-    rows = (await db.execute(select(ApiKey.provider).where(ApiKey.user_id == user_id,
-                                                           ApiKey.status.in_(("available", "limited"))))).scalars()
-    have = set(rows)
-    return [p for p in _PREFERRED_PROVIDERS if p in have] + sorted(have - set(_PREFERRED_PROVIDERS))
+async def has_keys(db, user_id: int) -> bool:
+    row = (await db.execute(select(ApiKey.id).where(ApiKey.user_id == user_id,
+                                                    ApiKey.status.in_(("available", "limited"))).limit(1))).first()
+    return row is not None
 
 
 async def role_specs(db, user_id: int) -> dict[str, AgentSpec]:
-    """Every role's spec: the user's settings, else a default on a provider that has keys."""
+    """The roles that are set up (by hand or by the model picker). No vendor is assumed."""
     saved = {r.role: r for r in (await db.execute(select(AgentRole).where(AgentRole.user_id == user_id))).scalars()}
-    providers = await _providers_with_keys(db, user_id)
-    default_provider = next((p for p in providers if PROVIDERS[p].default_model), None)
     specs: dict[str, AgentSpec] = {}
     for role in ACCOUNT_ROLES:
         r = saved.get(role)
@@ -70,10 +68,8 @@ async def role_specs(db, user_id: int) -> dict[str, AgentSpec]:
                                     tools=list(r.tools) if r.tools is not None else list(ROLE_TOOLS[role]),
                                     skills=list(r.skills) if r.skills is not None else None,
                                     instructions=r.instructions or "",
-                                    max_turns=int(r.max_turns or _s("AGENT_MAX_TURNS", 60)))
-        elif default_provider:
-            specs[role] = AgentSpec(role=role, provider=default_provider, model=PROVIDERS[default_provider].default_model,
-                                    tools=list(ROLE_TOOLS[role]), max_turns=int(_s("AGENT_MAX_TURNS", 60)))
+                                    max_turns=int(r.max_turns or _s("AGENT_MAX_TURNS", 60)),
+                                    fallbacks=[f for f in (r.fallbacks or []) if f.get("provider") in PROVIDERS])
     return specs
 
 
@@ -155,9 +151,32 @@ async def _run_node(st: RunState, role: str, prompt: str, agent_id: str, parent:
     async def on_rotate(event: dict) -> None:
         await emit(event)
 
-    async def complete(provider, req):
-        return await key_pool.complete(st.user_id, provider, req, should_continue=st.alive, on_wait=on_wait,
-                                       on_rotate=on_rotate)
+    async def complete(agent_spec, req):
+        """The role's model; when all its provider's keys are limited (or the model is gone), the next
+        fallback model takes over - for this call and the rest of the agent's work."""
+        options = [{"provider": agent_spec.provider, "model": agent_spec.model}] + list(agent_spec.fallbacks)
+        last_error = None
+        for i, option in enumerate(options):
+            more = i < len(options) - 1
+            call = dataclasses.replace(req, model=option["model"])
+            try:
+                resp = await key_pool.complete(st.user_id, option["provider"], call, should_continue=st.alive,
+                                               on_wait=on_wait, on_rotate=on_rotate,
+                                               wait_limit=float(_s("AGENT_FALLBACK_AFTER_SECONDS", 60)) if more else None)
+            except LLMError as exc:
+                gone = exc.outcome == "request" and (exc.status in (404,) or "No usable" in str(exc))
+                if more and (exc.outcome == "rate_limited" or gone):
+                    last_error = exc
+                    await emit({"type": "model_switch", "from": f"{option['provider']}:{option['model']}",
+                                "to": f"{options[i + 1]['provider']}:{options[i + 1]['model']}",
+                                "reason": llm.short_reason(exc.outcome, exc.status)})
+                    continue
+                raise
+            if i:  # stay on the model that works
+                agent_spec.provider, agent_spec.model = option["provider"], option["model"]
+                agent_spec.fallbacks = options[i + 1:]
+            return resp
+        raise last_error  # pragma: no cover
 
     await emit({"type": "agent_start", "role": role, "parent": parent, "description": description,
                 "provider": spec.provider, "model": spec.model})
@@ -203,8 +222,18 @@ async def execute(run_id: int) -> None:
     ws.mkdir(parents=True, exist_ok=True)
     st = RunState(run_id, user_id, ws, specs, asyncio.Semaphore(int(_s("AGENT_MAX_PARALLEL", 4))))
     try:
-        if lead not in specs:
-            raise LLMError("request", f"The role {lead} is not set up: choose a provider and a model for it")
+        if lead not in specs:  # nothing set up yet: choose the models automatically, strongest leads
+            await st.event("lead", {"type": "auto_models", "status": "started"})
+            from app.agents import model_picker
+
+            async with SessionLocal() as db:
+                result = await model_picker.pick(db, user_id)
+                await model_picker.apply(db, user_id, result["assignments"])
+                st.specs.update(await role_specs(db, user_id))
+            await st.event("lead", {"type": "auto_models", "status": "done", "assignments": [
+                {"role": a["role"], "provider": a["provider"], "model": a["model"]} for a in result["assignments"]]})
+        if lead not in st.specs:
+            raise LLMError("request", "No working model found: add a key to the pool, or set the role by hand")
         text = await _run_node(st, lead, prompt, "lead", None, 0)
         await _finish(run_id, status="done", result=text, **st.counters)
     except asyncio.CancelledError:
@@ -219,9 +248,8 @@ async def execute(run_id: int) -> None:
 
 async def create_run(db, user_id: int, prompt: str, title: str = "", lead_role: str = "Orchestrator") -> AgentRun:
     specs = await role_specs(db, user_id)
-    if lead_role not in specs:
-        raise ValueError(f"The role {lead_role} is not set up: add a key to the pool and choose a provider and a "
-                         "model for the role")
+    if lead_role not in specs and not await has_keys(db, user_id):
+        raise ValueError("The key pool is empty: add a key of any aggregator first")
     run = AgentRun(user_id=user_id, prompt=prompt, title=(title or prompt.splitlines()[0])[:200], lead_role=lead_role)
     db.add(run)
     await db.commit()

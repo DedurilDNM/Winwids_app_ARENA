@@ -34,28 +34,35 @@ await page.fill("input[name=password]", process.env.ADMIN_PASSWORD);
 await page.click("button[type=submit]");
 await page.waitForSelector("[data-testid=key-summary]");
 
-// two keys through the UI: the «limited» one first, so the first call must rotate
-for (const [secret, label] of [["sk-limited-1111", "Лимитный"], ["sk-good-2222", "Рабочий"]]) {
+async function addKey(secret, label) {
+  await page.goto(`${BASE}/app/#/department/keys`);
+  await page.waitForSelector("[data-testid=key-summary]");
   await page.getByRole("button", { name: "Ключ в котёл" }).first().click();
   await page.selectOption("[data-testid=key-provider]", "custom");
   await page.fill("[data-testid=key-secret]", secret);
   await page.fill("input[placeholder^='Название']", label);
   await page.fill("input[placeholder^='https://']", LLM);
   await page.getByRole("button", { name: "Проверить и добавить" }).click();
-  await page.waitForSelector(`text=${label}`);
+  await page.waitForSelector(`[data-testid=key] >> text=${label}`);
 }
-assert.equal(await page.locator("[data-testid=key]").count(), 2);
+await addKey("sk-good-2222", "Рабочий");
 
-// roles: Orchestrator, Coder, Tester on the fake model (models come from the provider)
+// roles: chosen automatically - the strongest working model leads, the rest by strength
 await page.goto(`${BASE}/app/#/department/roles`);
 await page.waitForSelector("[data-testid=role]");
-for (const role of ["Оркестратор", "Кодер", "Тестер"]) {
-  const card = page.locator("[data-testid=role]", { hasText: role }).first();
-  await card.locator("select").first().selectOption("custom");
-  await card.locator("input[list]").fill("fake-model");
-  await card.getByRole("button", { name: "Сохранить" }).click();
-  await page.waitForSelector(`text=${role}: сохранено`);
-}
+await page.click("[data-testid=auto-roles]");
+await page.waitForSelector("[data-testid=auto-result] table", { timeout: 60000 });
+const roles = await call("GET", "/api/agent-roles", null, T);
+const lead = roles.find((r) => r.role === "Orchestrator");
+assert.equal(lead.model, "fake-model");
+assert.ok(roles.every((r) => r.ready && r.auto), JSON.stringify(roles));
+assert.equal(roles.find((r) => r.role === "Tester").model, "fake-model-mini");
+if (SHOTS) await page.screenshot({ path: `${SHOTS}/dept-roles.png`, fullPage: true });
+
+// a second key that is rate-limited: it has never been used, so the run's first call takes it,
+// gets 429 and moves to the working key on the fly
+await addKey("sk-limited-1111", "Лимитный");
+assert.equal(await page.locator("[data-testid=key]").count(), 2);
 
 // the run
 await page.goto(`${BASE}/app/#/department/runs`);

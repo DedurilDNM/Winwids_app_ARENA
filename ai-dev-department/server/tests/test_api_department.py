@@ -167,7 +167,7 @@ def test_a_run_can_be_stopped(api):
 
 def test_a_run_needs_a_ready_lead_role(api):
     r = api.post("/api/runs", json={"prompt": "do something"})
-    assert r.status_code == 400 and "not set up" in r.json()["detail"]
+    assert r.status_code == 400 and "key pool is empty" in r.json()["detail"]
     assert api.put("/api/agent-roles/Coder", json={"provider": "nope", "model": "m"}).status_code == 400
     assert api.put("/api/agent-roles/Coder", json={"provider": "groq", "model": "m", "tools": ["Hack"]}).status_code == 400
 

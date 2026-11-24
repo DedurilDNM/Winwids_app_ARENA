@@ -247,6 +247,9 @@ class AgentRole(Base):
     instructions: Mapped[str] = mapped_column(Text, default="")
     max_turns: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # [{"provider", "model"}]: used in order when every key of the main provider is limited
+    fallbacks: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    auto: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # chosen by the model picker
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 

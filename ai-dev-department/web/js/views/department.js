@@ -94,6 +94,9 @@ const EVENT_TEXT = {
   agent_start: (d) => ["старт", `${roleName(d.role)}${d.description ? ` · ${d.description}` : ""} · ${d.model}`],
   agent_done: (d) => ["итог", d.status === "done" ? `готово, ${d.turns} ход.` : `${d.status}${d.error ? `: ${d.error}` : ""}`],
   key_rotation: (d) => ["ключ", `••••${d.from_tail} в лимите → ••••${d.to_tail}`],
+  model_switch: (d) => ["модель", `${d.from} → ${d.to} (${d.reason})`],
+  auto_models: (d) => ["модели", d.status === "started" ? "роли не настроены: подбираю самые сильные доступные модели…"
+    : (d.assignments || []).map((a) => `${roleName(a.role)}: ${a.model}`).join(" · ")],
   keys_waiting: (d) => ["ключ", `все ключи ${d.provider} заняты или в лимите — жду свободный`],
 };
 
@@ -236,7 +239,46 @@ async function rolesView(body) {
   const [roles, providers, skills] = await Promise.all([api.listRoles(), api.providers(), api.listSkills()]);
   const TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill", "Task"];
   const grid = h("div", { class: "grid roles-grid" });
-  body.append(h("p", { class: "muted" }, "Для каждой роли выберите агрегатор и модель. Модели подгружаются у агрегатора через ваш ключ. Пока роль не настроена, берётся агрегатор с ключами и его модель по умолчанию."), grid);
+  const autoBox = h("div", { class: "card", hidden: true, "data-testid": "auto-result" });
+  const autoBtn = h("button", { class: "primary", "data-testid": "auto-roles", onclick: () => runAuto() }, "Подобрать модели автоматически");
+  body.append(h("p", { class: "muted" }, "Автоподбор смотрит все модели агрегаторов, на которые есть ключи, оценивает силу (цена ответа, размер, класс модели), проверяет, что модель отвечает и умеет вызывать инструменты, и ставит самую сильную ведущей, остальные роли — по убыванию. Любую роль можно поменять руками."),
+    h("div", { class: "actions" }, autoBtn), autoBox, grid);
+  async function runAuto() {
+    autoBtn.disabled = true;
+    autoBox.hidden = false;
+    autoBox.replaceChildren(h("p", {}, "Смотрю модели и проверяю лучшие…"));
+    try {
+      let job = await api.autoRoles(true);
+      while (job.running) {
+        autoBox.replaceChildren(h("p", {}, `Проверено моделей: ${job.checked}, рабочих: ${job.working}…`));
+        await new Promise((r) => setTimeout(r, 2000));
+        job = await api.autoRolesStatus();
+      }
+      if (job.error) throw new Error(job.error);
+      const res = job.result;
+      if (!res.assignments.length) {
+        autoBox.replaceChildren(h("p", { class: "danger-text" }, res.candidates ? "Ни одна проверенная модель не смогла вызвать инструмент." : "Нет моделей: добавьте ключ в котёл."));
+        return;
+      }
+      toast("Модели назначены");
+      autoBox.replaceChildren(h("b", {}, `Рейтинг (из ${res.candidates} моделей)`), h("table", { class: "rank" },
+        h("tr", {}, h("th", {}, "Модель"), h("th", {}, "Агрегатор"), h("th", {}, "Сила"), h("th", {}, "$/1M"), h("th", {}, "Проверка")),
+        res.ranking.slice(0, 15).map((m) => h("tr", {}, h("td", { class: "mono" }, m.model), h("td", {}, m.provider), h("td", {}, String(m.score)),
+          h("td", {}, m.price_out != null ? m.price_out.toFixed(2) : "—"),
+          h("td", {}, m.works === true ? "✓" : m.works === false ? `✗ ${m.check || ""}` : "—")))));
+      await reloadRoles();
+    } catch (e) {
+      autoBox.replaceChildren(h("p", { class: "danger-text" }, errorText(e)));
+    } finally {
+      autoBtn.disabled = false;
+    }
+  }
+  async function reloadRoles() {
+    grid.replaceChildren();
+    await paintRoles(await api.listRoles());
+  }
+  await paintRoles(roles);
+  async function paintRoles(roles) {
   for (const r of roles) {
     const prov = h("select", {}, providers.map((p) => h("option", { value: p.id, selected: p.id === r.provider }, p.name)));
     const listId = `models-${r.role}`;
@@ -264,14 +306,17 @@ async function rolesView(body) {
         toast(`${roleName(r.role)}: сохранено`);
       } catch (e) { toast(errorText(e), { error: true }); }
     } }, "Сохранить");
-    const reset = h("button", { onclick: async () => { await api.resetRole(r.role); toast("Сброшено к значениям по умолчанию"); location.reload(); } }, "Сбросить");
+    const reset = h("button", { onclick: async () => { await api.resetRole(r.role); toast("Настройки роли сброшены"); reloadRoles(); } }, "Сбросить");
     grid.append(h("div", { class: "card role-card", "data-testid": "role" },
-      h("div", { class: "card-head" }, h("div", { class: "card-title" }, roleName(r.role)), badge(r.ready ? ["готова", "ok"] : ["не настроена", "warn"])),
+      h("div", { class: "card-head" }, h("div", { class: "card-title" }, roleName(r.role)),
+        h("span", {}, r.auto ? badge(["авто", "info"]) : null, " ", badge(r.ready ? ["готова", "ok"] : ["не настроена", "warn"]))),
+      r.fallbacks?.length ? h("div", { class: "muted small" }, "Запасные: ", r.fallbacks.map((f) => `${f.model} (${f.provider})`).join(", ")) : null,
       h("div", { class: "two" }, h("div", {}, h("label", {}, "Агрегатор"), prov), h("div", {}, h("label", {}, "Усилие"), effort)),
       h("label", {}, "Модель"), model, datalist,
       h("label", {}, "Инструменты"), h("div", { class: "chips" }, toolBoxes),
       skills.length ? [h("label", {}, "Скиллы"), h("div", { class: "chips" }, skillBoxes)] : null,
       instr, h("div", { class: "actions" }, save, reset)));
+  }
   }
 }
 

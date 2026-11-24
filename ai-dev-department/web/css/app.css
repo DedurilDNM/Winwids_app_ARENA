@@ -393,3 +393,5 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.45; }
   .ev-what { grid-column: 2; }
   .ev-text { grid-column: 1 / -1; }
 }
+.rank { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; display: block; overflow-x: auto; }
+.rank th, .rank td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }

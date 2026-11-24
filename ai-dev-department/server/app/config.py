@@ -259,6 +259,8 @@ class Settings(BaseSettings):
     AGENT_MAX_DEPTH: int = 1  # 1 = only the lead starts sub-agents
     AGENT_MAX_PARALLEL: int = 4  # sub-agents working at the same time in one run
     AGENT_BASH_TIMEOUT_SECONDS: float = 120
+    # every key of a role's provider limited this long -> the role's next fallback model takes over
+    AGENT_FALLBACK_AFTER_SECONDS: float = 60
     AGENT_BASH_SANDBOX: str = "auto"  # auto (bwrap when installed) | bwrap (required) | off
     ADAPTER_COPY_READER: bool = True
     ADAPTER_COPY_SELECTOR: str = ""

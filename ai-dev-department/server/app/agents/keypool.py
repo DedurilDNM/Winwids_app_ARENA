@@ -54,10 +54,25 @@ class KeyPool:
         self._session_factory = session_factory
         self._busy: dict[int, int] = defaultdict(int)
         self._last_lease: dict[int, float] = {}
-        self._lock = asyncio.Lock()
-        self._changed = asyncio.Event()
+        self._loop = None  # asyncio primitives belong to one event loop: made for the current one
+        self._lock_obj: asyncio.Lock | None = None
+        self._changed_obj: asyncio.Event | None = None
         # async (user_id, event: dict) -> None: «limited», «recovered», «rotation», «waiting»
         self.on_event = None
+
+    def _primitives(self) -> tuple[asyncio.Lock, asyncio.Event]:
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self._loop, self._lock_obj, self._changed_obj = loop, asyncio.Lock(), asyncio.Event()
+        return self._lock_obj, self._changed_obj
+
+    @property
+    def _lock(self) -> asyncio.Lock:
+        return self._primitives()[0]
+
+    @property
+    def _changed(self) -> asyncio.Event:
+        return self._primitives()[1]
 
     @property
     def sessions(self):
@@ -171,11 +186,13 @@ class KeyPool:
     # ------------------------------------------------------------ one call with rotation
 
     async def complete(self, user_id: int, provider_id: str, req: Request, *, should_continue=None,
-                       on_wait=None, on_rotate=None) -> LLMResponse:
+                       on_wait=None, on_rotate=None, wait_limit: float | None = None) -> LLMResponse:
+        """`wait_limit`: how long to wait when every key is limited (default KEYPOOL_MAX_WAIT_SECONDS)."""
         transient = 0
         previous: Lease | None = None
         while True:
-            lease = await self.lease(user_id, provider_id, req.model, should_continue=should_continue, on_wait=on_wait)
+            lease = await self.lease(user_id, provider_id, req.model, should_continue=should_continue,
+                                     on_wait=on_wait, max_wait=wait_limit)
             if previous is not None and previous.key_id != lease.key_id:
                 event = {"type": "key_rotation", "provider": provider_id, "from_tail": previous.tail,
                          "to_tail": lease.tail, "from_label": previous.label, "to_label": lease.label}

@@ -2,7 +2,8 @@
 
 GET  /api/agent-roles                -> every role with its settings (defaults where not set)
 PUT  /api/agent-roles/{role}         {provider, model, effort?, tools?, skills?, instructions?, max_turns?, enabled?}
-DELETE /api/agent-roles/{role}       -> back to the defaults
+DELETE /api/agent-roles/{role}       -> forget the role's settings
+POST /api/agent-roles/auto           {check?} -> choose models automatically (background); GET -> progress/result
 GET  /api/skills                     -> [{name, description, source}]
 GET  /api/skills/{name}              -> {name, description, source, body}
 POST /api/skills                     {text} (a SKILL.md) | multipart file (.zip or SKILL.md)
@@ -61,8 +62,10 @@ async def list_roles(user: Annotated[User, Depends(get_current_user)],
                      db: Annotated[AsyncSession, Depends(get_db)]) -> list[dict]:
     saved = {r.role: r for r in (await db.execute(select(AgentRole).where(AgentRole.user_id == user.id))).scalars()}
     specs = await role_specs(db, user.id)
+    from app.agents.model_picker import ROLE_ORDER
+
     out = []
-    for role in ACCOUNT_ROLES:
+    for role in ROLE_ORDER:  # the lead first, then by importance (the order models are given in)
         r, spec = saved.get(role), specs.get(role)
         out.append({"role": role, "configured": r is not None, "enabled": r.enabled if r else True,
                     "provider": spec.provider if spec else (r.provider if r else None),
@@ -71,6 +74,7 @@ async def list_roles(user: Annotated[User, Depends(get_current_user)],
                     "tools": spec.tools if spec else (r.tools if r and r.tools is not None else ROLE_TOOLS[role]),
                     "skills": spec.skills if spec else (r.skills if r else None),
                     "instructions": r.instructions if r else "", "max_turns": r.max_turns if r else None,
+                    "fallbacks": (r.fallbacks or []) if r else [], "auto": bool(r.auto) if r else False,
                     "ready": spec is not None})
     return out
 
@@ -90,17 +94,69 @@ async def save_role(role: str, body: RoleIn, user: Annotated[User, Depends(get_c
     if r is None:
         r = AgentRole(user_id=user.id, role=role, provider=body.provider, model=body.model)
         db.add(r)
+    changed = (r.provider, r.model) != (body.provider, body.model.strip())
     r.provider, r.model, r.effort = body.provider, body.model.strip(), body.effort or None
     r.tools, r.skills, r.instructions = body.tools, body.skills, body.instructions
     r.max_turns, r.enabled = body.max_turns, body.enabled
+    if r.auto and changed:
+        r.auto, r.fallbacks = False, None  # chosen by hand now
     await db.commit()
     return {"role": role, "saved": True}
+
+
+_AUTO: dict[int, dict] = {}
+_AUTO_TASKS: set = set()
+
+
+class AutoIn(BaseModel):
+    check: bool = True  # really call the best candidates (a few tokens each)
+
+
+@router.post("/api/agent-roles/auto", status_code=status.HTTP_202_ACCEPTED)
+async def auto_roles(body: AutoIn, user: Annotated[User, Depends(get_current_user)]) -> dict:
+    """Choose the models: strongest working one leads, the other roles in descending strength.
+    Runs in the background (checking models takes a while); poll GET for the result."""
+    import asyncio
+
+    from app.agents import model_picker
+    from app.db import SessionLocal
+
+    user_id = user.id
+    job = _AUTO.get(user_id)
+    if job and job["running"]:
+        return job
+    job = _AUTO[user_id] = {"running": True, "checked": 0, "working": 0, "result": None, "error": None}
+
+    async def progress(working: int, checked: int) -> None:
+        job.update(working=working, checked=checked)
+
+    async def go() -> None:
+        try:
+            async with SessionLocal() as db:
+                result = await model_picker.pick(db, user_id, check=body.check, on_progress=progress)
+                if result["assignments"]:
+                    await model_picker.apply(db, user_id, result["assignments"])
+            job["result"] = result
+        except Exception as exc:
+            job["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+        finally:
+            job["running"] = False
+
+    task = asyncio.create_task(go())
+    _AUTO_TASKS.add(task)
+    task.add_done_callback(_AUTO_TASKS.discard)
+    return job
+
+
+@router.get("/api/agent-roles/auto")
+async def auto_roles_status(user: Annotated[User, Depends(get_current_user)]) -> dict:
+    return _AUTO.get(user.id) or {"running": False, "result": None, "error": None, "checked": 0, "working": 0}
 
 
 @router.delete("/api/agent-roles/{role}", status_code=status.HTTP_204_NO_CONTENT)
 async def reset_role(role: str, user: Annotated[User, Depends(get_current_user)],
                      db: Annotated[AsyncSession, Depends(get_db)]) -> None:
-    """Back to the defaults (a provider that has keys, the role's standard tools)."""
+    """Forget the role's settings (the model picker or the user sets it again)."""
     await db.execute(delete(AgentRole).where(AgentRole.user_id == user.id, AgentRole.role == role))
     await db.commit()
 

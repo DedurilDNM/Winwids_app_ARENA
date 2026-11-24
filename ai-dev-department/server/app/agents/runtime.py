@@ -34,6 +34,7 @@ class AgentSpec:
     instructions: str = ""  # the role's own prompt
     max_turns: int = 60
     max_tokens: int = 16000
+    fallbacks: list[dict] = field(default_factory=list)  # [{"provider", "model"}] when the main one is out
 
 
 @dataclass
@@ -91,12 +92,13 @@ def _trim(messages: list[dict]) -> None:
             block["content"] = body[:TRIM_TO] + f"\n…[shortened: {len(body) - TRIM_TO} characters of an old result]"
 
 
-Complete = Callable[[str, Request], Awaitable[LLMResponse]]
+# complete(spec, request): one model call for this agent (the spec's provider, then its fallbacks)
+Complete = Callable[[AgentSpec, Request], Awaitable[LLMResponse]]
 
 
 async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Complete, *,
                     should_continue: Callable[[], Awaitable[bool]] | None = None) -> AgentResult:
-    """`complete(provider, request)` performs one model call (through the key pool)."""
+    """`complete(spec, request)` performs one model call (through the key pool)."""
     tool_specs = [TOOLS[name].spec() for name in spec.tools if name in TOOLS
                   and not (name == "Task" and ctx.spawn is None)]
     system = system_prompt(spec, ctx)
@@ -115,10 +117,10 @@ async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Co
     for turn in range(1, spec.max_turns + 1):
         if should_continue is not None and not await should_continue():
             raise asyncio.CancelledError("stopped")
-        if spec.provider != "anthropic":
+        if spec.provider != "anthropic" or spec.fallbacks:
             _trim(messages)
-        resp = await complete(spec.provider, Request(model=spec.model, messages=messages, system=system,
-                                                     tools=tool_specs, max_tokens=spec.max_tokens, effort=spec.effort))
+        resp = await complete(spec, Request(model=spec.model, messages=messages, system=system,
+                                            tools=tool_specs, max_tokens=spec.max_tokens, effort=spec.effort))
         tokens_in += resp.tokens_in
         tokens_out += resp.tokens_out
         messages.append({"role": "assistant", "content": resp.content, "_raw": resp.raw})

@@ -269,7 +269,10 @@ class OpenAICompatible:
             if remaining is not None and float(remaining) <= 0:
                 raise LLMError(NO_CREDITS, "key spending limit reached", status=402)
 
-    async def models(self) -> list[str]:
+    async def models_meta(self) -> list[dict]:
+        """[{id, price_out (USD per 1M output tokens) | None, context | None, tools: bool | None, kind}]
+        from whatever the service tells (OpenRouter: pricing, context, supported parameters;
+        Together: type, pricing; Groq: context window; others: ids only)."""
         try:
             resp = await self.client.get("/models")
         except httpx.HTTPError as exc:
@@ -279,7 +282,31 @@ class OpenAICompatible:
             raise LLMError(outcome, "models list failed", status=resp.status_code, retry_after=retry)
         data = resp.json()
         items = data.get("data") if isinstance(data, dict) else data
-        return sorted({str(m.get("id")) for m in items or [] if isinstance(m, dict) and m.get("id")})
+        out: dict[str, dict] = {}
+        for m in items or []:
+            if not isinstance(m, dict) or not m.get("id"):
+                continue
+            pricing = m.get("pricing") or {}
+            price = None
+            raw_price = pricing.get("completion", pricing.get("output"))
+            try:
+                if raw_price is not None:
+                    price = float(raw_price)
+                    if "completion" in pricing:  # OpenRouter: USD per token
+                        price *= 1_000_000
+            except (TypeError, ValueError):
+                price = None
+            params = m.get("supported_parameters")
+            tools = ("tools" in params) if isinstance(params, list) else None
+            context = m.get("context_length") or m.get("context_window") or (m.get("top_provider") or {}).get(
+                "context_length")
+            kind = str(m.get("type") or (m.get("architecture") or {}).get("modality") or "")
+            out[str(m["id"])] = {"id": str(m["id"]), "price_out": price, "context": int(context) if context else None,
+                                 "tools": tools, "kind": kind}
+        return sorted(out.values(), key=lambda x: x["id"])
+
+    async def models(self) -> list[str]:
+        return [m["id"] for m in await self.models_meta()]
 
 
 # ------------------------------------------------------------------ Anthropic (official SDK)
@@ -388,6 +415,9 @@ class AnthropicClient:
         except self._anthropic.AnthropicError as exc:
             raise self._error(exc) from exc
         return sorted(m.id for m in page.data)
+
+    async def models_meta(self) -> list[dict]:
+        return [{"id": m, "price_out": None, "context": None, "tools": True, "kind": "text"} for m in await self.models()]
 
 
 # test hook: replace to serve fake providers
