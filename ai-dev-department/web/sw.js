@@ -1,6 +1,6 @@
 // Service worker: caches the static app shell so the PWA opens instantly
 // and installs on phones/PCs. API, WebSocket and noVNC traffic is never cached.
-const CACHE = "aidd-shell-v26";
+const CACHE = "aidd-shell-v27";
 const SHELL = [
   "./", "index.html", "css/app.css", "icon.svg", "manifest.webmanifest",
   "js/app.js", "js/api.js", "js/ui.js", "js/models.js", "js/browser.js", "js/attention.js",
@@ -34,6 +34,6 @@ self.addEventListener("fetch", (event) => {
         }
         return res;
       })
-      .catch(() => caches.match(event.request).then((r) => r || caches.match("index.html")))
+      .catch(() => caches.match(event.request, { ignoreSearch: true }).then((r) => r || caches.match("index.html")))
   );
 });

@@ -10,14 +10,17 @@ one-time password printed to stdout.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 import logging
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from urllib.parse import urlsplit
 from slowapi import _rate_limit_exceeded_handler
@@ -315,8 +318,45 @@ async def app_no_slash() -> RedirectResponse:
     return RedirectResponse("/app/", status_code=307)
 
 
+class VersionedStatic(StaticFiles):
+    """The web client with a version in every code address (app.js?v=<build>, and each
+    import inside the modules): a new build has new addresses, so no cache on the way
+    (the browser, a CDN such as Cloudflare) can serve old code after an update."""
+
+    _IMPORT = re.compile(r'(from\s+|import\s*\(\s*)"(\.{1,2}/[^"?]+\.js)"')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        root = Path(self.directory)
+        stamp = hashlib.sha256()
+        for f in sorted(root.rglob("*")):
+            if f.is_file() and f.suffix in (".js", ".css", ".html"):
+                st = f.stat()
+                stamp.update(f"{f.relative_to(root)}:{st.st_size}:{st.st_mtime_ns}".encode())
+        self.build = stamp.hexdigest()[:10]
+
+    def rewrite(self, text: str, kind: str) -> str:
+        v = self.build
+        if kind == ".html":
+            return text.replace('src="js/app.js"', f'src="js/app.js?v={v}"').replace(
+                'href="css/app.css"', f'href="css/app.css?v={v}"')
+        return self._IMPORT.sub(lambda m: f'{m.group(1)}"{m.group(2)}?v={v}"', text)
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        file = getattr(response, "path", None)
+        if response.status_code != 200 or not file:
+            return response
+        kind = Path(file).suffix
+        if kind not in (".js", ".html") or Path(file).name == "sw.js":
+            return response
+        body = self.rewrite(Path(file).read_text(encoding="utf-8"), kind)
+        media = "text/javascript" if kind == ".js" else "text/html"
+        return Response(body, media_type=f"{media}; charset=utf-8")
+
+
 if settings.WEB_ROOT.is_dir():
-    app.mount("/app", StaticFiles(directory=settings.WEB_ROOT, html=True), name="web")
+    app.mount("/app", VersionedStatic(directory=settings.WEB_ROOT, html=True), name="web")
 else:  # pragma: no cover - server-only deployments
     logger.warning("Web client not found at %s; /app is disabled", settings.WEB_ROOT)
 
