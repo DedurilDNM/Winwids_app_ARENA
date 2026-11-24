@@ -23,6 +23,12 @@ TRIM_TO = 1500
 TRIM_AFTER_CHARS = 400_000
 
 
+CUT_OFF = ("Not run: your answer hit the output length limit, so this call was cut off before it was "
+           "complete. Make each call smaller: write a big file in parts - Write the first part (path first, "
+           "then content), then append the rest with Edit or with Bash (cat >> file <<'EOF'), a few hundred "
+           "lines at a time.")
+
+
 @dataclass
 class AgentSpec:
     role: str
@@ -167,6 +173,15 @@ async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Co
                 messages.append({"role": "user", "content": "Continue."})
                 continue
             return AgentResult(last_text, turn, tokens_in, tokens_out, "done")
+
+        if resp.stop == "max_tokens":  # the answer was cut off: its tool calls may be incomplete
+            results = [{"type": "tool_result", "tool_use_id": c["id"], "is_error": True, "content": CUT_OFF} for c in calls]
+            for c in calls:
+                await emit({"type": "tool", "tool": c["name"], "arg": "", "id": c["id"]})
+                await emit({"type": "tool_done", "tool": c["name"], "id": c["id"], "ok": False,
+                            "note": "ответ модели обрезан по лимиту длины — пишу по частям"})
+            messages.append({"role": "user", "content": results})
+            continue
 
         async def one(call: dict) -> dict:
             name, args = call["name"], call.get("input") or {}

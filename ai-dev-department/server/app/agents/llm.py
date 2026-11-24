@@ -264,8 +264,10 @@ class OpenAICompatible:
             blocks.append({"type": "tool_use", "id": call.get("id") or f"call_{len(blocks)}",
                            "name": fn.get("name", ""), "input": args})
         finish = choice.get("finish_reason") or ""
-        stop = ("tool_use" if any(b["type"] == "tool_use" for b in blocks) else
-                "max_tokens" if finish == "length" else "refusal" if finish == "content_filter" else "end")
+        # «length»: the answer hit the output limit - a tool call in it may be cut off
+        stop = ("max_tokens" if finish == "length" else
+                "tool_use" if any(b["type"] == "tool_use" for b in blocks) else
+                "refusal" if finish == "content_filter" else "end")
         usage = data.get("usage") or {}
         return LLMResponse(blocks, stop, int(usage.get("prompt_tokens") or 0),
                            int(usage.get("completion_tokens") or 0), model=str(data.get("model") or req.model))

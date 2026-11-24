@@ -67,7 +67,8 @@ def _schema(props: dict, required: list[str]) -> dict:
 
 def resolve(ctx: ToolContext, path: str, *, write: bool = False) -> Path:
     if not path or not isinstance(path, str):
-        raise ToolError("path is required")
+        raise ToolError("path is required (if the call was long, it may have been cut off by the output limit: "
+                        "write big files in parts)")
     raw = Path(path)
     root = ctx.workspace.resolve()
     candidate = raw if raw.is_absolute() else root / raw

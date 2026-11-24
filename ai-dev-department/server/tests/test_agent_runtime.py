@@ -224,3 +224,26 @@ def test_bash_in_the_sandbox_cannot_see_server_secrets(tmp_path, monkeypatch):
     assert lines[1] == "1"  # only its own workspace is visible inside the data folder
     assert lines[2] == "0"  # the server's .env is hidden
     assert lines[3] == "made" and (ws / "out.txt").read_text() == "made\n"  # the workspace is writable
+
+
+def test_a_call_cut_off_by_the_output_limit_is_not_run(tmp_path):
+    """A huge Write cut off by the output limit (no path yet) is not run; the model is told to
+    write the file in parts, and does."""
+    cut = LLMResponse([_call("Write", content="<html>" + "x" * 50)], "max_tokens", 10, 16000)
+
+    class CutScript(Script):
+        async def __call__(self, provider, req):
+            if not self.requests:
+                self.requests.append(req)
+                return cut
+            return await super().__call__(provider, req)
+
+    script = CutScript([_call("Write", 1, path="page.html", content="<html>")],
+                       [_call("Bash", 2, command="echo '</html>' >> page.html")], "Done")
+    ctx, events = _ctx(tmp_path)
+    spec = AgentSpec(role="Coder", provider="custom", model="m", tools=["Write", "Bash"])
+    result = asyncio.run(run_agent(spec, ctx, "Make a page", script))
+    assert result.stopped == "done"
+    assert "cut off" in script.results(1)[0]["content"] and script.results(1)[0]["is_error"]
+    assert (ctx.workspace / "page.html").read_text() == "<html></html>\n"
+    assert any(e["type"] == "tool_done" and not e["ok"] and "обрезан" in e["note"] for e in events)
