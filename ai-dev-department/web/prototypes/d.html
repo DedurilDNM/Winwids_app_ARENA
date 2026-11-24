@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AIDD</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #262624; --side: #1f1e1d; --surface: #30302e; --surface-2: #383835; --user: #141413;
+  --line: rgba(255, 255, 255, .08); --line-2: rgba(255, 255, 255, .14);
+  --text: #ecebe6; --muted: #a8a59c; --faint: #75736c;
+  --accent: #d6825e; --accent-soft: rgba(214, 130, 94, .14);
+  --ok: #7cc49a; --bad: #e98b80; --info: #8fb3e6;
+  --serif: "Source Serif 4", Georgia, serif; --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.65 Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; cursor: pointer; background: none; border: 0; }
+.app { display: grid; grid-template-columns: 272px 1fr; height: 100vh; }
+
+/* sidebar */
+.side { background: var(--side); display: flex; flex-direction: column; padding: 12px 10px; gap: 2px; border-right: 1px solid var(--line); }
+.brand { font: 500 19px var(--serif); padding: 6px 10px 14px; letter-spacing: -.01em; }
+.nav { display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 9px; color: var(--text); font-size: 14.5px; width: 100%; text-align: left; }
+.nav:hover { background: rgba(255, 255, 255, .05); }
+.nav .plus { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #1f1e1d; display: grid; place-items: center; font-size: 16px; font-weight: 600; line-height: 1; }
+.nav svg { width: 18px; height: 18px; color: var(--muted); }
+.label { font-size: 12px; color: var(--faint); padding: 18px 10px 6px; }
+.chats { overflow: auto; flex: 1; }
+.chat { display: block; width: 100%; text-align: left; padding: 6px 10px; border-radius: 8px; font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat:hover { background: rgba(255, 255, 255, .05); color: var(--text); }
+.chat.on { background: rgba(255, 255, 255, .07); color: var(--text); }
+.chat .live { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 8px; vertical-align: 2px; animation: blink 1.4s infinite; }
+@keyframes blink { 50% { opacity: .25; } }
+.me { display: flex; align-items: center; gap: 10px; padding: 10px; border-top: 1px solid var(--line); margin-top: 6px; font-size: 14px; }
+.me .av { width: 30px; height: 30px; border-radius: 50%; background: #4a4844; display: grid; place-items: center; font-size: 13px; }
+.me .sub { color: var(--faint); font-size: 12px; line-height: 1.2; }
+.me button { margin-left: auto; color: var(--muted); padding: 6px; border-radius: 8px; }
+.me button:hover { background: rgba(255, 255, 255, .06); color: var(--text); }
+
+/* main */
+main { display: flex; flex-direction: column; min-width: 0; height: 100vh; position: relative; }
+.head { display: flex; align-items: center; gap: 12px; padding: 12px 22px; }
+.head h1 { font: 500 15px Inter, sans-serif; margin: 0; color: var(--text); }
+.head .meta { margin-left: auto; font: 12px var(--mono); color: var(--faint); display: flex; gap: 14px; align-items: center; }
+.head .meta b { color: var(--muted); font-weight: 400; }
+.head .changes { font: 12.5px Inter; color: var(--muted); padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line-2); }
+.head .changes:hover { color: var(--text); }
+.scroll { flex: 1; overflow: auto; }
+.thread { max-width: 760px; margin: 0 auto; padding: 18px 28px 190px; }
+.user { display: flex; justify-content: flex-end; margin: 6px 0 26px; }
+.user div { background: var(--user); border-radius: 16px; padding: 11px 16px; max-width: 80%; }
+.prose { font: 16.5px/1.7 var(--serif); color: var(--text); }
+.prose p { margin: 0 0 12px; }
+.prose code { font: 13.5px var(--mono); background: var(--surface); padding: 1px 6px; border-radius: 5px; }
+
+/* the plan */
+.plan { margin: 4px 0 18px; padding: 12px 16px; background: var(--surface); border-radius: 12px; }
+.plan .t { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--faint); margin-bottom: 6px; }
+.plan ul { margin: 0; padding: 0; list-style: none; font-size: 14px; }
+.plan li { display: flex; gap: 10px; align-items: baseline; padding: 2px 0; color: var(--muted); }
+.plan li::before { content: "○"; font: 12px var(--mono); color: var(--faint); width: 12px; }
+.plan li.done { color: var(--faint); text-decoration: line-through; } .plan li.done::before { content: "✓"; color: var(--ok); text-decoration: none; }
+.plan li.now { color: var(--text); } .plan li.now::before { content: "●"; color: var(--accent); animation: blink 1.4s infinite; }
+
+/* steps (one line each) */
+.steps { margin: 2px 0 14px; padding-left: 14px; border-left: 1px solid var(--line-2); font: 13px/1.55 var(--mono); }
+.step { display: flex; gap: 10px; align-items: baseline; padding: 3px 0; color: var(--muted); cursor: pointer; }
+.step:hover { color: var(--text); }
+.step .s { width: 12px; flex: none; color: var(--ok); }
+.step.run .s { color: var(--accent); animation: blink 1.4s infinite; }
+.step.fail .s { color: var(--bad); }
+.step .n { color: var(--text); min-width: 46px; }
+.step .a { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.step .r { margin-left: auto; color: var(--faint); white-space: nowrap; padding-left: 12px; }
+.add { color: var(--ok); } .del { color: var(--bad); }
+.out { margin: 4px 0 8px 22px; background: #1c1c1b; border-radius: 10px; padding: 10px 14px; color: #cfcdc6; white-space: pre; overflow-x: auto; font: 12.5px/1.6 var(--mono); }
+.out .l-a { color: var(--ok); } .out .l-d { color: var(--bad); } .out .c { color: var(--accent); }
+
+/* sub-agents: a name line, its steps indented */
+.agent { margin: 14px 0 6px; }
+.agent .who { display: flex; align-items: baseline; gap: 10px; font-size: 14px; cursor: pointer; }
+.agent .who b { font-weight: 600; }
+.agent .who .task { color: var(--muted); }
+.agent .who .m { margin-left: auto; font: 12px var(--mono); color: var(--faint); white-space: nowrap; }
+.agent .who .st { font: 12px var(--mono); }
+.agent .steps { margin-top: 6px; }
+.agent.done .who .st { color: var(--ok); }
+.agent.run .who .st { color: var(--accent); }
+.parallel { font-size: 12.5px; color: var(--faint); margin: 18px 0 2px; }
+.note { font-size: 13px; color: var(--faint); margin: 10px 0; padding-left: 14px; border-left: 1px solid var(--accent); }
+
+/* composer */
+.composer-wrap { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 28px 22px; background: linear-gradient(180deg, rgba(38, 38, 36, 0), var(--bg) 34%); }
+.composer { max-width: 760px; margin: 0 auto; background: var(--surface); border: 1px solid var(--line-2); border-radius: 20px; padding: 14px 14px 10px 18px; box-shadow: 0 10px 30px -14px rgba(0, 0, 0, .6); }
+.composer textarea { width: 100%; background: none; border: 0; outline: none; resize: none; font: 15.5px/1.5 Inter, sans-serif; color: var(--text); min-height: 48px; }
+.composer textarea::placeholder { color: var(--faint); }
+.row { display: flex; align-items: center; gap: 6px; }
+.icon { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; color: var(--muted); border: 1px solid var(--line-2); }
+.icon:hover { color: var(--text); background: rgba(255, 255, 255, .05); }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 9px; padding: 2px; font-size: 13px; }
+.seg button { padding: 4px 10px; border-radius: 7px; color: var(--muted); }
+.seg button.on { background: var(--surface-2); color: var(--text); }
+.model { margin-left: auto; font-size: 13px; color: var(--muted); padding: 6px 10px; border-radius: 9px; display: inline-flex; gap: 6px; align-items: center; }
+.model:hover { background: rgba(255, 255, 255, .05); color: var(--text); }
+.go { width: 34px; height: 34px; border-radius: 10px; background: var(--accent); color: #1f1e1d; display: grid; place-items: center; }
+.go.stop { background: var(--surface-2); color: var(--text); border: 1px solid var(--line-2); }
+
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; } .side { display: none; }
+  .thread { padding: 10px 16px 190px; } .composer-wrap { padding: 0 10px 12px; }
+  .head .meta .hide-sm { display: none; }
+  .step .r { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">AIDD</div>
+    <button class="nav"><span class="plus">+</span>Новый чат</button>
+    <button class="nav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a8 8 0 0 1-11.8 7L4 20l1-4.6A8 8 0 1 1 21 12Z"/></svg>Чаты</button>
+    <button class="nav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h6l2 2h10v10H3z"/></svg>Проекты</button>
+    <button class="nav"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 2.5 5.5L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.5-.5z"/></svg>Скиллы</button>
+    <div class="label">Недавние</div>
+    <div class="chats">
+      <button class="chat on"><span class="live"></span>Pomodoro-таймер: PWA с историей</button>
+      <button class="chat">Отчёт по продажам в Excel</button>
+      <button class="chat">Починить вход через Google</button>
+      <button class="chat">Презентация для инвесторов</button>
+      <button class="chat">Лендинг для студии 3D</button>
+      <button class="chat">Telegram-бот с напоминаниями</button>
+      <button class="chat">Договор подряда в Word</button>
+      <button class="chat">Парсер прайсов в CSV</button>
+      <button class="chat">Тесты для API заказов</button>
+    </div>
+    <div class="me"><span class="av">А</span><span>Артём<div class="sub">6 ключей · 5 доступны</div></span>
+      <button title="Настройки"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9 7 7M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></svg></button></div>
+  </aside>
+
+  <main>
+    <div class="head">
+      <h1>Pomodoro-таймер: PWA с историей</h1>
+      <div class="meta"><span class="hide-sm"><b>6</b> агентов</span><span class="hide-sm"><b>71.8k</b> токенов</span><span><b>4:12</b></span>
+        <button class="changes">Изменения <span class="add">+187</span> <span class="del">−6</span></button></div>
+    </div>
+    <div class="scroll"><div class="thread">
+      <div class="user"><div>Сделай PWA Pomodoro-таймер с историей сессий, тёмной темой и тестами. Данные храни локально.</div></div>
+
+      <div class="prose"><p>Разберу на части: сначала структура и хранение, потом таймер и экран истории — их напишут два агента параллельно, затем тесты и ревью.</p></div>
+
+      <div class="plan"><div class="t"><span>План</span><span>1 из 5</span></div><ul>
+        <li class="done">Структура и хранение истории</li><li class="now">Таймер с паузой и настройкой длительности</li>
+        <li class="now">Экран истории и итог за день</li><li>Тесты</li><li>Ревью и ветка для PR</li></ul></div>
+
+      <div class="agent done"><div class="who"><b>Архитектор</b><span class="task">структура и хранение</span><span class="m">gemini-3-pro</span><span class="st">✓ 3 шага</span></div></div>
+
+      <div class="parallel">два агента работают параллельно</div>
+
+      <div class="agent run"><div class="who"><b>Кодер</b><span class="task">таймер и состояние</span><span class="m">deepseek-chat</span><span class="st">● работает</span></div>
+        <div class="steps">
+          <div class="step"><span class="s">✓</span><span class="n">Read</span><span class="a">docs/ARCHITECTURE.md</span><span class="r">42 строки</span></div>
+          <div class="step" onclick="this.nextElementSibling.hidden=!this.nextElementSibling.hidden"><span class="s">✓</span><span class="n">Edit</span><span class="a">src/timer.ts</span><span class="r"><span class="add">+18</span> <span class="del">−4</span></span></div>
+          <div class="out"><span class="l-d">−   const DURATION = 25 * 60;</span>
+<span class="l-a">+   const DURATION = settings.focus * 60;</span>
+    let left = DURATION;
+<span class="l-a">+   let paused = false;</span>
+    export function tick() {
+<span class="l-a">+     if (paused) return;</span>
+<span class="l-a">+     left = Math.max(0, left - 1);</span></div>
+          <div class="step run"><span class="s">●</span><span class="n">Bash</span><span class="a">npm run build</span><span class="r">идёт 0:06</span></div>
+        </div>
+      </div>
+
+      <div class="agent run"><div class="who"><b>Кодер</b><span class="task">экран истории</span><span class="m">deepseek-chat</span><span class="st">● работает</span></div>
+        <div class="steps">
+          <div class="step"><span class="s">✓</span><span class="n">Glob</span><span class="a">src/ui/**/*.ts</span><span class="r">3 файла</span></div>
+          <div class="step"><span class="s">✓</span><span class="n">Skill</span><span class="a">frontend-design</span><span class="r"></span></div>
+          <div class="step"><span class="s">✓</span><span class="n">Write</span><span class="a">src/ui/history.ts</span><span class="r"><span class="add">+96</span></span></div>
+          <div class="step run"><span class="s">●</span><span class="n">Edit</span><span class="a">src/ui/styles.css</span><span class="r"></span></div>
+        </div>
+      </div>
+
+      <div class="note">Ключ OpenRouter ••••07c2 упёрся в лимит — запросы перешли на ••••c4d8, этот вернётся после проверки.</div>
+    </div></div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <textarea rows="2" placeholder="Ответить или добавить задачу…"></textarea>
+        <div class="row">
+          <button class="icon" title="Прикрепить файл"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg></button>
+          <div class="seg"><button class="on">Отдел</button><button>Один агент</button><button>План</button></div>
+          <button class="model">Авто · gpt-5 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button>
+          <button class="go stop" title="Остановить"><svg width="12" height="12" viewBox="0 0 12 12"><rect width="12" height="12" rx="2.5" fill="currentColor"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
