@@ -303,7 +303,7 @@ async def delete_run(run_id: int, user: Annotated[User, Depends(get_current_user
 def _files(root: Path) -> list[Path]:
     out = []
     for base, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and d != ".home"]
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and d not in (".home", ".aidd-git")]
         out += [Path(base) / f for f in files]
     return sorted(out)
 
@@ -324,7 +324,7 @@ async def run_file(run_id: int, path: Annotated[str, Query(min_length=1)],
     run = await _own_run(db, user, run_id)
     root = Path(run.workspace).resolve()
     target = (root / path).resolve()
-    if root not in target.parents or not target.is_file():
+    if root not in target.parents or not target.is_file() or ".aidd-git" in target.relative_to(root).parts:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such file")
     data = target.read_bytes()[:2_000_000]
     return PlainTextResponse(data.decode("utf-8", "replace"))

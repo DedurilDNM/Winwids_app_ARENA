@@ -114,8 +114,8 @@ class RunState:
 
 
 async def _run_node(st: RunState, role: str, prompt: str, agent_id: str, parent: str | None, depth: int,
-                    description: str = "") -> str:
-    spec = st.specs[role]
+                    description: str = "", *, spec: AgentSpec | None = None, history: list[dict] | None = None) -> str:
+    spec = spec or st.specs[role]
     skills = skill_set(st.user_id, spec.skills)
     max_depth = int(_s("AGENT_MAX_DEPTH", 1))
 
@@ -181,7 +181,7 @@ async def _run_node(st: RunState, role: str, prompt: str, agent_id: str, parent:
     await emit({"type": "agent_start", "role": role, "parent": parent, "description": description,
                 "provider": spec.provider, "model": spec.model})
     try:
-        result = await run_agent(spec, ctx, prompt, complete, should_continue=st.alive)
+        result = await run_agent(spec, ctx, prompt, complete, should_continue=st.alive, history=history)
     except asyncio.CancelledError:
         await emit({"type": "agent_done", "status": "stopped"})
         raise
@@ -206,8 +206,51 @@ async def _finish(run_id: int, **fields) -> None:
         await db.commit()
 
 
+PLAN_TOOLS = ["Read", "Glob", "Grep", "WebFetch", "TodoWrite", "Skill"]
+SOLO_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "TodoWrite", "Skill"]
+PLAN_NOTE = ("This turn is planning only: study the project and the request, then answer with a clear, "
+             "numbered plan (what to change, where, how to verify). Do not change any files.")
+
+
+async def _history(db, run: AgentRun) -> list[dict]:
+    """Earlier turns of the chat as a conversation: the user's message and the department's answer."""
+    if not run.chat_id:
+        return []
+    earlier = (await db.execute(select(AgentRun).where(AgentRun.chat_id == run.chat_id, AgentRun.id < run.id)
+                                .order_by(AgentRun.id))).scalars()
+    out: list[dict] = []
+    for r in earlier:
+        answer = r.result or (f"(this turn ended with an error: {r.error[:300]})" if r.error else
+                              "(this turn was stopped before an answer)")
+        out += [{"role": "user", "content": r.prompt}, {"role": "assistant", "content": [{"type": "text", "text": answer}]}]
+    return out
+
+
+def _lead_spec(specs: dict[str, AgentSpec], lead: str, mode: str, model: str | None) -> tuple[str, AgentSpec | None]:
+    """The spec the run starts with, shaped by the chat's mode and chosen model."""
+    base = specs.get(lead) or specs.get("Orchestrator") or next(iter(specs.values()), None)
+    if base is None:
+        return lead, None
+    spec = dataclasses.replace(base, tools=list(base.tools), fallbacks=list(base.fallbacks))
+    if mode == "single":  # one agent with every working tool, on the strongest (lead's) model
+        coder = specs.get("Coder")
+        spec = dataclasses.replace(spec, role="Coder", tools=list(coder.tools if coder else SOLO_TOOLS),
+                                   skills=coder.skills if coder else None,
+                                   instructions=coder.instructions if coder else "")
+        spec.tools = [t for t in spec.tools if t != "Task"]
+    elif mode == "plan":
+        spec.tools = [t for t in PLAN_TOOLS if t in spec.tools or t in ("Read", "Glob", "Grep")]
+        spec.instructions = f"{spec.instructions}\n\n{PLAN_NOTE}".strip()
+    if model and ":" in model:
+        provider, name = model.split(":", 1)
+        if provider in PROVIDERS and name:
+            spec.provider, spec.model, spec.fallbacks = provider, name, []
+    return spec.role, spec
+
+
 async def execute(run_id: int) -> None:
-    """Run a stored job to the end (status, result and tokens saved)."""
+    """Run a stored job to the end (status, result, tokens and snapshots saved)."""
+    from app.agents import snapshots
     from app.db import SessionLocal
 
     async with SessionLocal() as db:
@@ -215,14 +258,23 @@ async def execute(run_id: int) -> None:
         if run is None:
             return
         specs = await role_specs(db, run.user_id)
+        history = await _history(db, run)
         run.status, run.started_at = "running", utcnow()
         await db.commit()
         user_id, prompt, lead = run.user_id, run.prompt, run.lead_role
+        mode, model, chat_id = run.mode or "department", run.model, run.chat_id
         ws = Path(run.workspace)
     ws.mkdir(parents=True, exist_ok=True)
     st = RunState(run_id, user_id, ws, specs, asyncio.Semaphore(int(_s("AGENT_MAX_PARALLEL", 4))))
+    base = None
     try:
-        if lead not in specs:  # nothing set up yet: choose the models automatically, strongest leads
+        base = await asyncio.to_thread(snapshots.snapshot, ws, f"before turn {run_id}")
+        await _save_run(run_id, base_commit=base)
+    except Exception:
+        logger.warning("Run %s: no snapshot of the workspace", run_id, exc_info=True)
+    try:
+        if lead not in specs and not (model and ":" in model):
+            # nothing set up yet: choose the models automatically, the strongest leads
             await st.event("lead", {"type": "auto_models", "status": "started"})
             from app.agents import model_picker
 
@@ -232,9 +284,11 @@ async def execute(run_id: int) -> None:
                 st.specs.update(await role_specs(db, user_id))
             await st.event("lead", {"type": "auto_models", "status": "done", "assignments": [
                 {"role": a["role"], "provider": a["provider"], "model": a["model"]} for a in result["assignments"]]})
-        if lead not in st.specs:
+        role, spec = _lead_spec(st.specs, lead, mode, model)
+        if spec is None:
             raise LLMError("request", "No working model found: add a key to the pool, or set the role by hand")
-        text = await _run_node(st, lead, prompt, "lead", None, 0)
+        text = await _run_node(st, role, prompt, "lead", None, 0 if mode == "department" else 99, spec=spec,
+                               history=history)
         await _finish(run_id, status="done", result=text, **st.counters)
     except asyncio.CancelledError:
         await _finish(run_id, status="stopped", **st.counters)
@@ -242,32 +296,68 @@ async def execute(run_id: int) -> None:
         logger.warning("Run %s failed: %s", run_id, type(exc).__name__, exc_info=True)
         await _finish(run_id, status="failed", error=f"{type(exc).__name__}: {str(exc)[:500]}", **st.counters)
     finally:
+        try:
+            end = await asyncio.to_thread(snapshots.snapshot, ws, f"after turn {run_id}")
+            await _save_run(run_id, end_commit=end)
+        except Exception:
+            logger.debug("Run %s: no end snapshot", run_id, exc_info=True)
+        if chat_id:
+            await _touch_chat(chat_id)
         _STOP.discard(run_id)
         _RUN_TASKS.pop(run_id, None)
 
 
-async def create_run(db, user_id: int, prompt: str, title: str = "", lead_role: str = "Orchestrator") -> AgentRun:
+async def _save_run(run_id: int, **fields) -> None:
+    from app.db import SessionLocal
+
+    async with SessionLocal() as db:
+        run = await db.get(AgentRun, run_id)
+        if run is not None:
+            for k, v in fields.items():
+                setattr(run, k, v)
+            await db.commit()
+
+
+async def _touch_chat(chat_id: int) -> None:
+    from app.db import SessionLocal
+    from app.models import Chat
+
+    async with SessionLocal() as db:
+        chat = await db.get(Chat, chat_id)
+        if chat is not None:
+            chat.updated_at = utcnow()
+            await db.commit()
+
+
+async def create_run(db, user_id: int, prompt: str, title: str = "", lead_role: str = "Orchestrator", *,
+                     chat=None, mode: str = "department", model: str | None = None) -> AgentRun:
     specs = await role_specs(db, user_id)
     if lead_role not in specs and not await has_keys(db, user_id):
         raise ValueError("The key pool is empty: add a key of any aggregator first")
-    run = AgentRun(user_id=user_id, prompt=prompt, title=(title or prompt.splitlines()[0])[:200], lead_role=lead_role)
+    run = AgentRun(user_id=user_id, prompt=prompt, title=(title or prompt.splitlines()[0])[:200], lead_role=lead_role,
+                   chat_id=chat.id if chat is not None else None, mode=mode, model=model or None)
     db.add(run)
     await db.commit()
     await db.refresh(run)
-    run.workspace = str(workspace_for(run.id))
+    run.workspace = chat.workspace if chat is not None else str(workspace_for(run.id))
     await db.commit()
     return run
 
 
+def chat_workspace(chat_id: int) -> Path:
+    return DATA_DIR / "workspaces" / f"chat-{int(chat_id)}"
+
+
 def start(run_id: int) -> None:
+    _STOP.discard(run_id)  # ids of deleted runs come back (SQLite): never start «stopped»
     task = asyncio.create_task(execute(run_id))
     _RUN_TASKS[run_id] = task
 
 
 def stop(run_id: int) -> bool:
-    _STOP.add(run_id)
     task = _RUN_TASKS.get(run_id)
     if task is not None and not task.done():
+        _STOP.add(run_id)
         task.cancel()
         return True
     return False

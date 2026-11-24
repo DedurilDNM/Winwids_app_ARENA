@@ -96,13 +96,38 @@ def _trim(messages: list[dict]) -> None:
 Complete = Callable[[AgentSpec, Request], Awaitable[LLMResponse]]
 
 
+def tool_detail(name: str, args: dict, text: str, is_error: bool) -> dict:
+    """What the chat shows when a step is opened: the diff of an edit, the output of a
+    command, the start of a new file. Kept small."""
+    if not isinstance(args, dict):
+        return {}
+    if is_error:
+        return {"output": text[:1500]}
+    if name == "Edit":
+        old = str(args.get("old_string") or "").splitlines()
+        new = str(args.get("new_string") or "").splitlines()
+        lines = [f"-{x}" for x in old[:60]] + [f"+{x}" for x in new[:60]]
+        return {"diff": lines, "added": len(new), "deleted": len(old)}
+    if name == "Write":
+        content = str(args.get("content") or "").splitlines()
+        return {"diff": [f"+{x}" for x in content[:60]], "added": len(content), "deleted": 0,
+                "more": max(0, len(content) - 60)}
+    if name in ("Bash", "Grep", "Glob", "WebFetch"):
+        return {"output": text[:4000] if name == "Bash" else text[:1500]}
+    if name == "Read":
+        return {"lines": text.count("\n") + 1}
+    return {}
+
+
 async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Complete, *,
-                    should_continue: Callable[[], Awaitable[bool]] | None = None) -> AgentResult:
-    """`complete(spec, request)` performs one model call (through the key pool)."""
+                    should_continue: Callable[[], Awaitable[bool]] | None = None,
+                    history: list[dict] | None = None) -> AgentResult:
+    """`complete(spec, request)` performs one model call (through the key pool).
+    `history`: earlier messages of the conversation (a chat), before `prompt`."""
     tool_specs = [TOOLS[name].spec() for name in spec.tools if name in TOOLS
                   and not (name == "Task" and ctx.spawn is None)]
     system = system_prompt(spec, ctx)
-    messages: list[dict] = [{"role": "user", "content": prompt}]
+    messages: list[dict] = [*(history or []), {"role": "user", "content": prompt}]
     tokens_in = tokens_out = 0
     nudges = 0
     last_text = ""
@@ -148,7 +173,7 @@ async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Co
             else:
                 text, is_error = await run_tool(ctx, name, args)
             await emit({"type": "tool_done", "tool": name, "id": call["id"], "ok": not is_error,
-                        "note": text[:200] if is_error else ""})
+                        "note": text[:200] if is_error else "", **tool_detail(name, args, text, is_error)})
             return {"type": "tool_result", "tool_use_id": call["id"], "content": text, "is_error": is_error}
 
         results = await asyncio.gather(*(one(c) for c in calls))

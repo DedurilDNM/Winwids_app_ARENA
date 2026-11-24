@@ -270,6 +270,11 @@ class AgentRun(Base):
     tokens_in: Mapped[int] = mapped_column(Integer, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, default=0)
     project_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    mode: Mapped[str | None] = mapped_column(String(16), nullable=True)  # department | single | plan
+    model: Mapped[str | None] = mapped_column(String(240), nullable=True)  # "provider:model" for the lead; None = auto
+    base_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)  # workspace before the run
+    end_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)  # ... and after it
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -286,3 +291,17 @@ class AgentRunEvent(Base):
     type: Mapped[str] = mapped_column(String(32))
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Chat(Base):
+    """A conversation with the API department: every user message is a run in the chat's
+    workspace; the lead agent sees the earlier messages and answers."""
+
+    __tablename__ = "chats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    workspace: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
