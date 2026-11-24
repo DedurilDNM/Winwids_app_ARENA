@@ -81,14 +81,12 @@ def api(monkeypatch, tmp_path):
 
     from app.main import app
 
-    monkeypatch.setenv("KEYPOOL_CHECKER_ENABLED", "false")
-    monkeypatch.setenv("AGENT_BASH_SANDBOX", "off")
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "AGENT_BASH_SANDBOX", "off")
     monkeypatch.setattr(department, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(skills_mod, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(llm, "CLIENT_FACTORY", FakeClient)
-    from app.config import get_settings
-
-    get_settings.cache_clear() if hasattr(get_settings, "cache_clear") else None
     with TestClient(app) as client:
         token = client.post("/api/auth/login", json={"email": "admin@local", "password": "admin-test-pass"}).json()[
             "access_token"]
@@ -98,8 +96,6 @@ def api(monkeypatch, tmp_path):
         for role in client.get("/api/agent-roles").json():
             client.delete(f"/api/agent-roles/{role['role']}")
         yield client
-    if hasattr(get_settings, "cache_clear"):
-        get_settings.cache_clear()
 
 
 def _wait(api, run_id, done=("done", "failed", "stopped"), seconds=60):

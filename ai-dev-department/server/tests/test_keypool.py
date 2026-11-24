@@ -286,7 +286,6 @@ def api(monkeypatch):
 
     from app.main import app
 
-    monkeypatch.setenv("KEYPOOL_CHECKER_ENABLED", "false")
     with TestClient(app) as client:
         token = client.post("/api/auth/login", json={"email": "admin@local", "password": "admin-test-pass"}).json()[
             "access_token"]

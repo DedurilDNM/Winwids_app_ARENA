@@ -138,6 +138,8 @@ async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Co
 
         async def one(call: dict) -> dict:
             name, args = call["name"], call.get("input") or {}
+            if name == "Task" and ctx.reserve is not None and isinstance(args, dict):
+                args = {**args, "__child_id": ctx.reserve()}  # before any await: ids follow the call order
             await emit({"type": "tool", "tool": name, "arg": describe_call(name, args), "id": call["id"]})
             if name not in spec.tools:
                 text, is_error = f"The tool {name} is not available to the {spec.role}", True

@@ -40,7 +40,9 @@ class ToolContext:
     skills: Any = None  # SkillSet for this agent
     todos: list[dict] = field(default_factory=list)
     # async (role, description, prompt) -> str: runs a sub-agent (Task); None = no sub-agents
-    spawn: Callable[[str, str, str], Awaitable[str]] | None = None
+    spawn: Callable[..., Awaitable[str]] | None = None
+    # () -> str: reserves the next sub-agent id, called in the order of the Task calls
+    reserve: Callable[[], str] | None = None
     emit: Callable[[dict], Awaitable[None]] | None = None
     bash_timeout: float = 120.0
     sandbox: str = "auto"  # auto | bwrap | off
@@ -317,7 +319,7 @@ async def _task(ctx: ToolContext, a: dict) -> str:
     role, prompt = a.get("role") or "", a.get("prompt") or ""
     if not role or not prompt:
         raise ToolError("role and prompt are required")
-    return await ctx.spawn(role, str(a.get("description") or "")[:120], prompt)
+    return await ctx.spawn(role, str(a.get("description") or "")[:120], prompt, a.get("__child_id"))
 
 
 TOOLS: dict[str, Tool] = {t.name: t for t in (
@@ -379,6 +381,7 @@ def describe_call(name: str, args: dict) -> str:
     """A short line for the UI (paths and commands only, shortened)."""
     if not isinstance(args, dict):
         return ""
+    args = {k: v for k, v in args.items() if not k.startswith("__")}
     for key in ("path", "pattern", "command", "url", "name", "role"):
         if args.get(key):
             value = str(args[key]).replace("\n", " ")

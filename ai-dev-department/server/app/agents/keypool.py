@@ -287,13 +287,15 @@ class KeyPool:
         """Background loop (started with the app)."""
         tick = float(_setting("KEYPOOL_TICK_SECONDS", 15))
         while True:
+            # sleep first: nothing to check in the first seconds after a start, and a short-lived
+            # app (tests) never touches the database from this background task
+            await asyncio.sleep(tick)
             try:
                 await self.check_due()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("Key pool checker tick failed", exc_info=True)
-            await asyncio.sleep(tick)
 
 
 key_pool = KeyPool()

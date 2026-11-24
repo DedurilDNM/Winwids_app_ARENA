@@ -126,11 +126,11 @@ async def _run_node(st: RunState, role: str, prompt: str, agent_id: str, parent:
     async def emit(e: dict) -> None:
         await st.event(agent_id, e)
 
-    async def spawn(child_role: str, child_desc: str, child_prompt: str) -> str:
+    async def spawn(child_role: str, child_desc: str, child_prompt: str, child: str | None = None) -> str:
         resolved = match_role(child_role, st.specs)
         if resolved is None:
             raise ToolError(f"No such role {child_role!r}; roles: {', '.join(r for r in st.specs if r != role)}")
-        child = st.child_id(agent_id)
+        child = child or st.child_id(agent_id)
         async with st.sem:  # at most AGENT_MAX_PARALLEL sub-agents at once
             try:
                 text = await _run_node(st, resolved, child_prompt, child, agent_id, depth + 1, child_desc)
@@ -144,6 +144,7 @@ async def _run_node(st: RunState, role: str, prompt: str, agent_id: str, parent:
     can_spawn = depth < max_depth and "Task" in spec.tools
     ctx = ToolContext(workspace=st.workspace, role=role, agent_id=agent_id, read_roots=skills.roots, skills=skills,
                       emit=emit, spawn=spawn if can_spawn else None,
+                      reserve=(lambda: st.child_id(agent_id)) if can_spawn else None,
                       bash_timeout=float(_s("AGENT_BASH_TIMEOUT_SECONDS", 120)),
                       sandbox=str(_s("AGENT_BASH_SANDBOX", "auto")))
     ctx.available_roles = [r for r in st.specs if r != role]
