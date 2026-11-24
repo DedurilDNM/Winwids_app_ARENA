@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 from app.agents.llm import LLMResponse, Request
-from app.agents.tools import TOOLS, ToolContext, describe_call, run_tool
+from app.agents.tools import normalize_args, TOOLS, ToolContext, describe_call, run_tool
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +185,8 @@ async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Co
 
         async def one(call: dict) -> dict:
             name, args = call["name"], call.get("input") or {}
+            if isinstance(args, dict) and "__invalid_json__" not in args:
+                args = normalize_args(args)  # file_path -> path etc., for the UI line too
             if name == "Task" and ctx.reserve is not None and isinstance(args, dict):
                 args = {**args, "__child_id": ctx.reserve()}  # before any await: ids follow the call order
             await emit({"type": "tool", "tool": name, "arg": describe_call(name, args), "id": call["id"]})

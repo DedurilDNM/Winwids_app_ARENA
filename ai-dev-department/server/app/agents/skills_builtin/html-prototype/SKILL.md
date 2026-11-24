@@ -19,6 +19,6 @@ The chat shows an HTML file live (in a sandbox) when you send it with **SendFile
 - Real states: hover, focus, empty, loading - and make the main buttons do something (switch tabs, open a dialog, add an item).
 
 ## Steps
-1. Write `prototype/index.html`.
+1. Write `prototype/index.html` (a big page in parts: the first ~300 lines, then Write with `append: true`; or keep the CSS and JS in `prototype/style.css` and `prototype/app.js`).
 2. Check it if a browser is available (`python3 -c "import playwright"`): open it, look for console errors, take a screenshot at 390 and 1440 px.
 3. **SendFile** `prototype/index.html` with a one-line caption of what to look at.

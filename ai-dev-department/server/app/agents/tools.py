@@ -126,10 +126,15 @@ async def _write(ctx: ToolContext, a: dict) -> str:
         raise ToolError("content must be text")
     p.parent.mkdir(parents=True, exist_ok=True)
     existed = p.exists()
-    p.write_text(content, encoding="utf-8")
+    if a.get("append") and existed:
+        with p.open("a", encoding="utf-8") as f:
+            f.write(content)
+    else:
+        p.write_text(content, encoding="utf-8")
     if ctx.emit:
         await ctx.emit({"type": "file", "path": _rel(ctx, p), "action": "updated" if existed else "created"})
-    return f"{'Updated' if existed else 'Created'} {_rel(ctx, p)} ({len(content.encode())} bytes)"
+    verb = "Appended to" if a.get("append") and existed else "Updated" if existed else "Created"
+    return f"{verb} {_rel(ctx, p)} (now {p.stat().st_size} bytes)"
 
 
 async def _edit(ctx: ToolContext, a: dict) -> str:
@@ -356,8 +361,12 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
          "root. Use offset/limit for long files.",
          _schema({"path": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, ["path"]),
          _read),
-    Tool("Write", "Create or overwrite a file with the full content. Prefer Edit for changes to an existing file.",
-         _schema({"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]), _write),
+    Tool("Write", "Create or overwrite a file (path first, then content). For a big file (over ~300 lines) "
+         "write it in parts: the first part, then the next ones with append: true. Prefer Edit for changes "
+         "to an existing file.",
+         _schema({"path": {"type": "string"}, "content": {"type": "string"},
+                  "append": {"type": "boolean", "description": "add to the end of the file instead of replacing it"}},
+                 ["path", "content"]), _write),
     Tool("Edit", "Replace an exact piece of text in a file. old_string must match exactly once (or set replace_all). "
          "Read the file first.",
          _schema({"path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"},
@@ -393,6 +402,23 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
 ALL_TOOL_NAMES = list(TOOLS)
 
 
+# names other agents' tools use for the same argument (Claude Code: file_path, ...)
+_ALIASES = {"path": ("file_path", "filepath", "filename", "file", "notebook_path", "target_file"),
+            "content": ("contents", "text", "file_text"), "old_string": ("old_str", "old_text"),
+            "new_string": ("new_str", "new_text"), "command": ("cmd",)}
+
+
+def normalize_args(args: dict) -> dict:
+    args = dict(args)
+    for name, aliases in _ALIASES.items():
+        if name not in args:
+            for alias in aliases:
+                if alias in args:
+                    args[name] = args.pop(alias)
+                    break
+    return args
+
+
 async def run_tool(ctx: ToolContext, name: str, args: dict) -> tuple[str, bool]:
     """(result text, is_error)"""
     tool = TOOLS.get(name)
@@ -400,6 +426,7 @@ async def run_tool(ctx: ToolContext, name: str, args: dict) -> tuple[str, bool]:
         return f"Unknown tool {name!r}", True
     if not isinstance(args, dict) or "__invalid_json__" in args:
         return "The tool input was not valid JSON; send the arguments again as a JSON object", True
+    args = normalize_args(args)
     try:
         return await tool.run(ctx, args), False
     except ToolError as exc:

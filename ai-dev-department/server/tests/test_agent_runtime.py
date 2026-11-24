@@ -247,3 +247,18 @@ def test_a_call_cut_off_by_the_output_limit_is_not_run(tmp_path):
     assert "cut off" in script.results(1)[0]["content"] and script.results(1)[0]["is_error"]
     assert (ctx.workspace / "page.html").read_text() == "<html></html>\n"
     assert any(e["type"] == "tool_done" and not e["ok"] and "обрезан" in e["note"] for e in events)
+
+
+def test_tools_take_the_argument_names_other_agents_use(tmp_path):
+    """Models trained on Claude Code send file_path; a big file can be written in parts."""
+    script = Script([_call("Write", path=None, file_path="a.html", content="<html>")],
+                    [_call("Write", 1, file_path="a.html", content="</html>", append=True)],
+                    [_call("Edit", 2, file_path="a.html", old_str="<html>", new_str="<html lang=ru>")], "Done")
+    script.replies[0][0]["input"].pop("path")
+    ctx, events = _ctx(tmp_path)
+    spec = AgentSpec(role="Coder", provider="custom", model="m", tools=["Write", "Edit"])
+    result = asyncio.run(run_agent(spec, ctx, "Make a page", script))
+    assert result.stopped == "done"
+    assert (ctx.workspace / "a.html").read_text() == "<html lang=ru></html>"
+    assert "Appended" in script.results(2)[0]["content"]
+    assert [e["arg"] for e in events if e["type"] == "tool"][0] == "a.html"
