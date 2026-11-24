@@ -75,6 +75,9 @@ class FakeGitHub:
         body = json.loads(request.content) if request.content else {}
         if path == "/user":
             return httpx.Response(200, json={"login": self.login})
+        if path == "/user/repos":
+            return httpx.Response(200, json=[{"full_name": self.repo, "private": True, "default_branch": "main",
+                                              "permissions": {"push": self.can_push}, "pushed_at": "2026-11-20T10:00:00Z"}])
         prefix = f"/repos/{self.repo}"
         if not path.startswith(prefix):
             return httpx.Response(404, json={"message": "Not Found"})

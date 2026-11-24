@@ -525,3 +525,14 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.45; }
 @media (max-width: 860px) { .att-frame { height: 360px; } }
 .user-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .user-files .chip-file { padding: 3px 10px; background: var(--surface); }
+.popover.left { left: 0; right: auto; }
+.repo-btn { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.note.repo-note { border-color: var(--ok); }
+.tb-actions a.small-btn { text-decoration: none; }
+@media (max-width: 860px) { .repo-btn { max-width: 110px; } .repo-chip { display: none; } }
+@media (max-width: 860px) {
+  .composer .row { flex-wrap: wrap; row-gap: 8px; }
+  .composer .row .seg { order: 10; width: 100%; }
+  .composer .row .seg button { flex: 1; }
+  .repo-btn { max-width: 150px; }
+}

@@ -192,6 +192,7 @@ export const api = {
   githubStatus: () => request("GET", "/api/github"),
   githubConnect: (token) => request("PUT", "/api/github", { token }),
   githubDisconnect: () => request("DELETE", "/api/github"),
+  githubRepos: () => request("GET", "/api/github/repos"),
   githubRepoCheck: (repo) => request("GET", `/api/github/repo-check?repo=${encodeURIComponent(repo)}`),
 
   attention: () => request("GET", "/api/attention"),
@@ -212,6 +213,7 @@ export const api = {
   sendChatMessage: (id, data, files) => request("POST", `/api/chats/${id}/messages`, withFiles(data, files)),
   chatFileBlob: async (id, path) => (await request("GET", `/api/chats/${id}/file?path=${encodeURIComponent(path)}`, undefined, { raw: true })).blob(),
   chatPreview: (id, path) => request("GET", `/api/chats/${id}/preview?path=${encodeURIComponent(path)}`),
+  openChatPr: (id) => request("POST", `/api/chats/${id}/pr`),
   chatLink: async (id, path) => (await request("POST", `/api/chats/${id}/link`, { path })).url,
   importSkill: (url) => request("POST", "/api/skills/import", { url }),
   stopChat: (id) => request("POST", `/api/chats/${id}/stop`),

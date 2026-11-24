@@ -65,6 +65,12 @@ async def _credential(db: AsyncSession, user_id: int) -> ConnectorCredential | N
     ).first()
 
 
+async def user_token(db: AsyncSession, user_id: int) -> str | None:
+    """The user's GitHub token (for the server's own git and API calls), or None."""
+    row = await _credential(db, user_id)
+    return (_payload(row).get("token") or None) if row is not None else None
+
+
 def _payload(row: ConnectorCredential) -> dict:
     raw = decrypt_bytes(row.encrypted_payload).decode("utf-8", errors="replace").strip()
     try:
@@ -160,3 +166,17 @@ async def repo_check(
         repo=repo, ok=can_push and has_commits, can_push=can_push,
         default_branch=branch, private=meta.get("private"), actions=actions, message=msg,
     )
+
+
+@router.get("/repos")
+async def list_repos(current_user: Annotated[User, Depends(get_current_user)],
+                     db: Annotated[AsyncSession, Depends(get_db)]) -> list[dict]:
+    """Repositories the connected token can see (for «work in a repository» in a chat)."""
+    token = await user_token(db, current_user.id)
+    if not token:
+        raise HTTPException(status.HTTP_409_CONFLICT, "GitHub is not connected")
+    try:
+        return await connector_for(token).list_repos()
+    except GitHubError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from None
+

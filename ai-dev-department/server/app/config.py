@@ -134,6 +134,8 @@ class Settings(BaseSettings):
     # Optional server-side token for polling /status/*.md (public repos work
     # without one, rate-limited). A per-user ConnectorCredential overrides it.
     GITHUB_TOKEN: str = ""
+    # where repositories are cloned from / pushed to (tests: a local folder of bare repositories)
+    GITHUB_GIT_URL: str = "https://github.com"
     # GitHub API is not service traffic; proxy only if your network needs it.
     GITHUB_PROXY_URL: str = ""
     GITHUB_POLL_INTERVAL_SECONDS: int = 15

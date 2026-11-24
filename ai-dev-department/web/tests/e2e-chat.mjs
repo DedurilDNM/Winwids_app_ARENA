@@ -89,6 +89,28 @@ if (SHOTS) {
   await page.screenshot({ path: `${SHOTS}/chat-files.png` });
 }
 
+// a chat on a GitHub repository: the department works in a clone, commits, a pull request
+await page.goto(`${BASE}/app/#/settings/github`);
+await page.fill("input[type=password], input[name=token]", "ghp_test_token_1234567890");
+await page.getByRole("button", { name: /Подключить|Сохранить/ }).first().click();
+await page.waitForSelector("text=octo", { timeout: 15000 });
+await page.click("[data-testid=new-chat]");
+await page.click("[data-testid=repo-btn]");
+await page.locator("[data-testid=repo-pop] .it", { hasText: "octo/website" }).click();
+assert.match(await page.locator("[data-testid=repo-btn]").innerText(), /octo\/website/);
+await page.fill("[data-testid=chat-input]", "Сделай hello.py в репозитории");
+await page.keyboard.press("Enter");
+await page.waitForURL(/#\/chat\/\d+/);
+await page.waitForSelector("[data-testid=pr-btn]:not([disabled])", { timeout: 60000 });
+assert.match(await page.locator("[data-testid=thread]").innerText(), /Работаю в octo\/website, ветка aidd\/chat-\d+[\s\S]*Коммит [0-9a-f]+/);
+const popup = page.waitForEvent("popup").catch(() => null);
+await page.click("[data-testid=pr-btn]");
+await page.waitForSelector("text=PR ↗", { timeout: 15000 });
+assert.equal(await page.locator("[data-testid=pr-btn]").innerText(), "Обновить PR");
+await popup;
+if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-repo.png` });
+await page.evaluate(() => { try { localStorage.removeItem("aidd.chat.repo"); } catch {} });
+
 // settings pages render in the new shell
 for (const tab of ["models", "skills", "accounts", "github", "profile"]) {
   await page.goto(`${BASE}/app/#/settings/${tab}`);

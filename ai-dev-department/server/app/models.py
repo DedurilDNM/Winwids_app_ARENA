@@ -303,5 +303,9 @@ class Chat(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String(200), default="")
     workspace: Mapped[str] = mapped_column(String(500), default="")
+    repo: Mapped[str | None] = mapped_column(String(300), nullable=True)  # "owner/name" on GitHub
+    base_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    branch: Mapped[str | None] = mapped_column(String(255), nullable=True)  # the work branch
+    pr_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -138,6 +138,14 @@ class GitHubConnector:
         """The token owner (validates the token)."""
         return (await self._call("GET", "/user")).json()
 
+    async def list_repos(self) -> list[dict]:
+        """Repositories the token can see, most recently pushed first."""
+        data = await self._get_json("/user/repos", params={"per_page": 100, "sort": "pushed",
+                                                           "affiliation": "owner,collaborator,organization_member"})
+        return [{"full_name": r["full_name"], "private": bool(r.get("private")),
+                 "default_branch": r.get("default_branch") or "main",
+                 "can_push": bool((r.get("permissions") or {}).get("push"))} for r in data or []]
+
     async def get_repo(self, repo: str) -> dict:
         """Repository metadata incl. default_branch and permissions.push."""
         return (await self._call("GET", f"/repos/{repo}")).json()

@@ -45,6 +45,7 @@ class MessageIn(BaseModel):
     prompt: str = Field(min_length=1, max_length=50_000)
     mode: str = "department"
     model: str | None = Field(default=None, max_length=240)
+    repo: str | None = Field(default=None, max_length=300)  # a new chat only: work in this GitHub repository
 
 
 class ChatPatch(BaseModel):
@@ -95,7 +96,8 @@ async def _read_message(request: Request) -> tuple[MessageIn, list[tuple[str, by
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"At most {MAX_FILES} files per message")
         try:
             body = MessageIn(prompt=str(form.get("prompt") or ""), mode=str(form.get("mode") or "department"),
-                             model=(str(form.get("model")) if form.get("model") else None))
+                             model=(str(form.get("model")) if form.get("model") else None),
+                             repo=(str(form.get("repo")) if form.get("repo") else None))
         except Exception:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "prompt is required") from None
         return body, files
@@ -172,12 +174,17 @@ async def create_chat(request: Request, user: Annotated[User, Depends(get_curren
                       db: Annotated[AsyncSession, Depends(get_db)]) -> dict:
     body, files = await _read_message(request)
     _check(body)
+    repo_info = await _check_repo(db, user, body.repo) if body.repo else None
     title = " ".join(body.prompt.split())[:80] or "Новый чат"
     chat = Chat(user_id=user.id, title=title)
+    if repo_info:
+        chat.repo, chat.base_branch = repo_info["full_name"], repo_info["default_branch"]
     db.add(chat)
     await db.commit()
     await db.refresh(chat)
     chat.workspace = str(department.chat_workspace(chat.id))
+    if chat.repo:
+        chat.branch = f"aidd/chat-{chat.id}"
     shutil.rmtree(chat.workspace, ignore_errors=True)  # a folder left from an old database is not this chat's
     await db.commit()
     body = _with_files(body, _save_uploads(chat.workspace, files))
@@ -209,7 +216,10 @@ async def get_chat(chat_id: int, user: Annotated[User, Depends(get_current_user)
     by_run: dict[int, list] = {}
     for e in events:
         by_run.setdefault(e.run_id, []).append(e)
+    ahead = await asyncio.to_thread(_ahead, chat) if chat.repo else 0
     return {"id": chat.id, "title": chat.title, "status": _chat_status(runs), "created_at": _iso(chat.created_at),
+            "repo": chat.repo, "branch": chat.branch, "base_branch": chat.base_branch, "pr_url": chat.pr_url,
+            "ahead": ahead,
             "updated_at": _iso(chat.updated_at), "turns": [_turn(r, by_run.get(r.id, [])) for r in runs],
             "last_event": events[-1].id if events else 0}
 
@@ -225,6 +235,73 @@ async def add_message(chat_id: int, request: Request, user: Annotated[User, Depe
     body = _with_files(body, _save_uploads(chat.workspace, files))
     run = await _start_turn(db, user, chat, body)
     return {"run_id": run.id}
+
+
+def _ahead(chat: Chat) -> int:
+    from app.agents import repo as repo_mod
+
+    return repo_mod.ahead(Path(chat.workspace), chat.base_branch or "main")
+
+
+async def _check_repo(db: AsyncSession, user: User, repo: str) -> dict:
+    import re
+
+    from app.api.github import connector_for, user_token
+    from app.connectors.github import GitHubError
+
+    repo = repo.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "repo: «owner/name»")
+    token = await user_token(db, user.id)
+    if not token:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Connect GitHub first (Settings → GitHub)")
+    try:
+        info = await connector_for(token).get_repo(repo)
+    except GitHubError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{repo}: {exc}") from None
+    if not (info.get("permissions") or {}).get("push"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{repo}: the token cannot push to this repository")
+    return {"full_name": info.get("full_name") or repo, "default_branch": info.get("default_branch") or "main"}
+
+
+@router.post("/{chat_id}/pr")
+async def open_pr(chat_id: int, user: Annotated[User, Depends(get_current_user)],
+                  db: Annotated[AsyncSession, Depends(get_db)]) -> dict:
+    """Push the chat's work branch and open a pull request (or update the open one)."""
+    from app.agents import repo as repo_mod
+    from app.api.github import connector_for, user_token
+    from app.connectors.github import GitHubError
+
+    chat = await _own(db, user, chat_id)
+    if not chat.repo or not chat.branch:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This chat does not work in a repository")
+    runs = await _runs(db, chat.id)
+    if _chat_status(runs) == "running":
+        raise HTTPException(status.HTTP_409_CONFLICT, "The department is still working: wait or stop it")
+    ws = Path(chat.workspace)
+    if not repo_mod.is_repo(ws) or not await asyncio.to_thread(_ahead, chat):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Nothing to send yet: the branch has no new commits")
+    token = await user_token(db, user.id)
+    if not token:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Connect GitHub first (Settings → GitHub)")
+    try:
+        await asyncio.to_thread(repo_mod.push, ws, chat.branch, token)
+    except repo_mod.RepoError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"push: {exc}") from None
+    lines = []
+    for r in runs:
+        ask = " ".join(r.prompt.split("\n\nПриложенные файлы")[0].split())[:300]
+        answer = (r.result or r.error or "").strip()[:1500]
+        lines.append(f"### {ask}\n\n{answer}")
+    body = "\n\n".join(lines)[:60000] + "\n\n---\n_Сделано отделом агентов AIDD._"
+    try:
+        url = await connector_for(token).create_pull_request(chat.repo, head=chat.branch, base=chat.base_branch or "main",
+                                                             title=chat.title[:200], body=body)
+    except GitHubError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"pull request: {exc}") from None
+    chat.pr_url = url
+    await db.commit()
+    return {"pr_url": url}
 
 
 @router.post("/{chat_id}/stop")

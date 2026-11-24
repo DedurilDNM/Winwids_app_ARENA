@@ -266,6 +266,13 @@ async def execute(run_id: int) -> None:
         ws = Path(run.workspace)
     ws.mkdir(parents=True, exist_ok=True)
     st = RunState(run_id, user_id, ws, specs, asyncio.Semaphore(int(_s("AGENT_MAX_PARALLEL", 4))))
+    if chat_id:
+        try:
+            await _prepare_repo(chat_id, user_id, ws, st)
+        except Exception as exc:
+            await _finish(run_id, status="failed", error=f"Repository: {str(exc)[:400]}")
+            _RUN_TASKS.pop(run_id, None)
+            return
     base = None
     try:
         base = await asyncio.to_thread(snapshots.snapshot, ws, f"before turn {run_id}")
@@ -296,6 +303,11 @@ async def execute(run_id: int) -> None:
         logger.warning("Run %s failed: %s", run_id, type(exc).__name__, exc_info=True)
         await _finish(run_id, status="failed", error=f"{type(exc).__name__}: {str(exc)[:500]}", **st.counters)
     finally:
+        if chat_id:
+            try:
+                await _commit_repo(chat_id, ws, prompt, st)
+            except Exception:
+                logger.warning("Run %s: the turn could not be committed", run_id, exc_info=True)
         try:
             end = await asyncio.to_thread(snapshots.snapshot, ws, f"after turn {run_id}")
             await _save_run(run_id, end_commit=end)
@@ -305,6 +317,46 @@ async def execute(run_id: int) -> None:
             await _touch_chat(chat_id)
         _STOP.discard(run_id)
         _RUN_TASKS.pop(run_id, None)
+
+
+async def _prepare_repo(chat_id: int, user_id: int, ws: Path, st: RunState) -> None:
+    """A chat on a GitHub repository: clone it before the first turn (on the chat's work branch)."""
+    from app.agents import repo as repo_mod
+    from app.api.github import user_token
+    from app.db import SessionLocal
+    from app.models import Chat
+
+    async with SessionLocal() as db:
+        chat = await db.get(Chat, chat_id)
+        if chat is None or not chat.repo or repo_mod.is_repo(ws):
+            return
+        token = await user_token(db, user_id)
+        name, branch, base = chat.repo, chat.branch, chat.base_branch
+    await st.event("lead", {"type": "repo", "status": "cloning", "repo": name, "branch": branch})
+    base = await asyncio.to_thread(repo_mod.clone, ws, name, branch, token, base)
+    async with SessionLocal() as db:
+        chat = await db.get(Chat, chat_id)
+        chat.base_branch = base
+        await db.commit()
+    await st.event("lead", {"type": "repo", "status": "ready", "repo": name, "branch": branch, "base": base})
+
+
+async def _commit_repo(chat_id: int, ws: Path, prompt: str, st: RunState) -> None:
+    """Only a chat opened on a GitHub repository commits; a .git made by an agent stays its own."""
+    from app.agents import repo as repo_mod
+    from app.db import SessionLocal
+    from app.models import Chat
+
+    async with SessionLocal() as db:
+        chat = await db.get(Chat, chat_id)
+        if chat is None or not chat.repo:
+            return
+    if not repo_mod.is_repo(ws):
+        return
+    title = " ".join(prompt.split("\n\nПриложенные файлы")[0].split())[:72] or "changes"
+    done = await asyncio.to_thread(repo_mod.commit_turn, ws, f"AIDD: {title}")
+    if done:
+        await st.event("lead", {"type": "repo", "status": "committed", "sha": done["sha"][:10], "files": done["files"]})
 
 
 async def _save_run(run_id: int, **fields) -> None:

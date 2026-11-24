@@ -173,6 +173,10 @@ class Turn {
       a.status.textContent = ok ? `✓ ${a.count} ${a.count === 1 ? "шаг" : a.count < 5 ? "шага" : "шагов"}` : d.status === "stopped" ? "остановлен" : "✗ ошибка";
       if (ok) a.el.classList.remove("open");
       if (d.summary && ok) a.el.append(h("div", { class: "agent-sum" }, d.summary.split("\n")[0].slice(0, 220)));
+    } else if (e.type === "repo") {
+      const text = { cloning: `Клонирую ${d.repo}…`, ready: `Работаю в ${d.repo}, ветка ${d.branch} (от ${d.base})`,
+        committed: `Коммит ${d.sha} в рабочую ветку · файлов: ${d.files}` }[d.status];
+      if (text) this.note(text, "repo-note");
     } else if (e.type === "attachment") {
       this.put(attachmentCard(this.chat, d));
     } else if (e.type === "key_rotation") {
@@ -244,12 +248,31 @@ export async function render(main, { params, setTopbar, refreshChats }) {
   const modeSeg = h("div", { class: "seg" });
   const modelBtn = h("button", { class: "model-btn", onclick: (e) => { e.stopPropagation(); pop.hidden = !pop.hidden; } });
   const pop = h("div", { class: "popover", hidden: true });
+  let repo = chatId ? null : pref.get("repo", "") || null;
+  const repoBtn = h("button", { class: "model-btn repo-btn", hidden: Boolean(chatId), "data-testid": "repo-btn",
+    onclick: (e) => { e.stopPropagation(); repoPop.hidden = !repoPop.hidden; if (!repoPop.hidden) loadRepos(); } });
+  const repoPop = h("div", { class: "popover left", hidden: true, "data-testid": "repo-pop" });
+  function paintRepo() { repoBtn.replaceChildren("⎇ ", repo || "Без репозитория"); }
+  function pickRepo(value) { repo = value; pref.set("repo", value || ""); repoPop.hidden = true; paintRepo(); }
+  async function loadRepos() {
+    repoPop.replaceChildren(h("div", { class: "it" }, h("small", {}, "Загружаю…")));
+    try {
+      const repos = await api.githubRepos();
+      repoPop.replaceChildren(h("div", { class: "it", onclick: () => pickRepo(null) }, h("b", {}, "Без репозитория"), h("small", {}, "файлы только в чате")),
+        ...repos.filter((r) => r.can_push).slice(0, 40).map((r) => h("div", { class: "it", onclick: () => pickRepo(r.full_name) },
+          h("b", {}, r.full_name), h("small", {}, `${r.private ? "приватный" : "публичный"} · ${r.default_branch}`))));
+    } catch (err) {
+      repoPop.replaceChildren(h("div", { class: "it", onclick: () => pickRepo(null) }, h("b", {}, "Без репозитория")),
+        h("a", { class: "it", href: "#/settings/github" }, h("small", {}, err.status === 409 ? "Подключить GitHub…" : errorText(err))));
+    }
+  }
   const composer = h("div", { class: "composer-wrap" }, h("div", { class: "composer" }, chips, input,
-    h("div", { class: "row" }, attach, picker, modeSeg, h("span", { class: "sp" }), h("div", { class: "pop-host" }, modelBtn, pop), sendBtn)));
+    h("div", { class: "row" }, attach, picker, modeSeg, h("div", { class: "pop-host" }, repoBtn, repoPop), h("span", { class: "sp" }),
+      h("div", { class: "pop-host" }, modelBtn, pop), sendBtn)));
   const panel = h("aside", { class: "changes-panel", hidden: true, "data-testid": "changes-panel" });
   main.append(h("div", { class: "chat-wrap" }, h("div", { class: "chat-col" }, scroll, composer), panel));
   document.addEventListener("click", closePop);
-  function closePop() { pop.hidden = true; }
+  function closePop() { pop.hidden = true; repoPop.hidden = true; }
 
   function paintControls() {
     modeSeg.replaceChildren(...MODES.map(([id, label]) => h("button", { class: id === mode ? "on" : "", onclick: () => { mode = id; pref.set("mode", id); paintControls(); } }, label)));
@@ -283,6 +306,7 @@ export async function render(main, { params, setTopbar, refreshChats }) {
     try {
       const body = { prompt, mode, model: model === "auto" ? null : model };
       if (!chatId) {
+        if (repo) body.repo = repo;
         const chat = await api.createChat(body, files);
         input.value = "";
         files = [];
@@ -366,8 +390,17 @@ export async function render(main, { params, setTopbar, refreshChats }) {
     paintControls();
     const changes = running || force || wasRunning !== running || !headerChanges ? await api.chatChanges(chatId).catch(() => null) : null;
     if (changes) headerChanges = changes;
+    const prBtn = chat.repo ? h("button", { class: "small-btn", "data-testid": "pr-btn", disabled: running || !chat.ahead,
+      title: chat.ahead ? `Отправить ветку ${chat.branch} и ${chat.pr_url ? "обновить" : "открыть"} pull request` : "Пока нет коммитов в рабочей ветке",
+      onclick: async (e) => {
+        e.target.disabled = true;
+        try { const res = await api.openChatPr(chatId); toast("Pull request готов"); window.open(res.pr_url, "_blank", "noopener"); refresh(true); } catch (err) { toast(errorText(err), { error: true }); e.target.disabled = false; }
+      } }, chat.pr_url ? "Обновить PR" : "Создать PR") : null;
     setTopbar(chat.title,
       h("span", { class: "tb-meta" }, running ? h("span", { class: "live" }) : null, `${kTok(total)} токенов`),
+      chat.repo ? h("span", { class: "tb-meta repo-chip", title: `ветка ${chat.branch}` }, `⎇ ${chat.repo}`) : null,
+      chat.pr_url ? h("a", { class: "small-btn", href: chat.pr_url, target: "_blank", rel: "noopener" }, "PR ↗") : null,
+      prBtn,
       headerChanges?.files.length ? h("button", { class: "small-btn", "data-testid": "changes-btn", onclick: () => openChanges(null) },
         "Изменения ", h("span", { class: "add" }, `+${headerChanges.added}`), headerChanges.deleted ? h("span", { class: "del" }, ` −${headerChanges.deleted}`) : "") : null,
       h("button", { class: "icon-x", title: "Удалить чат", onclick: remove }, "🗑"));
@@ -383,6 +416,7 @@ export async function render(main, { params, setTopbar, refreshChats }) {
   }
 
   paintControls();
+  paintRepo();
   loadModels();
   if (!chatId) {
     setTopbar("Новый чат");

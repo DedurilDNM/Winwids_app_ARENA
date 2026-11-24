@@ -13,11 +13,19 @@ S="${E2E_STATE:-/tmp/aidd-e2e}"; [ "$FRESH" = 1 ] && rm -rf "$S"; mkdir -p "$S"
 PY="${PYTHON:-$([ -x "$SERVER/.venv/bin/python" ] && echo "$SERVER/.venv/bin/python" || echo python3)}"
 pkill -f "e2e_server.py"; pkill -f "uvicorn app.main:app"; pkill -f websockify; pkill x11vnc; pkill Xvfb; sleep 1
 pgrep -f "tests/fake_service.py" >/dev/null || (nohup python3 "$HERE/fake_service.py" 9100 "$S/service.log" >/dev/null 2>&1 &)
+# «GitHub» for git itself: a bare repository octo/website (the fake GitHub API knows the same name)
+if [ ! -d "$S/remotes/octo/website.git" ]; then
+  rm -rf "$S/seed" && mkdir -p "$S/seed" "$S/remotes/octo" && (cd "$S/seed" && git init -q -b main &&
+    printf '# Website\n' > README.md && git add README.md &&
+    git -c user.name=e2e -c user.email=e2e@x commit -qm init) &&
+  git clone -q --bare "$S/seed" "$S/remotes/octo/website.git"
+fi
 cd "$SERVER" || exit 1
 export DATABASE_URL="sqlite+aiosqlite:///$S/app.db" VNC_HEADLESS=false REDIS_URL=redis://127.0.0.1:1/0 \
   CI_POLL_SECONDS=1 CI_START_TIMEOUT_SECONDS=20 ADMIN_PASSWORD=adminpass123 PROXY_URL= \
   SERVICE_URL="${E2E_SERVICE_URL:-http://127.0.0.1:9100/}" \
   NOVNC_PUBLIC_BASE_URL=http://127.0.0.1:6080 NOVNC_WEB_ROOT=/usr/share/novnc \
+  GITHUB_GIT_URL="file://$S/remotes" \
   E2E_CHROMIUM="${E2E_CHROMIUM:-/opt/pw-browsers/chromium-1243/chrome-linux64/chrome}" E2E_FAKE_GITHUB=1
 nohup "$PY" "$HERE/e2e_server.py" >> "$S/srv.log" 2>&1 &
 for i in $(seq 1 40); do curl -sf 127.0.0.1:8000/health >/dev/null && echo up && exit 0; sleep 0.5; done
