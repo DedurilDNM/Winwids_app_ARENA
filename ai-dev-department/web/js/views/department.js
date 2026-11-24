@@ -242,7 +242,7 @@ export async function rolesView(body) {
   const grid = h("div", { class: "grid roles-grid" });
   const autoBox = h("div", { class: "card", hidden: true, "data-testid": "auto-result" });
   const autoBtn = h("button", { class: "primary", "data-testid": "auto-roles", onclick: () => runAuto() }, "Подобрать модели автоматически");
-  body.append(h("p", { class: "muted" }, "Автоподбор смотрит все модели агрегаторов, на которые есть ключи, оценивает силу (цена ответа, размер, класс модели), проверяет, что модель отвечает и умеет вызывать инструменты, и ставит самую сильную ведущей, остальные роли — по убыванию. Любую роль можно поменять руками."),
+  body.append(h("p", { class: "muted" }, "Автоподбор смотрит все модели агрегаторов, на которые есть ключи, оценивает силу (цена ответа, размер, класс модели), проверяет, что модель отвечает и умеет вызывать инструменты, и ставит самую сильную ведущей, остальные роли — по убыванию. Роли, выбранные вами, автоподбор не трогает; «Сбросить» вернёт роль автоподбору."),
     h("div", { class: "actions" }, autoBtn), autoBox, grid);
   async function runAuto() {
     autoBtn.disabled = true;
@@ -290,8 +290,8 @@ export async function rolesView(body) {
       if (!drop.hidden) return;
       document.querySelectorAll(".popover.below").forEach((p) => { p.hidden = true; });
       drop.replaceChildren(modelMenu({
-        onPick: (provider, name) => { prov.value = provider; model.value = name; drop.hidden = true; },
-        typed: { sub: `как есть, у агрегатора ${prov.selectedOptions[0]?.textContent || ""}`, onclick: (name) => { model.value = name; drop.hidden = true; } },
+        onPick: (provider, name) => { prov.value = provider; model.value = name; drop.hidden = true; save.click(); },
+        typed: { sub: `как есть, у агрегатора ${prov.selectedOptions[0]?.textContent || ""}`, onclick: (name) => { model.value = name; drop.hidden = true; save.click(); } },
       }));
       drop.hidden = false;
     };
@@ -310,6 +310,7 @@ export async function rolesView(body) {
           tools: toolBoxes.filter((l) => l.firstChild.checked).map((l) => l.firstChild.value),
           skills: chosenSkills.length === skills.length ? null : chosenSkills, instructions: instr.value });
         toast(`${roleName(r.role)}: сохранено`);
+        reloadRoles();
       } catch (e) { toast(errorText(e), { error: true }); }
     } }, "Сохранить");
     const reset = h("button", { onclick: async () => { await api.resetRole(r.role); toast("Настройки роли сброшены"); reloadRoles(); } }, "Сбросить");

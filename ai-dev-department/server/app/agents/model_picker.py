@@ -209,10 +209,13 @@ async def pick(db, user_id: int, *, check: bool = True, max_checks: int = 14, pa
 
 
 async def apply(db, user_id: int, assignments: list[dict]) -> None:
-    """Save the chosen models on the roles; the user's tools, skills and instructions stay."""
+    """Save the chosen models on the roles; the user's tools, skills and instructions stay, and a
+    role whose model the user chose by hand keeps it."""
     saved = {r.role: r for r in (await db.execute(select(AgentRole).where(AgentRole.user_id == user_id))).scalars()}
     for a in assignments:
         r = saved.get(a["role"])
+        if r is not None and not r.auto and r.model:
+            continue  # chosen by hand: the picker never overrides it
         if r is None:
             r = AgentRole(user_id=user_id, role=a["role"], provider=a["provider"], model=a["model"])
             db.add(r)

@@ -148,6 +148,7 @@ async def run_agent(spec: AgentSpec, ctx: ToolContext, prompt: str, complete: Co
             raise asyncio.CancelledError("stopped")
         if spec.provider != "anthropic" or spec.fallbacks:
             _trim(messages)
+        await emit({"type": "waiting", "role": spec.role, "model": spec.model})  # the UI shows who waits for which model
         resp = await complete(spec, Request(model=spec.model, messages=messages, system=system,
                                             tools=tool_specs, max_tokens=spec.max_tokens, effort=spec.effort))
         tokens_in += resp.tokens_in

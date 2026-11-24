@@ -256,3 +256,27 @@ def test_auto_roles_endpoint(api):
     api.put("/api/agent-roles/Coder", json={"provider": "openrouter", "model": "other"})
     assert {r["role"]: r for r in api.get("/api/agent-roles").json()}["Coder"]["auto"] is False
     assert json.dumps(job).count("sk-") == 0
+
+
+def test_the_picker_keeps_roles_chosen_by_hand(pool):
+    pool_, sessions, engine = pool
+
+    async def go():
+        from sqlalchemy import select
+
+        from app.models import AgentRole
+
+        await _add_keys(sessions, "openrouter", "groq")
+        async with sessions() as db:
+            db.add(AgentRole(user_id=1, role="Orchestrator", provider="groq", model="my/choice", auto=False))
+            await db.commit()
+            result = await model_picker.pick(db, 1)
+            await model_picker.apply(db, 1, result["assignments"])
+        async with sessions() as db:
+            roles = {r.role: r for r in (await db.execute(select(AgentRole))).scalars()}
+        await engine.dispose()
+        return roles
+
+    roles = asyncio.run(go())
+    assert (roles["Orchestrator"].model, roles["Orchestrator"].auto) == ("my/choice", False)
+    assert roles["Architect"].auto and roles["Architect"].model  # the others are still picked

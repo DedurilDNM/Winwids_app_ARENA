@@ -118,9 +118,25 @@ class Turn {
     return this.leadSteps;
   }
 
+  // «Оркестратор ждёт ответ cc/claude-opus-5-5 · 2:31»: a long answer (a whole page, a big
+  // file) can take minutes, and nothing else shows that the model is still working on it
+  paintWait() {
+    if (!this.wait || this.done) { this.thinking.textContent = "Работаю над задачей…"; return; }
+    const s = Math.max(0, Math.round((Date.now() - this.wait.at) / 1000));
+    const time = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    this.thinking.textContent = `${roleName(this.wait.role)} ждёт ответ модели ${this.wait.model} · ${time}`;
+  }
+
   apply(e) {
     const d = e.data || {};
     const a = this.agents[e.agent_id];
+    if (e.type === "waiting") {
+      this.wait = { role: d.role, model: d.model, at: Date.parse(e.at) || Date.now(), agent: e.agent_id };
+      if (!this.waitTimer) this.waitTimer = setInterval(() => { if (!this.thinking.isConnected) { clearInterval(this.waitTimer); return; } this.paintWait(); }, 1000);
+      this.paintWait();
+      return;
+    }
+    if (this.wait && e.agent_id === this.wait.agent) { this.wait = null; this.paintWait(); }
     if (e.type === "agent_start") {
       if (e.agent_id === "lead") { this.leadModel = d.model; return; }
       const steps = h("div", { class: "steps" });
@@ -196,6 +212,7 @@ class Turn {
   async finish(turn, openChanges) {
     if (this.done) return;
     this.done = true;
+    clearInterval(this.waitTimer);
     this.thinking.remove();
     if (turn.result) {
       const full = markdown(turn.result);
