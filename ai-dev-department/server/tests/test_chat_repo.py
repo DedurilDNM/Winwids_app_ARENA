@@ -160,3 +160,24 @@ def test_repository_checks(api, monkeypatch):
     _idle(client, plain)
     assert client.post(f"/api/chats/{plain}/pr").status_code == 400
     assert re.match(r"^aidd/chat-\d+$", client.get(f"/api/chats/{chat_id}").json()["branch"])
+
+
+def test_screenshots_are_never_committed(tmp_path):
+    import subprocess
+
+    from app.agents import repo as repo_mod
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=ws, check=True)
+    for k, v in (("user.name", "t"), ("user.email", "t@x")):
+        subprocess.run(["git", "config", k, v], cwd=ws, check=True)
+    (ws / ".git/info").mkdir(parents=True, exist_ok=True)
+    (ws / ".git/info/exclude").write_text(".aidd-git/\n")  # an older chat: no screenshots/ entry yet
+    (ws / "screenshots").mkdir()
+    (ws / "screenshots/page-desktop.png").write_bytes(b"png")
+    (ws / "page.html").write_text("<p>x</p>")
+    done = repo_mod.commit_turn(ws, "turn")
+    assert done and done["files"] == 1
+    tracked = subprocess.run(["git", "ls-files"], cwd=ws, capture_output=True, text=True).stdout.split()
+    assert tracked == ["page.html"]

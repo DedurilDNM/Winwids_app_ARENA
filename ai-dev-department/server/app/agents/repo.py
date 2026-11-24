@@ -16,7 +16,7 @@ from pathlib import Path
 
 from app.config import get_settings
 
-EXCLUDE = [".aidd-git/", ".home/", "uploads/"]
+EXCLUDE = [".aidd-git/", ".home/", "uploads/", "screenshots/"]  # never committed to the user's repository
 
 
 class RepoError(RuntimeError):
@@ -68,10 +68,17 @@ def clone(ws: Path, repo: str, branch: str, token: str | None, base: str | None 
         shutil.rmtree(tmp, ignore_errors=True)
     base_branch = _git(ws, "rev-parse", "--abbrev-ref", "HEAD").strip()
     _git(ws, "checkout", "-q", "-b", branch)
+    _ensure_exclude(ws)
+    return base_branch
+
+
+def _ensure_exclude(ws: Path) -> None:
     exclude = ws / ".git" / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
-    exclude.write_text(exclude.read_text() + "\n" + "\n".join(EXCLUDE) + "\n" if exclude.exists() else "\n".join(EXCLUDE) + "\n")
-    return base_branch
+    have = exclude.read_text().splitlines() if exclude.exists() else []
+    missing = [e for e in EXCLUDE if e not in have]
+    if missing:
+        exclude.write_text("\n".join(have + missing) + "\n")
 
 
 def is_repo(ws: Path) -> bool:
@@ -82,6 +89,7 @@ def commit_turn(ws: Path, message: str) -> dict | None:
     """Commit what the turn changed (if anything). Returns {sha, files} or None."""
     if not is_repo(ws):
         return None
+    _ensure_exclude(ws)  # chats cloned before an entry was added get it too
     _git(ws, "add", "-A")
     if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=ws).returncode == 0:
         return None
