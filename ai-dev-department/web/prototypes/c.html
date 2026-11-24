@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AIDD · Чат</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0e0e10; --side: #131315; --panel: #18181b; --panel-2: #1f1f23; --hover: #24242a;
+  --line: #2a2a30; --line-2: #34343b; --text: #ececee; --muted: #9d9da6; --faint: #6b6b74;
+  --accent: #e2835a; --accent-2: #f0a07c; --ok: #4ec98a; --bad: #f2706b; --warn: #e9b44c; --info: #7aa7ff;
+  --add-bg: rgba(78, 201, 138, .10); --del-bg: rgba(242, 112, 107, .10);
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace; --r: 12px;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.6 Inter, system-ui, sans-serif; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.app { display: grid; grid-template-columns: 268px 1fr auto; height: 100vh; }
+/* sidebar */
+.side { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 14px 16px 8px; font-weight: 600; }
+.brand i { width: 22px; height: 22px; border-radius: 7px; background: radial-gradient(circle at 30% 30%, var(--accent-2), var(--accent) 55%, #8a3d1f); display: block; }
+.new { margin: 8px 12px; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--panel); }
+.new:hover { background: var(--hover); }
+.new kbd { margin-left: auto; font: 11px var(--mono); color: var(--faint); }
+.search { margin: 4px 12px 8px; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 9px; color: var(--faint); background: transparent; border: 1px solid transparent; }
+.search input { background: none; border: 0; outline: none; width: 100%; color: var(--text); }
+.chats { overflow: auto; flex: 1; padding: 0 8px 8px; }
+.group { font-size: 11.5px; color: var(--faint); padding: 14px 10px 4px; font-weight: 500; letter-spacing: .02em; }
+.chat { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; color: var(--muted); cursor: pointer; font-size: 14px; }
+.chat span.t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.chat:hover { background: var(--hover); color: var(--text); }
+.chat.on { background: var(--panel-2); color: var(--text); }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--faint); }
+.dot.run { background: var(--accent); box-shadow: 0 0 0 3px rgba(226, 131, 90, .18); animation: pulse 1.4s infinite; }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+@keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(226, 131, 90, 0); } }
+.side-foot { border-top: 1px solid var(--line); padding: 10px 12px; display: flex; gap: 8px; align-items: center; }
+.ibtn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: none; border: 1px solid transparent; color: var(--muted); }
+.ibtn:hover { background: var(--hover); color: var(--text); }
+.ibtn svg { width: 17px; height: 17px; }
+.avatar { width: 28px; height: 28px; border-radius: 50%; background: #3a2f6b; display: grid; place-items: center; font-size: 13px; font-weight: 600; margin-left: auto; }
+/* main */
+main { display: flex; flex-direction: column; min-width: 0; height: 100vh; position: relative; }
+.top { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); min-height: 52px; }
+.top h1 { font-size: 15px; font-weight: 600; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); white-space: nowrap; }
+.chip.run { color: var(--accent-2); border-color: rgba(226, 131, 90, .35); }
+.chip.done { color: var(--ok); border-color: rgba(78, 201, 138, .35); }
+.spacer { flex: 1; }
+.menu-btn { display: none; }
+.scroll { flex: 1; overflow: auto; scroll-behavior: smooth; }
+.thread { max-width: 780px; margin: 0 auto; padding: 28px 24px 200px; }
+.empty { max-width: 680px; margin: 14vh auto 0; text-align: center; padding: 0 24px; }
+.empty h2 { font-size: 30px; font-weight: 500; letter-spacing: -.01em; margin: 0 0 8px; }
+.empty p { color: var(--muted); margin: 0 0 24px; }
+.sugg { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: left; }
+.sugg button { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; color: var(--muted); font-size: 14px; }
+.sugg button:hover { border-color: var(--line-2); color: var(--text); }
+.sugg b { display: block; color: var(--text); font-weight: 500; margin-bottom: 2px; }
+.msg-user { display: flex; justify-content: flex-end; margin: 8px 0 22px; }
+.msg-user div { background: var(--panel-2); border: 1px solid var(--line); border-radius: 18px 18px 4px 18px; padding: 10px 16px; max-width: 85%; white-space: pre-wrap; }
+.turn { margin-bottom: 26px; }
+.who { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.who i { width: 20px; height: 20px; border-radius: 6px; background: radial-gradient(circle at 30% 30%, var(--accent-2), var(--accent) 60%, #8a3d1f); display: block; }
+.text p { margin: 6px 0 10px; }
+.text code { font: 13px var(--mono); background: var(--panel-2); padding: 1px 6px; border-radius: 5px; }
+.thinking { color: var(--faint); font-size: 14px; display: inline-flex; gap: 8px; align-items: center; background: linear-gradient(90deg, var(--faint) 0%, var(--text) 50%, var(--faint) 100%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 2s linear infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+/* tool rows */
+.tool { border-radius: 8px; margin: 2px 0; }
+.tool-h { display: flex; align-items: center; gap: 8px; padding: 4px 8px; margin-left: -8px; border-radius: 7px; font-size: 13.5px; color: var(--muted); cursor: pointer; user-select: none; }
+.tool-h:hover { background: var(--panel); color: var(--text); }
+.tool-h .ic { width: 16px; text-align: center; color: var(--faint); font-family: var(--mono); font-size: 12px; }
+.tool-h .nm { color: var(--text); font-weight: 500; }
+.tool-h .arg { font: 12.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tool-h .st { margin-left: auto; font: 12px var(--mono); white-space: nowrap; }
+.add { color: var(--ok); } .del { color: var(--bad); }
+.spin { width: 12px; height: 12px; border: 2px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.tool-b { display: none; margin: 4px 0 8px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #121214; }
+.tool.open .tool-b { display: block; }
+.code { font: 12.5px/1.55 var(--mono); padding: 8px 0; overflow-x: auto; }
+.code div { padding: 0 14px; white-space: pre; }
+.code .a { background: var(--add-bg); color: #b9f0cf; }
+.code .d { background: var(--del-bg); color: #f8c3c0; }
+.code .n { color: var(--faint); display: inline-block; width: 34px; user-select: none; }
+.term { font: 12.5px/1.55 var(--mono); padding: 10px 14px; color: #c9c9d1; white-space: pre-wrap; }
+.term .cmd { color: var(--accent-2); }
+.bhead { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--faint); padding: 6px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+/* todo card */
+.todo { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 10px 14px; margin: 10px 0 12px; }
+.todo .h { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.todo li { list-style: none; display: flex; gap: 10px; align-items: center; font-size: 14px; padding: 2px 0; }
+.todo ul { margin: 0; padding: 0; }
+.box { width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid var(--line-2); display: grid; place-items: center; font-size: 10px; flex: none; }
+.todo li.done { color: var(--faint); text-decoration: line-through; } .todo li.done .box { background: var(--ok); border-color: var(--ok); color: #0e0e10; }
+.todo li.now .box { border-color: var(--accent); } .todo li.now { color: var(--text); }
+/* sub-agents */
+.agent { border: 1px solid var(--line); border-radius: 12px; margin: 10px 0; background: linear-gradient(180deg, var(--panel), transparent 140px); }
+.agent-h { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; }
+.agent-h .g { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; font-size: 12px; font-weight: 600; flex: none; }
+.agent-h b { font-weight: 600; font-size: 14px; }
+.agent-h .d { color: var(--muted); font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.agent-h .m { margin-left: auto; font: 11.5px var(--mono); color: var(--faint); white-space: nowrap; display: flex; align-items: center; gap: 8px; }
+.agent-b { padding: 0 12px 8px 46px; }
+.agent.closed .agent-b { display: none; }
+.agent .sum { color: var(--muted); font-size: 13.5px; padding: 0 12px 10px 46px; display: none; }
+.agent.closed .sum { display: block; }
+.par { font-size: 12px; color: var(--faint); margin: 12px 0 0; display: flex; align-items: center; gap: 8px; }
+.par::after { content: ""; flex: 1; border-top: 1px dashed var(--line); }
+.notice { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--faint); margin: 6px 0; padding: 4px 10px; border-left: 2px solid var(--warn); background: rgba(233, 180, 76, .05); border-radius: 0 6px 6px 0; }
+/* result card */
+.result { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin: 12px 0; }
+.result .h { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; background: var(--panel); font-size: 14px; }
+.result .f { display: flex; gap: 10px; padding: 6px 14px; font: 12.5px var(--mono); border-top: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+.result .f:hover { background: var(--panel); color: var(--text); }
+.result .f span:first-child { flex: 1; }
+.btn { border: 1px solid var(--line-2); background: var(--panel-2); border-radius: 9px; padding: 6px 12px; font-size: 13px; }
+.btn:hover { background: var(--hover); }
+.btn.primary { background: var(--text); color: #111; border-color: var(--text); font-weight: 600; }
+/* composer */
+.composer-wrap { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 24px 18px; background: linear-gradient(180deg, transparent, var(--bg) 30%); }
+.composer { max-width: 780px; margin: 0 auto; background: var(--panel); border: 1px solid var(--line-2); border-radius: 18px; padding: 10px 10px 8px 14px; box-shadow: 0 12px 40px -18px #000; }
+.composer:focus-within { border-color: #4a4a52; }
+.composer textarea { width: 100%; background: none; border: 0; outline: none; resize: none; min-height: 26px; max-height: 220px; font-size: 15px; line-height: 1.5; }
+.composer .row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.sel { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; color: var(--muted); padding: 5px 9px; border-radius: 8px; background: none; border: 1px solid transparent; }
+.sel:hover { background: var(--hover); color: var(--text); }
+.sel .k { font: 11px var(--mono); color: var(--faint); }
+.send { margin-left: auto; width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--text); color: #111; display: grid; place-items: center; }
+.send:disabled { background: var(--line-2); color: var(--faint); }
+.send.stop { background: var(--panel-2); color: var(--text); border: 1px solid var(--line-2); }
+.hint { text-align: center; font-size: 11.5px; color: var(--faint); margin-top: 8px; }
+.popover { position: absolute; bottom: 100%; margin-bottom: 8px; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; padding: 6px; min-width: 260px; box-shadow: 0 16px 40px -12px #000; display: none; z-index: 5; }
+.popover.on { display: block; }
+.popover .it { padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.popover .it:hover { background: var(--hover); }
+.popover .it small { display: block; color: var(--faint); font-size: 12px; }
+.popover .it.on::after { content: "✓"; float: right; color: var(--accent); }
+/* right panel: changes */
+.changes { width: 0; overflow: hidden; border-left: 1px solid var(--line); background: var(--side); transition: width .2s; display: flex; flex-direction: column; height: 100vh; }
+.changes.on { width: min(560px, 46vw); }
+.changes .top { justify-content: space-between; }
+.ch-body { display: grid; grid-template-columns: 200px 1fr; flex: 1; min-height: 0; }
+.tree { border-right: 1px solid var(--line); overflow: auto; padding: 8px; font: 12.5px var(--mono); }
+.tree div { padding: 4px 8px; border-radius: 6px; cursor: pointer; display: flex; gap: 6px; color: var(--muted); }
+.tree div:hover, .tree div.on { background: var(--hover); color: var(--text); }
+.tree div span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diffview { overflow: auto; }
+/* settings */
+.overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); display: none; align-items: center; justify-content: center; z-index: 30; padding: 24px; }
+.overlay.on { display: flex; }
+.settings { width: min(980px, 100%); height: min(680px, 100%); background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; display: grid; grid-template-columns: 220px 1fr; overflow: hidden; box-shadow: 0 30px 80px -20px #000; }
+.set-nav { background: var(--side); border-right: 1px solid var(--line); padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; }
+.set-nav h3 { font-size: 13px; color: var(--faint); margin: 4px 10px 10px; font-weight: 500; }
+.set-nav button { text-align: left; background: none; border: 0; padding: 8px 10px; border-radius: 8px; color: var(--muted); font-size: 14px; display: flex; gap: 9px; align-items: center; }
+.set-nav button.on, .set-nav button:hover { background: var(--hover); color: var(--text); }
+.set-main { overflow: auto; padding: 22px 28px; position: relative; }
+.set-main h2 { margin: 0 0 4px; font-size: 19px; font-weight: 600; }
+.set-main .sub { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
+.set-close { position: absolute; top: 14px; right: 14px; }
+.rowx { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.rowx .l b { font-weight: 500; display: block; }
+.rowx .l span { color: var(--muted); font-size: 13px; }
+.pill { font: 11.5px var(--mono); padding: 2px 9px; border-radius: 999px; border: 1px solid; justify-self: end; white-space: nowrap; }
+.pill.ok { color: var(--ok); border-color: rgba(78, 201, 138, .35); } .pill.warn { color: var(--warn); border-color: rgba(233, 180, 76, .35); } .pill.bad { color: var(--bad); border-color: rgba(242, 112, 107, .35); }
+.kv { display: grid; grid-template-columns: 140px 1fr 1fr auto; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.kv .mono { font: 12.5px var(--mono); color: var(--muted); }
+.inp { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 10px; width: 100%; }
+.mtabs { display: none; }
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; }
+  .side { position: fixed; inset: 0 auto 0 0; width: 290px; z-index: 20; transform: translateX(-100%); transition: transform .2s; }
+  .side.on { transform: none; box-shadow: 20px 0 60px #000a; }
+  .menu-btn { display: inline-flex; }
+  .thread { padding: 18px 16px 200px; }
+  .composer-wrap { padding: 0 12px calc(12px + env(safe-area-inset-bottom)); }
+  .empty { margin-top: 8vh; padding: 0 16px; } .empty h2 { font-size: 24px; }
+  .sugg { grid-template-columns: 1fr; }
+  .changes.on { position: fixed; inset: 0; width: 100%; z-index: 25; }
+  .ch-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } .tree { border-right: 0; border-bottom: 1px solid var(--line); max-height: 30vh; }
+  .settings { grid-template-columns: 1fr; height: 100%; } .set-nav { flex-direction: row; overflow-x: auto; padding: 8px; } .set-nav h3 { display: none; }
+  .set-nav button { white-space: nowrap; } .overlay { padding: 0; } .settings { border-radius: 0; }
+  .kv { display: flex; align-items: center; gap: 10px; } .kv > :first-child { flex: 1; min-width: 0; }
+  .kv .mono { min-width: 0; max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hide-sm { display: none !important; }
+  .hint { display: none; }
+  .composer .row { gap: 2px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side">
+    <div class="brand"><i></i>AIDD</div>
+    <button class="new" onclick="newChat()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Новый чат<kbd>Ctrl N</kbd></button>
+    <label class="search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input placeholder="Поиск по чатам"></label>
+    <div class="chats" id="chats"></div>
+    <div class="side-foot">
+      <button class="ibtn" onclick="openSettings('keys')" title="Настройки"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Настройки</button>
+      <div class="avatar">А</div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="top">
+      <button class="ibtn menu-btn" onclick="side.classList.toggle('on')" aria-label="Чаты"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+      <h1 id="title">Новый чат</h1>
+      <span class="chip" id="status" hidden></span>
+      <span class="spacer"></span>
+      <button class="ibtn" id="chBtn" onclick="toggleChanges()" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18" opacity=".0"/><path d="M8 7h8M8 12h8M8 17h5"/><rect x="3" y="3" width="18" height="18" rx="3"/></svg><span class="hide-sm">Изменения</span> <span class="add" id="chAdd"></span> <span class="del" id="chDel"></span></button>
+    </div>
+    <div class="scroll" id="scroll"><div class="thread" id="thread"></div></div>
+    <div class="composer-wrap">
+      <div class="composer" style="position:relative">
+        <div class="popover" id="pop-mode" style="left:40px"></div>
+        <div class="popover" id="pop-model" style="left:150px"></div>
+        <textarea id="input" rows="1" placeholder="Что сделать? Отдел разобьёт задачу и выполнит её прямо здесь…"></textarea>
+        <div class="row">
+          <button class="sel" title="Прикрепить файлы или репозиторий"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21 11-8.6 8.6a5 5 0 0 1-7-7l8.5-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4L15.5 7"/></svg></button>
+          <button class="sel" onclick="pop('mode')"><span id="modeLbl">Отдел</span> ▾</button>
+          <button class="sel" onclick="pop('model')"><span id="modelLbl">Авто · сильнейшая</span> ▾</button>
+          <button class="sel hide-sm" title="Репозиторий"><span class="k">⎇</span> octo/pomodoro</button>
+          <button class="send" id="send" onclick="sendOrStop()" aria-label="Отправить"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+        </div>
+      </div>
+      <div class="hint">Enter — отправить · Shift+Enter — новая строка · агенты работают на вашем сервере</div>
+    </div>
+  </main>
+
+  <aside class="changes" id="changes">
+    <div class="top"><b style="font-size:14px">Изменения</b><span class="spacer"></span><button class="btn">Скачать .zip</button><button class="btn">Создать PR</button><button class="ibtn" onclick="toggleChanges()">✕</button></div>
+    <div class="ch-body"><div class="tree" id="tree"></div><div class="diffview" id="diffview"></div></div>
+  </aside>
+</div>
+
+<div class="overlay" id="settings" onclick="if(event.target===this)this.classList.remove('on')">
+  <div class="settings">
+    <nav class="set-nav" id="setNav"></nav>
+    <section class="set-main" id="setMain"></section>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const ROLES = { lead: ["Оркестратор", 265], arch: ["Архитектор", 200], c1: ["Кодер", 150], c2: ["Кодер", 150], t1: ["Тестер", 330], rv: ["Ревьюер", 35] };
+const CHATS = [
+  ["Сегодня", [["Pomodoro-таймер: PWA с историей", "run"], ["Починить вход через Google", "ok"], ["Сравнить агрегаторы по цене", "ok"]]],
+  ["Вчера", [["Лендинг для студии 3D", "ok"], ["Бот для Telegram с напоминаниями", "bad"]]],
+  ["Ранее", [["Парсер прайсов в CSV", "ok"], ["Тесты для API заказов", "ok"], ["Миграция БД на PostgreSQL", "ok"]]],
+];
+let current = -1, running = false, timer = null, startedAt = 0, files = {};
+function renderChats() {
+  let i = 0;
+  $("#chats").innerHTML = CHATS.map(([g, items]) => `<div class="group">${g}</div>` + items.map(([t, s]) => {
+    const n = i++; return `<div class="chat ${n === current ? "on" : ""}" onclick="openChat(${n})"><span class="dot ${s}"></span><span class="t">${esc(t)}</span></div>`;
+  }).join("")).join("");
+}
+function newChat() {
+  current = -1; stopRun(true); files = {};
+  $("#title").textContent = "Новый чат"; $("#status").hidden = true; $("#chBtn").hidden = true;
+  $("#thread").innerHTML = `<div class="empty"><h2>Что построим сегодня?</h2><p>Опишите задачу — отдел агентов разберёт её, напишет код, проверит и покажет всё здесь.</p>
+    <div class="sugg">${[["PWA Pomodoro-таймер", "с историей, тестами и тёмной темой"], ["Найди и почини баг", "вход через Google падает с 500"], ["Telegram-бот", "напоминания по расписанию + SQLite"], ["Ревью репозитория", "безопасность, тесты, узкие места"]]
+      .map(([a, b]) => `<button onclick="fill('${a} — ${b}')"><b>${a}</b>${b}</button>`).join("")}</div></div>`;
+  renderChats(); side.classList.remove("on"); $("#input").focus();
+}
+function fill(t) { $("#input").value = t; autosize(); $("#input").focus(); }
+function openChat(n) { current = n; renderChats(); side.classList.remove("on"); runDemo(CHATS.flatMap((g) => g[1])[n][0], n !== 0); }
+function autosize() { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(220, t.scrollHeight) + "px"; }
+$("#input").addEventListener("input", autosize);
+$("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendOrStop(); } });
+document.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") { e.preventDefault(); newChat(); } if (e.key === "Escape") { $("#settings").classList.remove("on"); document.querySelectorAll(".popover").forEach((p) => p.classList.remove("on")); } });
+function sendOrStop() {
+  if (running) return stopRun();
+  const text = $("#input").value.trim(); if (!text) return;
+  $("#input").value = ""; autosize();
+  if (current === -1) { CHATS[0][1].unshift([text.split(" — ")[0].slice(0, 48), "run"]); current = 0; renderChats(); }
+  runDemo(text, false);
+}
+const MODES = [["Отдел", "Ведущий агент раздаёт задачи субагентам"], ["Один агент", "Быстро: один агент с инструментами"], ["Только план", "Разобрать задачу, ничего не менять"]];
+const MODELS = [["Авто · сильнейшая", "Подбор по силе из ваших ключей"], ["openai/gpt-5", "OpenRouter"], ["google/gemini-3-pro", "OpenRouter"], ["deepseek-chat", "DeepSeek"], ["qwen-3-coder-480b", "Groq"]];
+function pop(which) {
+  const el = $("#pop-" + which), list = which === "mode" ? MODES : MODELS, lbl = $(which === "mode" ? "#modeLbl" : "#modelLbl");
+  document.querySelectorAll(".popover").forEach((p) => p !== el && p.classList.remove("on"));
+  el.innerHTML = list.map(([a, b]) => `<div class="it ${lbl.textContent === a ? "on" : ""}" onclick="document.querySelector('#${which === "mode" ? "modeLbl" : "modelLbl"}').textContent='${a}';this.parentNode.classList.remove('on')">${a}<small>${b}</small></div>`).join("")
+    + (which === "model" ? `<div class="it" onclick="openSettings('models')" style="border-top:1px solid var(--line);margin-top:4px">Модели и роли…<small>Настройки</small></div>` : "");
+  el.classList.toggle("on");
+}
+// ---------------------------------------------------------------- the scripted run
+const DIFF_TIMER = [["d", "  const DURATION = 25 * 60;"], ["a", "  const DURATION = settings.focus * 60;"], [" ", "  let left = DURATION;"], ["a", "  let paused = false;"], [" ", "  export function tick() {"], ["d", "    left -= 1;"], ["a", "    if (paused) return;"], ["a", "    left = Math.max(0, left - 1);"], ["a", "    if (left === 0) history.add({ at: Date.now() });"], [" ", "  }"]];
+const SCRIPT = [
+  [500, "text", "lead", "Разберу задачу на части: архитектура → два кодера параллельно (таймер и история) → тесты → ревью."],
+  [600, "todo", null, [["Архитектура и хранение", "now"], ["Таймер и состояние", ""], ["Экран истории", ""], ["Тесты", ""], ["Ревью и PR", ""]]],
+  [500, "tool", "lead", ["Glob", "src/**/*", "12 файлов"]],
+  [700, "agent", "arch", "Структура и хранение истории"],
+  [700, "tool", "arch", ["Skill", "api-design", ""]],
+  [900, "tool", "arch", ["Write", "docs/ARCHITECTURE.md", "+42"]],
+  [700, "agentdone", "arch", "Описал модули timer/history/storage и формат записи в IndexedDB."],
+  [400, "todo", null, [["Архитектура и хранение", "done"], ["Таймер и состояние", "now"], ["Экран истории", "now"], ["Тесты", ""], ["Ревью и PR", ""]]],
+  [400, "par", null, "два агента работают параллельно"],
+  [400, "agent", "c1", "Таймер и состояние"],
+  [300, "agent", "c2", "Экран истории"],
+  [700, "tool", "c1", ["Read", "docs/ARCHITECTURE.md", "42 строки"]],
+  [500, "tool", "c2", ["Glob", "src/ui/**/*.ts", "3 файла"]],
+  [700, "notice", null, "Ключ OpenRouter ••••07c2 упёрся в лимит — запрос перешёл на ••••c4d8, этот проверю через 5 минут"],
+  [800, "tool", "c1", ["Edit", "src/timer.ts", "+18 −4", "diff"]],
+  [700, "tool", "c2", ["Write", "src/ui/history.ts", "+96"]],
+  [900, "tool", "c1", ["Bash", "npm run build", "✓ 1.4s", "term"]],
+  [600, "agentdone", "c1", "Таймер с паузой и настройкой длительности; сборка проходит."],
+  [800, "tool", "c2", ["Edit", "src/ui/styles.css", "+31 −2", "diff"]],
+  [600, "agentdone", "c2", "Экран истории со списком сессий и итогом за день."],
+  [400, "todo", null, [["Архитектура и хранение", "done"], ["Таймер и состояние", "done"], ["Экран истории", "done"], ["Тесты", "now"], ["Ревью и PR", ""]]],
+  [500, "agent", "t1", "Тесты таймера и истории"],
+  [800, "tool", "t1", ["Write", "tests/timer.test.ts", "+64"]],
+  [1000, "tool", "t1", ["Bash", "npx vitest run", "✗ 1 из 12", "fail"]],
+  [600, "text", "t1", "После паузы таймер не сбрасывается — отправляю кодеру."],
+  [800, "tool", "c1", ["Edit", "src/timer.ts", "+3 −1", "diff"]],
+  [900, "tool", "t1", ["Bash", "npx vitest run", "✓ 12 из 12", "term"]],
+  [500, "agentdone", "t1", "12 тестов проходят."],
+  [400, "agent", "rv", "Ревью перед PR"],
+  [700, "tool", "rv", ["Skill", "code-review", ""]],
+  [700, "tool", "rv", ["Grep", "localStorage|eval\\(", "0 совпадений"]],
+  [600, "agentdone", "rv", "Замечаний нет: данные только локально, ввод экранируется."],
+  [400, "todo", null, [["Архитектура и хранение", "done"], ["Таймер и состояние", "done"], ["Экран истории", "done"], ["Тесты", "done"], ["Ревью и PR", "done"]]],
+  [600, "final", "lead", "Готово. Таймер с паузой и настраиваемой длительностью, экран истории с итогом за день, данные в IndexedDB. **12 тестов проходят**, ревью без замечаний. Изменения в ветке `aidd/pomodoro` — можно открыть PR."],
+];
+const FILES = [["docs/ARCHITECTURE.md", 42, 0], ["src/timer.ts", 21, 5], ["src/ui/history.ts", 96, 0], ["src/ui/styles.css", 31, 2], ["tests/timer.test.ts", 64, 0], ["src/storage.ts", 38, 0]];
+function el(html) { const d = document.createElement("div"); d.innerHTML = html.trim(); return d.firstChild; }
+function toolHtml([name, arg, st, kind]) {
+  const icons = { Read: "◔", Write: "+", Edit: "✎", Bash: "$", Glob: "⌕", Grep: "⌕", Skill: "✦", WebFetch: "↗", Task: "⇢" };
+  const stHtml = st.startsWith("+") ? st.split(" ").map((p) => `<span class="${p.startsWith("+") ? "add" : "del"}">${p}</span>`).join(" ")
+    : st.startsWith("✗") ? `<span class="del">${st}</span>` : st.startsWith("✓") ? `<span class="add">${st}</span>` : `<span style="color:var(--faint)">${st}</span>`;
+  let body = "";
+  if (kind === "diff") body = `<div class="bhead"><span>${arg}</span><span>${st}</span></div><div class="code">${DIFF_TIMER.map(([t, l], i) => `<div class="${t === "a" ? "a" : t === "d" ? "d" : ""}"><span class="n">${t === "a" ? "+" : t === "d" ? "−" : 40 + i}</span>${esc(l)}</div>`).join("")}</div>`;
+  else if (kind === "term" || kind === "fail") body = `<div class="term"><span class="cmd">$ ${esc(arg)}</span>\n${kind === "fail" ? " ✓ 11 passed\n ✗ timer › resets after pause\n   expected 1500, received 1342" : arg.includes("vitest") ? " ✓ 12 passed (812ms)" : "vite v6 building for production…\n✓ 48 modules transformed.\n✓ built in 1.4s"}</div>`;
+  else body = `<div class="term" style="color:var(--muted)">${esc(name)}(${esc(arg)}) → ${esc(st || "ok")}</div>`;
+  return `<div class="tool"><div class="tool-h" onclick="this.parentNode.classList.toggle('open')"><span class="ic">${icons[name] || "·"}</span><span class="nm">${name}</span><span class="arg">${esc(arg)}</span><span class="st">${stHtml}</span></div><div class="tool-b">${body}</div></div>`;
+}
+function runDemo(prompt, instant) {
+  stopRun(true);
+  $("#title").textContent = prompt.split(" — ")[0].slice(0, 60);
+  const thread = $("#thread"); thread.innerHTML = "";
+  thread.append(el(`<div class="msg-user"><div>${esc(prompt)}</div></div>`));
+  const turn = el(`<div class="turn"><div class="who"><i></i>Отдел · 6 агентов · авто-модели</div><div class="body"></div></div>`);
+  thread.append(turn);
+  const body = turn.querySelector(".body");
+  const think = el(`<div class="thinking">Думаю над задачей…</div>`); body.append(think);
+  const agents = {}; let todo = null;
+  running = true; startedAt = Date.now(); files = {}; setRunning(true);
+  let i = 0;
+  const step = () => {
+    if (i >= SCRIPT.length) return finish();
+    const [delay, type, who, data] = SCRIPT[i++];
+    think.remove();
+    const host = who && who !== "lead" && agents[who] ? agents[who].querySelector(".agent-b") : body;
+    if (type === "text") host.append(el(`<div class="text"><p>${esc(data)}</p></div>`));
+    else if (type === "todo") {
+      const html = `<div class="todo"><div class="h"><span>План</span><span>${data.filter((t) => t[1] === "done").length}/${data.length}</span></div><ul>${data.map(([t, s]) => `<li class="${s}"><span class="box">${s === "done" ? "✓" : ""}</span>${t}</li>`).join("")}</ul></div>`;
+      if (todo) todo.replaceWith(todo = el(html)); else body.append(todo = el(html));
+    } else if (type === "tool") {
+      host.append(el(toolHtml(data)));
+      if (/^(Write|Edit)$/.test(data[0])) { const [a, d] = [parseInt((data[2].match(/\+(\d+)/) || [0, 0])[1]), parseInt((data[2].match(/−(\d+)/) || [0, 0])[1])]; files[data[1]] = [(files[data[1]] || [0, 0])[0] + a, (files[data[1]] || [0, 0])[1] + d]; updateChanges(); }
+    } else if (type === "agent") {
+      const [name, hue] = ROLES[who];
+      const a = el(`<div class="agent"><div class="agent-h" onclick="this.parentNode.classList.toggle('closed')"><span class="g" style="background:hsl(${hue} 45% 20%);color:hsl(${hue} 85% 75%)">${name[0]}</span><b>${name}</b><span class="d">${esc(data)}</span><span class="m"><span class="hide-sm">${who === "arch" ? "gemini-3-pro" : who === "rv" ? "gpt-5" : who === "t1" ? "qwen-3-coder" : "deepseek-chat"}</span><span class="spin"></span></span></div><div class="agent-b"></div><div class="sum"></div></div>`);
+      body.append(a); agents[who] = a;
+    } else if (type === "agentdone") {
+      const a = agents[who]; a.querySelector(".spin").outerHTML = `<span class="add">✓</span>`;
+      a.querySelector(".sum").textContent = data; a.classList.add("closed");
+    } else if (type === "par") body.append(el(`<div class="par">${data}</div>`));
+    else if (type === "notice") body.append(el(`<div class="notice">⟳ ${esc(data)}</div>`));
+    else if (type === "final") {
+      body.append(el(`<div class="text"><p>${esc(data).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`(.+?)`/g, "<code>$1</code>")}</p></div>`));
+      const total = FILES.reduce((s, f) => [s[0] + f[1], s[1] + f[2]], [0, 0]);
+      body.append(el(`<div class="result"><div class="h"><span>Изменено ${FILES.length} файлов</span><span class="add">+${total[0]}</span><span class="del">−${total[1]}</span><span class="spacer"></span><button class="btn" onclick="toggleChanges(true)">Открыть изменения</button><button class="btn primary">Создать PR</button></div>${FILES.map(([f, a, d]) => `<div class="f" onclick="toggleChanges(true,'${f}')"><span>${f}</span><span class="add">+${a}</span><span class="del">${d ? "−" + d : ""}</span></div>`).join("")}</div>`));
+      FILES.forEach(([f, a, d]) => { files[f] = [a, d]; }); updateChanges();
+    }
+    if (!instant) $("#scroll").scrollTop = $("#scroll").scrollHeight;
+    timer = setTimeout(step, instant ? 0 : delay);
+  };
+  timer = setTimeout(step, instant ? 0 : 900);
+}
+function finish() { running = false; setRunning(false); }
+function stopRun(silent) {
+  clearTimeout(timer);
+  if (running && !silent) $("#thread").append(el(`<div class="notice" style="border-color:var(--bad)">Остановлено пользователем</div>`));
+  running = false; setRunning(false);
+}
+function setRunning(on) {
+  const s = $("#status"); s.hidden = false;
+  s.className = "chip " + (on ? "run" : "done"); s.innerHTML = on ? `<span class="spin"></span> работает` : "✓ готово";
+  const b = $("#send"); b.classList.toggle("stop", on);
+  b.innerHTML = on ? `<svg width="12" height="12" viewBox="0 0 12 12"><rect width="12" height="12" rx="2" fill="currentColor"/></svg>` : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5M5 12l7-7 7 7"/></svg>`;
+}
+function updateChanges() {
+  const list = Object.entries(files); $("#chBtn").hidden = !list.length;
+  const t = list.reduce((s, [, [a, d]]) => [s[0] + a, s[1] + d], [0, 0]);
+  $("#chAdd").textContent = "+" + t[0]; $("#chDel").textContent = t[1] ? "−" + t[1] : "";
+  $("#tree").innerHTML = list.map(([f, [a, d]]) => `<div onclick="showDiff('${f}')" data-f="${f}"><span>${f}</span><span class="add">+${a}</span>${d ? `<span class="del">−${d}</span>` : ""}</div>`).join("");
+}
+function showDiff(f) {
+  document.querySelectorAll("#tree div").forEach((d) => d.classList.toggle("on", d.dataset.f === f));
+  $("#diffview").innerHTML = `<div class="bhead"><span>${f}</span><span>изменено отделом</span></div><div class="code">${DIFF_TIMER.map(([t, l], i) => `<div class="${t === "a" ? "a" : t === "d" ? "d" : ""}"><span class="n">${t === "a" ? "+" : t === "d" ? "−" : 40 + i}</span>${esc(l)}</div>`).join("")}</div>`;
+}
+function toggleChanges(open, f) { const c = $("#changes"); c.classList.toggle("on", open === undefined ? !c.classList.contains("on") : open); const first = f || Object.keys(files)[0]; if (first) showDiff(first); }
+// ---------------------------------------------------------------- settings
+const SETTINGS = [
+  ["keys", "Ключи API", "⚿"], ["models", "Модели и роли", "◆"], ["skills", "Скиллы", "✦"], ["accounts", "Браузерные аккаунты", "◱"],
+  ["github", "GitHub", "⎇"], ["server", "Сервер и агенты", "⚙"], ["general", "Общие", "☰"],
+];
+const KEYS = [["OpenRouter", "Основной", "••••a91f", "ok", "доступен", "2 в работе"], ["OpenRouter", "Запасной", "••••07c2", "warn", "в лимите · проверка через 4:12", ""], ["Groq", "Groq 1", "••••9kTz", "ok", "доступен", ""], ["DeepSeek", "DeepSeek", "••••f00d", "bad", "ключ не принят", ""], ["Свой: api.example.ai", "Локальный", "••••77aa", "ok", "доступен", ""]];
+function openSettings(tab) { $("#settings").classList.add("on"); renderSettings(tab); document.querySelectorAll(".popover").forEach((p) => p.classList.remove("on")); }
+function renderSettings(tab) {
+  $("#setNav").innerHTML = `<h3>Настройки</h3>` + SETTINGS.map(([id, t, ic]) => `<button class="${id === tab ? "on" : ""}" onclick="renderSettings('${id}')"><span style="width:16px;text-align:center">${ic}</span>${t}</button>`).join("");
+  const close = `<button class="ibtn set-close" onclick="settings.classList.remove('on')">✕</button>`;
+  const pages = {
+    keys: `<h2>Ключи API</h2><p class="sub">Общий котёл: каждый запрос агента берёт самый свободный ключ. Ключ в лимите выходит из оборота и проверяется раз в 5 минут.</p>
+      <div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn primary">+ Добавить ключ</button><button class="btn">Проверить все</button></div>
+      ${KEYS.map(([p, l, k, c, s, b]) => `<div class="kv"><div><b style="font-weight:500">${l}</b><div class="mono">${p}</div></div><span class="mono hide-sm">${k}</span><span class="hide-sm" style="color:var(--muted);font-size:13px">${b}</span><span class="pill ${c}">${s}</span></div>`).join("")}`,
+    models: `<h2>Модели и роли</h2><p class="sub">Автоподбор ставит самую сильную рабочую модель ведущей, остальные роли — по убыванию. Любую роль можно задать вручную.</p>
+      <div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn primary">Подобрать заново</button></div>
+      ${[["Оркестратор", "openai/gpt-5", "OpenRouter", "авто"], ["Архитектор", "google/gemini-3-pro", "OpenRouter", "авто"], ["Кодер", "deepseek-chat", "DeepSeek", "авто"], ["Ревьюер", "openai/gpt-5-mini", "OpenRouter", "вручную"], ["Интегратор", "qwen-3-coder-480b", "Groq", "авто"], ["Тестер", "qwen-3-coder-480b", "Groq", "авто"]]
+        .map(([r, m, p, a]) => `<div class="kv"><b style="font-weight:500">${r}</b><span class="mono">${m}</span><span class="hide-sm" style="color:var(--muted);font-size:13px">${p}</span><span class="pill ${a === "авто" ? "ok" : "warn"}">${a}</span></div>`).join("")}`,
+    skills: `<h2>Скиллы</h2><p class="sub">Папки со SKILL.md. Агент видит описание и сам открывает инструкции, когда задача подходит.</p><button class="btn primary">+ Загрузить .zip или SKILL.md</button>
+      ${[["code-review", "Проверка изменений перед слиянием"], ["write-tests", "Тесты к новому коду и их запуск"], ["debugging", "Поиск причины сбоя"], ["frontend-design", "Интерфейсы: сетка, типографика, состояния"]].map(([n, d]) => `<div class="rowx"><div class="l"><b style="font-family:var(--mono)">${n}</b><span>${d}</span></div><span class="pill ok">встроенный</span></div>`).join("")}`,
+    accounts: `<h2>Браузерные аккаунты</h2><p class="sub">Второй движок: агенты через веб-чат сервиса в браузере на сервере (вход, калибровка, просмотр через noVNC).</p>${["boss · Оркестратор", "dev-1 · Кодер"].map((a) => `<div class="rowx"><div class="l"><b>${a}</b><span>вход выполнен · калибровка 3 ч назад</span></div><button class="btn">Открыть браузер</button></div>`).join("")}`,
+    github: `<h2>GitHub</h2><p class="sub">Токен для коммитов и PR от имени сервера.</p><div class="rowx"><div class="l"><b>Подключён как @artem</b><span>токен ••••x9Qa</span></div><button class="btn">Отключить</button></div>`,
+    server: `<h2>Сервер и агенты</h2><p class="sub">Технические ограничения отдела.</p>${[["Субагентов одновременно", "4"], ["Ходов на агента", "60"], ["Переход на запасную модель через", "60 с"], ["Песочница для Bash", "bwrap ✓"], ["Проверка ключей в лимите", "каждые 5 мин"]].map(([a, b]) => `<div class="rowx"><div class="l"><b>${a}</b></div><input class="inp" style="width:140px" value="${b}"></div>`).join("")}`,
+    general: `<h2>Общие</h2><p class="sub">Внешний вид и поведение.</p>${[["Тема", "Тёмная"], ["Язык", "Русский"], ["Показывать шаги агентов", "Компактно"]].map(([a, b]) => `<div class="rowx"><div class="l"><b>${a}</b></div><span class="pill ok">${b}</span></div>`).join("")}`,
+  };
+  $("#setMain").innerHTML = close + pages[tab];
+}
+renderChats(); newChat();
+</script>
+</body>
+</html>
