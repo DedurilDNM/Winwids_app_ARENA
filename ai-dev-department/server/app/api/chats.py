@@ -39,12 +39,14 @@ from app.models import AgentRun, AgentRunEvent, Chat, User, utcnow
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 MODES = ("department", "single", "plan")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 class MessageIn(BaseModel):
     prompt: str = Field(min_length=1, max_length=50_000)
     mode: str = "department"
     model: str | None = Field(default=None, max_length=240)
+    effort: str | None = Field(default=None, max_length=16)  # auto | low | medium | high | xhigh | max
     repo: str | None = Field(default=None, max_length=300)  # a new chat only: work in this GitHub repository
 
 
@@ -97,6 +99,7 @@ async def _read_message(request: Request) -> tuple[MessageIn, list[tuple[str, by
         try:
             body = MessageIn(prompt=str(form.get("prompt") or ""), mode=str(form.get("mode") or "department"),
                              model=(str(form.get("model")) if form.get("model") else None),
+                             effort=(str(form.get("effort")) if form.get("effort") else None),
                              repo=(str(form.get("repo")) if form.get("repo") else None))
         except Exception:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "prompt is required") from None
@@ -139,14 +142,19 @@ def _check(body: MessageIn) -> tuple[str, str | None]:
         model = None
     if model and ":" not in model:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "model: «auto» or «provider:model»")
+    if (body.effort or "auto").strip().lower() not in ("auto",) + EFFORTS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "effort: auto, low, medium, high, xhigh or max")
     return mode, model
 
 
 async def _start_turn(db: AsyncSession, user: User, chat: Chat, body: MessageIn) -> AgentRun:
     mode, model = _check(body)
+    effort = (body.effort or "").strip().lower() or None
+    if effort == "auto":
+        effort = None
     try:
         run = await department.create_run(db, user.id, body.prompt, chat.title, "Orchestrator", chat=chat,
-                                          mode=mode, model=model)
+                                          mode=mode, model=model, effort=effort)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
     chat.updated_at = utcnow()

@@ -275,6 +275,7 @@ class AgentRun(Base):
     chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     mode: Mapped[str | None] = mapped_column(String(16), nullable=True)  # department | single | plan
     model: Mapped[str | None] = mapped_column(String(240), nullable=True)  # "provider:model" for the lead; None = auto
+    effort: Mapped[str | None] = mapped_column(String(16), nullable=True)  # thinking for this turn (None: the role's)
     base_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)  # workspace before the run
     end_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)  # ... and after it
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

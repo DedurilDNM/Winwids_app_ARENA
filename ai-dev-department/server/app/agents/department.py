@@ -237,7 +237,8 @@ async def _history(db, run: AgentRun) -> list[dict]:
     return out
 
 
-def _lead_spec(specs: dict[str, AgentSpec], lead: str, mode: str, model: str | None) -> tuple[str, AgentSpec | None]:
+def _lead_spec(specs: dict[str, AgentSpec], lead: str, mode: str, model: str | None,
+               effort: str | None = None) -> tuple[str, AgentSpec | None]:
     """The spec the run starts with, shaped by the chat's mode and chosen model."""
     base = specs.get(lead) or specs.get("Orchestrator") or next(iter(specs.values()), None)
     if base is None:
@@ -256,6 +257,8 @@ def _lead_spec(specs: dict[str, AgentSpec], lead: str, mode: str, model: str | N
         provider, name = model.split(":", 1)
         if provider in PROVIDERS and name:
             spec.provider, spec.model, spec.fallbacks = provider, name, []
+    if effort:  # chosen for this message
+        spec.effort = effort
     return spec.role, spec
 
 
@@ -273,7 +276,7 @@ async def execute(run_id: int) -> None:
         run.status, run.started_at = "running", utcnow()
         await db.commit()
         user_id, prompt, lead = run.user_id, run.prompt, run.lead_role
-        mode, model, chat_id = run.mode or "department", run.model, run.chat_id
+        mode, model, chat_id, effort = run.mode or "department", run.model, run.chat_id, run.effort
         ws = Path(run.workspace)
     ws.mkdir(parents=True, exist_ok=True)
     st = RunState(run_id, user_id, ws, specs, asyncio.Semaphore(int(_s("AGENT_MAX_PARALLEL", 4))))
@@ -302,7 +305,7 @@ async def execute(run_id: int) -> None:
                 st.specs.update(await role_specs(db, user_id))
             await st.event("lead", {"type": "auto_models", "status": "done", "assignments": [
                 {"role": a["role"], "provider": a["provider"], "model": a["model"]} for a in result["assignments"]]})
-        role, spec = _lead_spec(st.specs, lead, mode, model)
+        role, spec = _lead_spec(st.specs, lead, mode, model, effort)
         if spec is None:
             raise LLMError("request", "No working model found: add a key to the pool, or set the role by hand")
         from app.engine import claude_code
@@ -416,12 +419,14 @@ async def _touch_chat(chat_id: int) -> None:
 
 
 async def create_run(db, user_id: int, prompt: str, title: str = "", lead_role: str = "Orchestrator", *,
-                     chat=None, mode: str = "department", model: str | None = None) -> AgentRun:
+                     chat=None, mode: str = "department", model: str | None = None,
+                     effort: str | None = None) -> AgentRun:
     specs = await role_specs(db, user_id)
     if lead_role not in specs and not await has_keys(db, user_id):
         raise ValueError("The key pool is empty: add a key of any aggregator first")
     run = AgentRun(user_id=user_id, prompt=prompt, title=(title or prompt.splitlines()[0])[:200], lead_role=lead_role,
-                   chat_id=chat.id if chat is not None else None, mode=mode, model=model or None)
+                   chat_id=chat.id if chat is not None else None, mode=mode, model=model or None,
+                   effort=effort or None)
     db.add(run)
     await db.commit()
     await db.refresh(run)

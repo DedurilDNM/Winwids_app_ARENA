@@ -244,6 +244,7 @@ export async function render(main, { params, setTopbar, refreshChats }) {
   let alive = true;
   let mode = pref.get("mode", "department");
   let model = pref.get("model", "auto");
+  let effort = pref.get("effort", "auto");
   let running = false;
   let lastEvent = 0;
   const turns = new Map();
@@ -268,6 +269,21 @@ export async function render(main, { params, setTopbar, refreshChats }) {
   const modelBtn = h("button", { class: "model-btn", "data-testid": "model-btn",
     onclick: (e) => { e.stopPropagation(); pop.hidden = !pop.hidden; if (!pop.hidden) loadModels(); } });
   const pop = h("div", { class: "popover models", hidden: true, "data-testid": "model-pop" });
+  // how much the model thinks before it answers (Claude: effort; others: reasoning effort)
+  const EFFORTS = [["auto", "Авто", "как в настройках роли"], ["low", "low", "быстро, для простого"],
+    ["medium", "medium", "обычные задачи"], ["high", "high", "сложные задачи"],
+    ["xhigh", "xhigh", "очень сложные"], ["max", "max", "максимум размышлений, медленно"]];
+  function effortSeg() {
+    const sub = h("div", { class: "effort-sub" });
+    const seg = h("div", { class: "seg effort-seg", "data-testid": "effort-seg" });
+    const paint = () => {
+      seg.replaceChildren(...EFFORTS.map(([id, label, hint]) => h("button", { class: id === effort ? "on" : "", title: hint,
+        "data-effort": id, onclick: () => { effort = id; pref.set("effort", id); paint(); paintControls(); } }, label)));
+      sub.textContent = (EFFORTS.find(([id]) => id === effort) || EFFORTS[0])[2];
+    };
+    paint();
+    return h("div", { class: "effort-box", onclick: (e) => e.stopPropagation() }, h("div", { class: "mm-group" }, "Мышление"), seg, sub);
+  }
   let repo = chatId ? null : pref.get("repo", "") || null;
   const repoBtn = h("button", { class: "model-btn repo-btn", hidden: Boolean(chatId), "data-testid": "repo-btn",
     onclick: (e) => { e.stopPropagation(); repoPop.hidden = !repoPop.hidden; if (!repoPop.hidden) loadRepos(); } });
@@ -296,13 +312,14 @@ export async function render(main, { params, setTopbar, refreshChats }) {
 
   function paintControls() {
     modeSeg.replaceChildren(...MODES.map(([id, label]) => h("button", { class: id === mode ? "on" : "", onclick: () => { mode = id; pref.set("mode", id); paintControls(); } }, label)));
-    modelBtn.replaceChildren(model === "auto" ? "Авто" : model.split(":").slice(1).join(":"), " ▾");
+    modelBtn.replaceChildren(model === "auto" ? "Авто" : model.split(":").slice(1).join(":"),
+      effort === "auto" ? "" : h("span", { class: "effort-tag" }, ` · ${effort}`), " ▾");
     sendBtn.replaceChildren(running ? h("span", { class: "stop-sq" }) : "↑");
     sendBtn.classList.toggle("stop", running);
     sendBtn.setAttribute("aria-label", running ? "Остановить" : "Отправить");
   }
   function loadModels() {
-    pop.replaceChildren(modelMenu({
+    pop.replaceChildren(effortSeg(), modelMenu({
       onPick: (provider, name) => pick(`${provider}:${name}`),
       extra: [{ title: "Авто", sub: "модели ролей; ведёт самая сильная", onclick: () => pick("auto") }],
     }), h("a", { class: "it", href: "#/settings/models" }, h("small", {}, "Модели и роли…")));
@@ -325,7 +342,7 @@ export async function render(main, { params, setTopbar, refreshChats }) {
     if (!prompt) return;
     sendBtn.disabled = true;
     try {
-      const body = { prompt, mode, model: model === "auto" ? null : model };
+      const body = { prompt, mode, model: model === "auto" ? null : model, effort: effort === "auto" ? null : effort };
       if (!chatId) {
         if (repo) body.repo = repo;
         const chat = await api.createChat(body, files);

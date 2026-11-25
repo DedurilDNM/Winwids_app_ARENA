@@ -151,7 +151,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _anthropic(self, body: dict):
         key = self.headers.get("x-api-key") or self._key()
-        ANTHROPIC_LOG.append({"model": body.get("model"), "key": key[-4:]})
+        ANTHROPIC_LOG.append({"model": body.get("model"), "key": key[-4:], "output_config": body.get("output_config"),
+                              "thinking": body.get("thinking"), "tools": [t.get("name") for t in body.get("tools") or []]})
         if not key:
             return self._send(401, {"type": "error", "error": {"type": "authentication_error", "message": "no key"}})
         if key.startswith("sk-limited"):

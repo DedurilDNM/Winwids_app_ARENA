@@ -60,6 +60,8 @@ APPEND_PROMPT = """You work inside AIDD, a web app: the user writes to you in a 
 - For a web page or prototype: look at it with the Screenshot tool (mcp__aidd__Screenshot) - desktop and phone -
   fix what looks wrong and look again before you call it done.
 - Files the user attached are in uploads/.
+- Web search: if the WebSearch tool is not available, find pages with WebFetch on a search page
+  (https://html.duckduckgo.com/html/?q=<words>) and then WebFetch the results you need.
 - Documents: .docx/.xlsx/.pptx/.pdf with Python (python-docx, openpyxl, python-pptx, reportlab, pypdf are
   installed); use the matching skill when there is one."""
 DEPARTMENT_PROMPT = """You lead a department of agents ({names}). For a larger task, plan it (TodoWrite) and give
@@ -333,6 +335,10 @@ async def run_turn(st: RunState, lead_role: str, lead: AgentSpec, prompt: str, *
     argv += ["--resume", session] if resume else ["--session-id", session]
     if lead.effort in EFFORTS:
         argv += ["--effort", lead.effort]
+    if lead.provider != "anthropic":
+        # web search is a server tool run by Anthropic's own API: an aggregator cannot run it, so every
+        # call would fail; pages are read with WebFetch (it runs here)
+        argv += ["--disallowedTools", "WebSearch"]
     if fallbacks:
         argv += ["--fallback-model", ",".join(f["model"] for f in fallbacks[:3])]
     if agents:

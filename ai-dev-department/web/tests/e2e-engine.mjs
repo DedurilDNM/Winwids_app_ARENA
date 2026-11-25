@@ -54,7 +54,13 @@ await frame.locator("#go").click();
 assert.equal(await frame.locator("#go").innerText(), "Вошли");  // the live prototype
 if (SHOTS) await page.screenshot({ path: `${SHOTS}/engine-chat.png` });
 
-// a follow-up resumes the same Claude Code session (it remembers the first turn)
+// a follow-up resumes the same Claude Code session (it remembers the first turn); thinking: max
+const before = (await (await fetch(LLM.replace(/\/v1$/, "") + "/anthropic-log")).json()).requests.length;
+await page.click("[data-testid=model-btn]");
+await page.click("[data-testid=effort-seg] [data-effort=max]");
+assert.match(await page.locator("[data-testid=model-btn]").innerText(), /Авто\s*·\s*max/);
+await page.keyboard.press("Escape");
+await page.locator("[data-testid=thread]").click({ position: { x: 5, y: 5 } });
 await page.fill("[data-testid=chat-input]", "Сделай фон темнее");
 await page.keyboard.press("Enter");
 await page.waitForFunction(() => /Сделал темнее/.test(document.querySelector("[data-testid=thread]").innerText), null, { timeout: 180000 });
@@ -65,6 +71,10 @@ await page.click("[data-testid=settings]");
 await page.waitForSelector("[data-testid=key]");
 const log = await (await fetch(LLM.replace(/\/v1$/, "") + "/anthropic-log")).json();
 assert.ok(log.requests.length >= 6 && log.requests.every((r) => r.key === "3333"), "every model call used the pool's key");
+assert.ok(log.requests.every((r) => !r.tools.includes("WebSearch")), "no web search tool through an aggregator");
+const second = log.requests.slice(before).filter((r) => r.model === "fake-model" && r.tools.length);
+console.log("effort seen by the aggregator:", JSON.stringify(second.map((r) => [r.output_config, r.thinking]).slice(0, 2)));
+assert.ok(second.some((r) => JSON.stringify([r.output_config, r.thinking]).includes("max")), "thinking: max reached the model");
 assert.deepEqual(errors, []);
 await browser.close();
 console.log("e2e-engine: OK");

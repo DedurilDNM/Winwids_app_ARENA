@@ -550,3 +550,9 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.45; }
   .composer .pop-host { position: static; }
   .composer .popover, .composer .popover.models { left: 0; right: 0; width: auto; min-width: 0; }
 }
+/* thinking: a segment at the top of the model menu */
+.effort-box { padding: 2px 2px 8px; margin-bottom: 6px; border-bottom: 1px solid var(--line-2); }
+.effort-seg { display: flex; flex-wrap: wrap; width: 100%; }
+.effort-seg button { flex: 1 1 auto; padding: 6px 8px; font-size: 13px; }
+.effort-sub { font-size: 12px; color: var(--faint); padding: 6px 8px 0; }
+.model-btn .effort-tag { color: var(--accent, #d97757); }

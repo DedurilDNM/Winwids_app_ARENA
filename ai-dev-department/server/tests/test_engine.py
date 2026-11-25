@@ -234,3 +234,95 @@ def test_engine_setting_api(api, monkeypatch):
     assert api.put("/api/engine", json={"engine": "claude_code"}).json()["engine"] == "claude_code"
     assert api.put("/api/engine", json={"engine": "bogus"}).status_code == 422
     assert api.put("/api/engine", json={"engine": "auto"}).json()["engine"] == "auto"
+
+
+# ------------------------------------------------------------------ the command line of a turn
+
+class _FakeProc:
+    def __init__(self, lines):
+        self.pid = 999999
+        self.returncode = None
+        self._lines = [json.dumps(x).encode() + b"\n" for x in lines]
+
+        async def gen(items):
+            for i in items:
+                yield i
+
+        self.stdout = gen(self._lines)
+        self.stderr = gen([])
+
+    async def wait(self):
+        self.returncode = 0
+        return 0
+
+
+def test_a_turn_passes_effort_and_turns_off_web_search_for_aggregators(tmp_path, monkeypatch):
+    from app.agents.department import RunState
+
+    seen = {}
+
+    async def fake_exec(*argv, **kw):
+        seen["argv"], seen["env"] = list(argv), kw["env"]
+        return _FakeProc([{"type": "system", "subtype": "init", "session_id": "s-9"},
+                          {"type": "result", "is_error": False, "result": "ok", "modelUsage": {}}])
+
+    monkeypatch.setattr(claude_code, "find_binary", lambda: "/usr/bin/true")
+    monkeypatch.setattr(claude_code.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(claude_code, "_sandbox", lambda argv, *a: argv)
+    events = []
+
+    class St(RunState):
+        async def event(self, agent_id, data):
+            events.append((agent_id, data["type"]))
+
+        async def alive(self):
+            return True
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    lead = AgentSpec(role="Orchestrator", provider="custom", model="cc/claude-opus-5-5", effort="max",
+                     fallbacks=[{"provider": "custom", "model": "cc/claude-sonnet"}])
+    st = St(1, 1, ws, {"Orchestrator": lead, "Coder": AgentSpec(role="Coder", provider="custom", model="coder-m")},
+            asyncio.Semaphore(1))
+    text = asyncio.run(claude_code.run_turn(st, "Orchestrator", lead, "Сделай", mode="department"))
+    argv, env = seen["argv"], seen["env"]
+    assert text == "ok"
+    assert argv[argv.index("--effort") + 1] == "max"
+    assert argv[argv.index("--disallowedTools") + 1] == "WebSearch"
+    assert argv[argv.index("--fallback-model") + 1] == "cc/claude-sonnet"
+    assert json.loads(argv[argv.index("--agents") + 1])["coder"]["model"] == "coder-m"
+    assert argv[argv.index("--model") + 1] == "cc/claude-opus-5-5" and argv[-1] == "Сделай"
+    assert env["ANTHROPIC_BASE_URL"].startswith("http://127.0.0.1:8000/api/llm-proxy/")
+    assert "sk-" not in json.dumps(env)  # no pool key reaches Claude Code
+    assert env["HOME"] == str(ws / ".home") and env["ENABLE_TOOL_SEARCH"] == "false"
+    assert ("lead", "agent_done") in events
+    direct = AgentSpec(role="Orchestrator", provider="anthropic", model="claude-opus-5-5")
+    asyncio.run(claude_code.run_turn(st, "Orchestrator", direct, "x", mode="single"))
+    assert "--disallowedTools" not in seen["argv"] and "--effort" not in seen["argv"]  # Anthropic runs web search
+
+
+def test_effort_per_message(api, monkeypatch):
+    from app.agents import department as dept
+
+    monkeypatch.setattr(dept, "start", lambda run_id: None)  # no real turn
+    _add_key(api, "sk-effort-4444")
+    r = api.post("/api/chats", json={"prompt": "hi", "mode": "single", "effort": "xhigh"})
+    assert r.status_code in (200, 201), r.text
+    chat = r.json()
+    assert api.post("/api/chats", json={"prompt": "x", "effort": "huge"}).status_code == 400
+    from app.agents.department import _lead_spec
+
+    spec = AgentSpec(role="Orchestrator", provider="custom", model="m", effort="low")
+    assert _lead_spec({"Orchestrator": spec}, "Orchestrator", "department", None, "max")[1].effort == "max"
+    assert _lead_spec({"Orchestrator": spec}, "Orchestrator", "department", None, None)[1].effort == "low"
+
+    async def stored():
+        from sqlalchemy import select
+
+        from app.db import SessionLocal
+        from app.models import AgentRun
+
+        async with SessionLocal() as db:
+            return [r.effort for r in (await db.execute(select(AgentRun).where(AgentRun.chat_id == chat["id"]))).scalars()]
+
+    assert asyncio.run(stored()) == ["xhigh"]
