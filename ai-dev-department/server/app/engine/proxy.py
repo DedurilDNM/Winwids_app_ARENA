@@ -106,6 +106,8 @@ def _usage_from_sse(chunk: bytes, tokens: list[int], tail: bytearray) -> None:
             usage = (data.get("message") or {}).get("usage") or {}
             tokens[0] += int(usage.get("input_tokens") or 0) + int(usage.get("cache_read_input_tokens") or 0) \
                 + int(usage.get("cache_creation_input_tokens") or 0)
+            if len(tokens) > 2:  # how much of the input came from the provider's cache
+                tokens[2] += int(usage.get("cache_read_input_tokens") or 0)
         elif data.get("type") == "message_delta":
             tokens[1] = int((data.get("usage") or {}).get("output_tokens") or 0)  # running total of the message
 
@@ -139,6 +141,7 @@ async def _forward(token: str, request: Request, path: str) -> Response:
     query = request.url.query
     url_tail = path + (f"?{query}" if query else "")
     transient = 0
+    started = time.monotonic()
     while True:
         try:
             lease = await key_pool.lease(access.user_id, provider, model, should_continue=access.should_continue)
@@ -200,16 +203,20 @@ async def _forward(token: str, request: Request, path: str) -> Response:
                                                       int(usage.get("output_tokens") or 0)))
             return Response(data, status_code=upstream.status_code,
                             media_type=upstream.headers.get("content-type", "application/json"))
-        return StreamingResponse(_relay(upstream, client, lease, access), status_code=upstream.status_code,
+        return StreamingResponse(_relay(upstream, client, lease, access, model, started), status_code=upstream.status_code,
                                  media_type="text/event-stream", headers={"cache-control": "no-cache"})
 
 
-async def _relay(upstream: httpx.Response, client: httpx.AsyncClient, lease, access: RunAccess):
-    tokens = [0, 0]
+async def _relay(upstream: httpx.Response, client: httpx.AsyncClient, lease, access: RunAccess,
+                 model: str = "", started: float | None = None):
+    tokens = [0, 0, 0]  # input (all), output, input read from the cache
     tail = bytearray()
     outcome = OK
+    first = None
     try:
         async for chunk in upstream.aiter_bytes():  # decoded: the client gets no content-encoding
+            if first is None:
+                first = time.monotonic()
             _usage_from_sse(chunk, tokens, tail)
             yield chunk
     except (httpx.HTTPError, asyncio.CancelledError):
@@ -221,6 +228,13 @@ async def _relay(upstream: httpx.Response, client: httpx.AsyncClient, lease, acc
         access.tokens[0] += tokens[0]
         access.tokens[1] += tokens[1]
         await key_pool.release(lease, outcome, tokens=(tokens[0], tokens[1]))
+        if started is not None:  # where the time goes: waiting for the first byte vs. writing the answer
+            end = time.monotonic()
+            wait = (first or end) - started
+            write = end - (first or end)
+            logger.info("Engine call: run=%s model=%s in=%d cache_read=%d out=%d first_byte=%.1fs answer=%.1fs "
+                        "speed=%.0f tok/s %s", access.run_id, model, tokens[0], tokens[2], tokens[1], wait, write,
+                        tokens[1] / write if write > 0.5 else 0, "" if outcome == OK else "(broken off)")
 
 
 # ------------------------------------------------------------------ MCP tool callbacks
