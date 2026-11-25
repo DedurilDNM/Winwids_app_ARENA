@@ -292,7 +292,7 @@ def test_a_turn_passes_effort_and_turns_off_web_search_for_aggregators(tmp_path,
     assert argv[argv.index("--disallowedTools") + 1] == "WebSearch"
     assert argv[argv.index("--fallback-model") + 1] == "cc/claude-sonnet"
     assert json.loads(argv[argv.index("--agents") + 1])["coder"]["model"] == "coder-m"
-    assert argv[argv.index("--model") + 1] == "cc/claude-opus-5-5" and argv[-1] == "Сделай"
+    assert argv[argv.index("--model") + 1] == "cc/claude-opus-5-5" and argv[-2:] == ["--", "Сделай"]
     assert env["ANTHROPIC_BASE_URL"].startswith("http://127.0.0.1:8000/api/llm-proxy/")
     assert "sk-" not in json.dumps(env)  # no pool key reaches Claude Code
     assert env["HOME"] == str(ws / ".home") and env["ENABLE_TOOL_SEARCH"] == "false"

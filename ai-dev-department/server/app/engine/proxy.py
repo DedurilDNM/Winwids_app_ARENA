@@ -39,7 +39,8 @@ HTTP_TRANSPORT = None  # tests: an httpx transport standing in for the providers
 # providers that speak the Anthropic Messages API (base URL without /v1/messages)
 ANTHROPIC_BASES = {"anthropic": "https://api.anthropic.com", "deepseek": "https://api.deepseek.com/anthropic"}
 # request headers passed on to the provider (the key is put in by the proxy)
-PASS_HEADERS = ("anthropic-version", "anthropic-beta", "content-type", "accept", "x-stainless-helper-method")
+PASS_HEADERS = ("anthropic-version", "anthropic-beta", "content-type", "accept", "x-stainless-helper-method",
+                "user-agent")  # Claude Code's own: some aggregators turn away unknown clients
 
 
 def anthropic_base(provider: str, base_url: str | None) -> str | None:

@@ -345,7 +345,7 @@ async def run_turn(st: RunState, lead_role: str, lead: AgentSpec, prompt: str, *
         argv += ["--fallback-model", ",".join(f["model"] for f in fallbacks[:3])]
     if agents:
         argv += ["--agents", json.dumps(agents, ensure_ascii=False)]
-    argv.append(prompt)
+    argv += ["--", prompt]  # after «--»: an option that takes several values (--disallowedTools) cannot eat it
 
     env = {"PATH": f"{Path(sys.executable).parent}:{os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}",
            "LANG": os.environ.get("LANG", "C.UTF-8"), "HOME": str(home), "TERM": "dumb", "NO_COLOR": "1",
