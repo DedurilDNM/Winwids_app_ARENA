@@ -185,6 +185,11 @@ async def _capture(url, width, height, scale, full_page, out) -> None:
                     await browser.close()
     except ImportError:
         errors.append("playwright is not installed")
+    from app.config import get_settings
+
+    if not get_settings().BROWSER_ENABLED:  # Camoufox only when the browser part is on
+        raise ScreenshotError("no browser could take the screenshot (" + "; ".join(errors) + "; install Chromium: "
+                              "server/.venv/bin/python -m playwright install chromium-headless-shell)")
     try:
         from camoufox.async_api import AsyncCamoufox
 

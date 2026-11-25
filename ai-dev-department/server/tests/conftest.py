@@ -29,6 +29,7 @@ os.environ["GITHUB_TOKEN"] = ""  # never use a real token from the developer env
 os.environ["AUTO_RESUME_INTERRUPTED"] = "false"  # tests decide themselves (see test_projects)
 os.environ["ADAPTER_MIN_NAV_INTERVAL_SECONDS"] = "0"  # no pacing between page loads in tests (own tests below)
 os.environ["ENGINE"] = "native"  # the built-in agents unless a test picks Claude Code (test_engine)
+os.environ["BROWSER_ENABLED"] = "true"  # the browser tests use a fake Camoufox
 
 os.environ["TEST_DB_PATH"] = str(_TMP / "test.db")
 

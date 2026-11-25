@@ -147,6 +147,9 @@ class BrowserManager:
             if existing is not None:
                 return existing.context
 
+            if not settings.BROWSER_ENABLED:
+                raise BrowserUnavailableError(
+                    "The browser part is turned off (BROWSER_ENABLED=false in server/.env)")
             if AsyncCamoufox is None:
                 raise BrowserUnavailableError(
                     "camoufox is not installed. Run deploy/install.sh or `pip install -r requirements.txt` "

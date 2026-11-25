@@ -286,6 +286,9 @@ class Settings(BaseSettings):
     # Save IndexedDB with the login session (experimental in Playwright; some sites'
     # data cannot be restored later and blocks the browser start). Cookies + localStorage
     # are enough to stay logged in.
+    # The browser part (accounts in Camoufox, browser projects). Off by default: chats run on the
+    # API department / Claude Code; some hosts forbid multi-account browser software.
+    BROWSER_ENABLED: bool = False
     BROWSER_SAVE_INDEXEDDB: bool = False
     # After each reply: press Escape (closes rating/feedback panels) and click
     # ADAPTER_DISMISS_SELECTOR if it is visible.

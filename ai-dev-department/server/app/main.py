@@ -229,16 +229,21 @@ async def lifespan(app: FastAPI):
 
     # Phase 2: relaunch browsers for all active accounts so they open logged-in
     # sessions without a fresh VNC login. Failures never block startup.
-    try:
-        display = await vnc_manager.ensure_shared_display()
-    except Exception as exc:
-        logger.warning("Shared Xvfb display unavailable: %s", exc)
-        display = None
-    try:
-        await browser_manager.restore_active_accounts(SessionLocal, display=display,
-                                                      launcher=vnc_manager.launch_on_own_display)
-    except Exception as exc:
-        logger.warning("Active account restore failed: %s", exc)
+    # With the browser part off (BROWSER_ENABLED=false) nothing starts: no Xvfb, no browser.
+    if settings.BROWSER_ENABLED:
+        try:
+            display = await vnc_manager.ensure_shared_display()
+        except Exception as exc:
+            logger.warning("Shared Xvfb display unavailable: %s", exc)
+            display = None
+        try:
+            await browser_manager.restore_active_accounts(SessionLocal, display=display,
+                                                          launcher=vnc_manager.launch_on_own_display)
+        except Exception as exc:
+            logger.warning("Active account restore failed: %s", exc)
+    else:
+        logger.info("The browser part is off (BROWSER_ENABLED=false): no browsers are started")
+        interrupted = []  # browser projects do not continue by themselves
 
     logger.info("AI Dev Department API started (env=%s, service=%s)", settings.ENVIRONMENT, settings.SERVICE_DISPLAY_NAME)
     try:
