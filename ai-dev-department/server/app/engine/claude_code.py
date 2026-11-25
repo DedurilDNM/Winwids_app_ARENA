@@ -335,6 +335,8 @@ async def run_turn(st: RunState, lead_role: str, lead: AgentSpec, prompt: str, *
     argv += ["--resume", session] if resume else ["--session-id", session]
     if lead.effort in EFFORTS:
         argv += ["--effort", lead.effort]
+    if int(s.ENGINE_AUTOCOMPACT_TOKENS or 0) >= 100000:  # the CLI takes 100k at least
+        argv += ["--autocompact", str(int(s.ENGINE_AUTOCOMPACT_TOKENS))]
     if lead.provider != "anthropic":
         # web search is a server tool run by Anthropic's own API: an aggregator cannot run it, so every
         # call would fail; pages are read with WebFetch (it runs here)

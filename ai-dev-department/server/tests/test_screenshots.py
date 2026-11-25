@@ -54,13 +54,13 @@ def test_the_agent_takes_screenshots_and_sees_them(tmp_path, fake_browser):
     result = asyncio.run(run_agent(spec, ctx, "Check the page", script))
     assert result.stopped == "done"
     shot = script.results(1)[0]["content"]
-    assert shot[0]["type"] == "text" and "desktop: screenshots/prototype-desktop.png (1440x900)" in shot[0]["text"]
+    assert shot[0]["type"] == "text" and "desktop: screenshots/prototype-desktop.png (1280x800)" in shot[0]["text"]
     assert [b["type"] for b in shot] == ["text", "image", "image"]
-    assert shot[1]["source"]["media_type"] == "image/png" and len(shot[1]["source"]["data"]) > 100
+    assert shot[1]["source"]["media_type"] == "image/jpeg" and len(shot[1]["source"]["data"]) > 100  # scaled down
     assert [(w, h) for _, w, h in fake_browser] == [(1440, 900), (390, 844)]
     assert fake_browser[0][0].endswith("/prototype/index.html")
     read = script.results(2)[0]["content"]
-    assert read[1]["type"] == "image" and "780x1688" in read[0]["text"]
+    assert read[1]["type"] == "image" and "591x1280" in read[0]["text"]
     # the chat shows a plain line, never the image data
     done = [e for e in events if e["type"] == "tool_done"]
     assert all("base64" not in str(e) and len(str(e)) < 3000 for e in done)

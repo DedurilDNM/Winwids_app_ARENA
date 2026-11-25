@@ -272,6 +272,9 @@ class Settings(BaseSettings):
     ENGINE_CALLBACK_URL: str = "http://127.0.0.1:8000"  # how Claude Code reaches this server (the model proxy)
     ENGINE_MAX_MINUTES: int = 120  # one turn at most
     ENGINE_DISABLE_BETAS: bool = False  # for aggregators that reject Anthropic beta headers
+    # Claude Code compacts the conversation past this many tokens. A model name it does not know
+    # (an aggregator's) makes it assume a 1M window and resend up to ~900k tokens with every step.
+    ENGINE_AUTOCOMPACT_TOKENS: int = 160000
     ADAPTER_COPY_READER: bool = True
     ADAPTER_COPY_SELECTOR: str = ""
     # How often the «pulse» of a waiting agent is sent to the app (seconds).

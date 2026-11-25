@@ -25,7 +25,7 @@ from urllib.parse import quote, urlsplit
 logger = logging.getLogger(__name__)
 
 VIEWPORTS = {"desktop": (1440, 900, 1), "phone": (390, 844, 2)}
-MAX_SIDE = 1800  # longer sides are scaled down: enough to read, light for the context
+MAX_SIDE = 1280  # longer sides are scaled down: enough to read, ~1.3k tokens a picture
 ENGINE = None  # tests: async (url, width, height, scale, full_page, out_path) -> None
 _LOCK: dict[int, asyncio.Semaphore] = {}
 
@@ -56,7 +56,7 @@ def image_block(path: Path) -> tuple[str, str, tuple[int, int]]:
 
         with Image.open(io.BytesIO(data)) as im:
             size = im.size
-            if max(im.size) > MAX_SIDE or len(data) > 1_500_000:
+            if max(im.size) > MAX_SIDE or len(data) > 1_000_000:
                 im = im.convert("RGB")
                 im.thumbnail((MAX_SIDE, MAX_SIDE))
                 out = io.BytesIO()

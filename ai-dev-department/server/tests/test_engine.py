@@ -288,6 +288,7 @@ def test_a_turn_passes_effort_and_turns_off_web_search_for_aggregators(tmp_path,
     argv, env = seen["argv"], seen["env"]
     assert text == "ok"
     assert argv[argv.index("--effort") + 1] == "max"
+    assert argv[argv.index("--autocompact") + 1] == "160000"  # not ~900k for a model name it does not know
     assert argv[argv.index("--disallowedTools") + 1] == "WebSearch"
     assert argv[argv.index("--fallback-model") + 1] == "cc/claude-sonnet"
     assert json.loads(argv[argv.index("--agents") + 1])["coder"]["model"] == "coder-m"
