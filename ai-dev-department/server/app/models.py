@@ -30,6 +30,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    engine: Mapped[str | None] = mapped_column(String(16), nullable=True)  # auto | claude_code | native
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -308,5 +309,6 @@ class Chat(Base):
     base_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     branch: Mapped[str | None] = mapped_column(String(255), nullable=True)  # the work branch
     pr_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    engine_session: Mapped[str | None] = mapped_column(String(64), nullable=True)  # Claude Code session to resume
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -57,6 +57,37 @@ class RoleIn(BaseModel):
     enabled: bool = True
 
 
+class EngineIn(BaseModel):
+    engine: str = Field(pattern="^(auto|claude_code|native)$")
+
+
+async def _engine_out(db: AsyncSession, user: User) -> dict:
+    from app.engine import claude_code
+
+    st = await claude_code.status()
+    specs = await role_specs(db, user.id)
+    lead = specs.get("Orchestrator")
+    return {"engine": user.engine or "auto", "default": (department._s("ENGINE", "auto") or "auto"),
+            "installed": st["installed"], "version": st.get("version"),
+            "lead_ok": bool(lead and claude_code.anthropic_capable(lead)),
+            "active": "claude_code" if await claude_code.should_use(user.engine, lead) else "native"}
+
+
+@router.get("/api/engine")
+async def get_engine(user: Annotated[User, Depends(get_current_user)],
+                     db: Annotated[AsyncSession, Depends(get_db)]) -> dict:
+    """Which engine runs the chats: Claude Code (when installed) or the built-in agents."""
+    return await _engine_out(db, user)
+
+
+@router.put("/api/engine")
+async def set_engine(body: EngineIn, user: Annotated[User, Depends(get_current_user)],
+                     db: Annotated[AsyncSession, Depends(get_db)]) -> dict:
+    user.engine = None if body.engine == "auto" else body.engine
+    await db.commit()
+    return await _engine_out(db, user)
+
+
 @router.get("/api/agent-roles")
 async def list_roles(user: Annotated[User, Depends(get_current_user)],
                      db: Annotated[AsyncSession, Depends(get_db)]) -> list[dict]:

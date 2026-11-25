@@ -8,7 +8,7 @@ import { modelMenu } from "../models.js";
 import { confirmDialog, errorText, h, markdown, toast } from "../ui.js";
 
 const ROLE_RU = { Orchestrator: "Оркестратор", Architect: "Архитектор", Coder: "Кодер", Reviewer: "Ревьюер",
-  Tester: "Тестер", Integrator: "Интегратор" };
+  Tester: "Тестер", Integrator: "Интегратор", "general-purpose": "Помощник", Explore: "Разведка", Plan: "Планировщик" };
 const MODES = [["department", "Отдел"], ["single", "Один агент"], ["plan", "План"]];
 const SUGGESTIONS = [
   ["PWA-приложение", "Pomodoro-таймер с историей, тёмной темой и тестами"],
@@ -147,7 +147,7 @@ class Turn {
       const block = this.put(h("div", { class: "c-agent open", "data-testid": "agent" }, head, steps));
       this.agents[e.agent_id] = { el: block, steps, status, count: 0 };
     } else if (e.type === "tool") {
-      if (d.tool === "Task" || d.tool === "TodoWrite") return; // shown as agent blocks / the plan card
+      if (d.tool === "Task" || d.tool === "Agent" || d.tool === "TodoWrite") return; // shown as agent blocks / the plan card
       const box = this.stepsFor(e.agent_id);
       const right = h("span", { class: "r" });
       const mark = h("span", { class: "s" }, "●");

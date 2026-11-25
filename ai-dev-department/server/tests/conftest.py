@@ -28,6 +28,7 @@ os.environ["NOVNC_PUBLIC_BASE_URL"] = "http://127.0.0.1:6080"
 os.environ["GITHUB_TOKEN"] = ""  # never use a real token from the developer environment
 os.environ["AUTO_RESUME_INTERRUPTED"] = "false"  # tests decide themselves (see test_projects)
 os.environ["ADAPTER_MIN_NAV_INTERVAL_SECONDS"] = "0"  # no pacing between page loads in tests (own tests below)
+os.environ["ENGINE"] = "native"  # the built-in agents unless a test picks Claude Code (test_engine)
 
 os.environ["TEST_DB_PATH"] = str(_TMP / "test.db")
 

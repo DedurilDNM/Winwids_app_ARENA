@@ -242,7 +242,19 @@ export async function rolesView(body) {
   const grid = h("div", { class: "grid roles-grid" });
   const autoBox = h("div", { class: "card", hidden: true, "data-testid": "auto-result" });
   const autoBtn = h("button", { class: "primary", "data-testid": "auto-roles", onclick: () => runAuto() }, "Подобрать модели автоматически");
-  body.append(h("p", { class: "muted" }, "Автоподбор смотрит все модели агрегаторов, на которые есть ключи, оценивает силу (цена ответа, размер, класс модели), проверяет, что модель отвечает и умеет вызывать инструменты, и ставит самую сильную ведущей, остальные роли — по убыванию. Роли, выбранные вами, автоподбор не трогает; «Сбросить» вернёт роль автоподбору."),
+  const engineBox = h("div", { class: "card engine-card", "data-testid": "engine" });
+  async function paintEngine(e) {
+    const seg = h("div", { class: "seg" }, [["auto", "Авто"], ["claude_code", "Claude Code"], ["native", "Встроенный"]].map(([id, label]) =>
+      h("button", { class: e.engine === id ? "on" : "", onclick: async () => { try { paintEngine(await api.setEngine(id)); } catch (err) { toast(errorText(err), { error: true }); } } }, label)));
+    const now = e.active === "claude_code" ? `Сейчас работает: Claude Code ${e.version || ""}` : "Сейчас работают встроенные агенты";
+    const why = !e.installed ? "Claude Code не установлен на сервере (см. инструкцию в документации)."
+      : !e.lead_ok ? "Модель ведущей роли не у Anthropic-совместимого агрегатора: в «Авто» работают встроенные агенты." : "";
+    engineBox.replaceChildren(h("div", { class: "card-head" }, h("div", { class: "card-title" }, "Движок"), seg),
+      h("p", { class: "small" }, now), why ? h("p", { class: "muted small" }, why) : null,
+      h("p", { class: "muted small" }, "Claude Code — те же инструкции, инструменты, суб-агенты и скиллы, что у Claude. Ключи берутся из котла, модели — из ролей ниже."));
+  }
+  try { await paintEngine(await api.getEngine()); } catch { engineBox.hidden = true; }
+  body.append(engineBox, h("p", { class: "muted" }, "Автоподбор смотрит все модели агрегаторов, на которые есть ключи, оценивает силу (цена ответа, размер, класс модели), проверяет, что модель отвечает и умеет вызывать инструменты, и ставит самую сильную ведущей, остальные роли — по убыванию. Роли, выбранные вами, автоподбор не трогает; «Сбросить» вернёт роль автоподбору."),
     h("div", { class: "actions" }, autoBtn), autoBox, grid);
   async function runAuto() {
     autoBtn.disabled = true;
@@ -359,8 +371,20 @@ export async function skillsView(body) {
           } catch (e) { err.textContent = errorText(e); }
         } }, "Добавить")));
   }) }, "По ссылке GitHub");
+  const official = h("button", { "data-testid": "skill-official", onclick: async () => {
+    official.disabled = true;
+    official.textContent = "Скачиваю…";
+    try {
+      const res = await api.importSkill("https://github.com/anthropics/skills");
+      toast(`Официальные скиллы Anthropic: ${(res.installed || []).length}`);
+      load();
+    } catch (e) { toast(errorText(e), { error: true }); }
+    official.disabled = false;
+    official.textContent = "Официальные скиллы Anthropic";
+  } }, "Официальные скиллы Anthropic");
   body.append(h("p", { class: "muted" }, "Как в Claude Code: агент видит имя и описание скилла и сам открывает инструкции, когда задача подходит."),
-    h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => file.click() }, icon("plus"), "Загрузить .zip или SKILL.md"), paste, fromGit, file), list);
+    h("div", { class: "actions" }, h("button", { class: "primary", onclick: () => file.click() }, icon("plus"), "Загрузить .zip или SKILL.md"), paste, fromGit, official, file),
+    h("p", { class: "muted small" }, "Официальные — набор Anthropic (github.com/anthropics/skills): документы Word/Excel/PowerPoint/PDF, frontend-design, canvas-design, webapp-testing и другие. Лицензия у части скиллов (документы) — source-available от Anthropic: проверьте условия в репозитории."), list);
   async function load() {
     const skills = await api.listSkills();
     list.replaceChildren(...skills.map((s) => h("div", { class: "card", "data-testid": "skill" },

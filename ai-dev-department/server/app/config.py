@@ -265,6 +265,13 @@ class Settings(BaseSettings):
     AGENT_FALLBACK_AFTER_SECONDS: float = 60
     AGENT_BASH_SANDBOX: str = "auto"  # auto (bwrap when installed) | bwrap (required) | off
     AGENT_SCREENSHOT_CHROMIUM: str = ""  # a Chromium binary for agent screenshots; empty = Playwright's, else Camoufox
+    # Claude Code as the engine of the chats (app/engine): auto = when installed and the lead's
+    # aggregator speaks the Anthropic API; claude_code = always; native = the built-in agents
+    ENGINE: str = "auto"
+    ENGINE_CLAUDE_BIN: str = ""  # empty: `claude` on PATH or ~/.local/bin/claude
+    ENGINE_CALLBACK_URL: str = "http://127.0.0.1:8000"  # how Claude Code reaches this server (the model proxy)
+    ENGINE_MAX_MINUTES: int = 120  # one turn at most
+    ENGINE_DISABLE_BETAS: bool = False  # for aggregators that reject Anthropic beta headers
     ADAPTER_COPY_READER: bool = True
     ADAPTER_COPY_SELECTOR: str = ""
     # How often the «pulse» of a waiting agent is sent to the app (seconds).

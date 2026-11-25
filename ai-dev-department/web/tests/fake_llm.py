@@ -67,6 +67,62 @@ def reply(role: str, turn: int, messages: list) -> dict:
     return {"content": "ok"}
 
 
+# ------------------------------------------------------------------ Anthropic format (the Claude Code engine)
+ANTHROPIC_LOG: list[dict] = []
+PAGE = ("<!doctype html><html lang=ru><head><meta charset=utf-8><title>Вход</title><style>body{background:#111;"
+        "color:#eee;font:16px sans-serif;display:grid;place-items:center;height:100vh;margin:0}</style></head>"
+        "<body><form><h1>Вход</h1><input id=email placeholder=E-mail><button id=go type=button "
+        "onclick=\"this.textContent='Вошли'\">Войти</button></form></body></html>")
+
+
+def _text_of(messages) -> str:
+    return json.dumps(messages, ensure_ascii=False)
+
+
+def anthropic_reply(body: dict) -> list[dict]:
+    """Plays Claude in Claude Code: plan, give the page to the coder, look at it, send it; a follow-up
+    turn (resumed session) edits the page."""
+    msgs = body.get("messages") or []
+    tools = [t.get("name") for t in body.get("tools") or []]
+    text = _text_of(msgs)
+    if not tools:  # side requests (titles, summaries)
+        return [{"type": "text", "text": "ok"}]
+    asst = [m for m in msgs if m.get("role") == "assistant"]
+    tid = lambda: f"toolu_{time.time_ns()}"  # noqa: E731
+    if "SUBTASK" in _text_of(msgs[:1]):  # the coder sub-agent
+        if not asst:
+            return [{"type": "text", "text": "Пишу страницу."},
+                    {"type": "tool_use", "id": tid(), "name": "Write",
+                     "input": {"file_path": "prototype/index.html", "content": PAGE}}]
+        return [{"type": "text", "text": "Файл готов: prototype/index.html."}]
+    last_user = next((m for m in reversed(msgs) if m.get("role") == "user"
+                      and isinstance(m.get("content"), str) or (isinstance(m.get("content"), list)
+                      and any(b.get("type") == "text" for b in m["content"]))), {})
+    if "темнее" in _text_of([last_user]) and "Сделал темнее" not in text:
+        remembers = "Готово: прототип" in text
+        if '"Edit"' not in _text_of(msgs[-3:]) and "has been updated" not in _text_of(msgs[-2:]):
+            return [{"type": "tool_use", "id": tid(), "name": "Edit", "input": {
+                "file_path": "prototype/index.html", "old_string": "background:#111", "new_string": "background:#000"}}]
+        return [{"type": "text", "text": "Сделал темнее." + (" (помню прошлый ход)" if remembers else " (НЕ помню)")}]
+    if "Файл готов" not in text:
+        if not asst:
+            return [{"type": "text", "text": "Беру задачу: план и кодер."},
+                    {"type": "tool_use", "id": tid(), "name": "TodoWrite", "input": {"todos": [
+                        {"content": "Сверстать экран входа", "status": "in_progress", "activeForm": "Верстаю"},
+                        {"content": "Посмотреть скриншоты", "status": "pending", "activeForm": "Смотрю"}]}},
+                    {"type": "tool_use", "id": tid(), "name": "Agent", "input": {
+                        "subagent_type": "coder", "description": "вёрстка", "prompt": "SUBTASK: сверстай prototype/index.html"}}]
+        return [{"type": "text", "text": "Жду кодера."}]
+    if "Screenshots (attached" not in text:
+        return [{"type": "tool_use", "id": tid(), "name": "mcp__aidd__Screenshot",
+                 "input": {"path": "prototype/index.html", "viewport": "desktop"}}]
+    if "Shown to the user" not in text:
+        saw = '"type": "image"' in text
+        return [{"type": "tool_use", "id": tid(), "name": "mcp__aidd__SendFile",
+                 "input": {"path": "prototype/index.html", "caption": "Экран входа" if saw else "БЕЗ КАРТИНКИ"}}]
+    return [{"type": "text", "text": "Готово: прототип в prototype/index.html, проверил по скриншоту."}]
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -85,14 +141,61 @@ class Handler(BaseHTTPRequestHandler):
         return (self.headers.get("Authorization") or "").split(" ")[-1]
 
     def do_GET(self):
-        if not self._key():
+        if not self._key() and not self.path.startswith("/anthropic-log"):
             return self._send(401, {"error": {"message": "no key"}})
+        if self.path.startswith("/anthropic-log"):
+            return self._send(200, {"requests": ANTHROPIC_LOG})
         if self.path.endswith("/models"):
             return self._send(200, {"data": [{"id": "fake-model"}, {"id": "fake-model-mini"}]})
         self._send(404, {"error": {"message": "not found"}})
 
+    def _anthropic(self, body: dict):
+        key = self.headers.get("x-api-key") or self._key()
+        ANTHROPIC_LOG.append({"model": body.get("model"), "key": key[-4:]})
+        if not key:
+            return self._send(401, {"type": "error", "error": {"type": "authentication_error", "message": "no key"}})
+        if key.startswith("sk-limited"):
+            return self._send(429, {"type": "error", "error": {"type": "rate_limit_error", "message": "limited"}},
+                              {"Retry-After": "120"})
+        if self.path.startswith("/v1/messages/count_tokens"):
+            return self._send(200, {"input_tokens": 100})
+        content = anthropic_reply(body)
+        stop = "tool_use" if any(c["type"] == "tool_use" for c in content) else "end_turn"
+        msg = {"id": f"msg_{time.time_ns()}", "type": "message", "role": "assistant", "model": body.get("model"),
+               "content": content, "stop_reason": stop, "stop_sequence": None,
+               "usage": {"input_tokens": 200, "output_tokens": 40}}
+        if not body.get("stream"):
+            return self._send(200, msg)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def ev(kind, data):
+            self.wfile.write(f"event: {kind}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode())
+            self.wfile.flush()
+
+        ev("message_start", {"type": "message_start", "message": {**msg, "content": [], "stop_reason": None,
+                                                                    "usage": {"input_tokens": 200, "output_tokens": 1}}})
+        for i, c in enumerate(content):
+            if c["type"] == "text":
+                ev("content_block_start", {"type": "content_block_start", "index": i, "content_block": {"type": "text", "text": ""}})
+                ev("content_block_delta", {"type": "content_block_delta", "index": i, "delta": {"type": "text_delta", "text": c["text"]}})
+            else:
+                ev("content_block_start", {"type": "content_block_start", "index": i, "content_block": {
+                    "type": "tool_use", "id": c["id"], "name": c["name"], "input": {}}})
+                ev("content_block_delta", {"type": "content_block_delta", "index": i, "delta": {
+                    "type": "input_json_delta", "partial_json": json.dumps(c["input"], ensure_ascii=False)}})
+            ev("content_block_stop", {"type": "content_block_stop", "index": i})
+        ev("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
+                             "usage": {"output_tokens": 40}})
+        ev("message_stop", {"type": "message_stop"})
+        self.close_connection = True
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        if self.path.startswith("/v1/messages"):
+            return self._anthropic(body)
         key = self._key()
         if key.startswith("sk-limited"):
             return self._send(429, {"error": {"message": "rate limited"}}, {"Retry-After": "120"})

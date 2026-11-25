@@ -25,7 +25,7 @@ export DATABASE_URL="sqlite+aiosqlite:///$S/app.db" VNC_HEADLESS=false REDIS_URL
   CI_POLL_SECONDS=1 CI_START_TIMEOUT_SECONDS=20 ADMIN_PASSWORD=adminpass123 PROXY_URL= \
   SERVICE_URL="${E2E_SERVICE_URL:-http://127.0.0.1:9100/}" \
   NOVNC_PUBLIC_BASE_URL=http://127.0.0.1:6080 NOVNC_WEB_ROOT=/usr/share/novnc \
-  GITHUB_GIT_URL="file://$S/remotes" \
+  GITHUB_GIT_URL="file://$S/remotes" ENGINE="${ENGINE:-native}" \
   E2E_CHROMIUM="${E2E_CHROMIUM:-/opt/pw-browsers/chromium-1243/chrome-linux64/chrome}" E2E_FAKE_GITHUB=1 \
   AGENT_SCREENSHOT_CHROMIUM="${E2E_CHROMIUM:-/opt/pw-browsers/chromium-1243/chrome-linux64/chrome}"
 nohup "$PY" "$HERE/e2e_server.py" >> "$S/srv.log" 2>&1 &

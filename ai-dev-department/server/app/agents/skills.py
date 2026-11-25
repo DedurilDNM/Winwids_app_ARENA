@@ -124,9 +124,9 @@ def install_text(user_id: int, text: str) -> Skill:
     return Skill(meta["name"], meta["description"], target, "user")
 
 
-def install_zip(user_id: int, data: bytes) -> Skill:
-    if len(data) > MAX_ZIP:
-        raise SkillError("the archive is larger than 5 MB")
+def install_zip(user_id: int, data: bytes, max_size: int = MAX_ZIP) -> Skill:
+    if len(data) > max_size:
+        raise SkillError(f"the archive is larger than {max_size // 1024 // 1024} MB")
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
@@ -138,8 +138,8 @@ def install_zip(user_id: int, data: bytes) -> Skill:
     root = min(md, key=lambda n: n.count("/")).rsplit("SKILL.md", 1)[0]  # the folder that holds SKILL.md
     meta, _ = parse_skill_md(zf.read(root + "SKILL.md").decode("utf-8"))
     total = sum(zf.getinfo(n).file_size for n in names)
-    if total > 4 * MAX_ZIP:
-        raise SkillError("the archive unpacks to more than 20 MB")
+    if total > 4 * max_size:
+        raise SkillError(f"the archive unpacks to more than {4 * max_size // 1024 // 1024} MB")
     target = user_dir(user_id) / meta["name"]
     tmp = target.with_name(target.name + ".new")
     shutil.rmtree(tmp, ignore_errors=True)
@@ -170,7 +170,7 @@ def remove(user_id: int, name: str) -> bool:
 
 
 HTTP_TRANSPORT = None  # tests: an httpx transport that serves fake GitHub downloads
-MAX_IMPORT = 20
+MAX_IMPORT = 60
 _URL = re.compile(r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?(?:/(tree|blob)/([^/]+)(?:/(.*))?)?/?$")
 _RAW = re.compile(r"^https?://raw\.githubusercontent\.com/([\w.-]+)/([\w.-]+)/([^/]+)/(.*)$")
 
@@ -219,8 +219,8 @@ async def import_from_url(user_id: int, url: str, token: str | None = None) -> l
                 break
     if data is None:
         raise SkillError(f"GitHub did not give {owner}/{repo} (is the link right?)")
-    if len(data) > 8 * MAX_ZIP:
-        raise SkillError("The repository archive is larger than 40 MB")
+    if len(data) > 20 * MAX_ZIP:
+        raise SkillError("The repository archive is larger than 100 MB")
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
@@ -240,7 +240,7 @@ async def import_from_url(user_id: int, url: str, token: str | None = None) -> l
                 if n.startswith(d) and not n.endswith("/"):
                     small.writestr(n[len(d):], zf.read(n))
         try:
-            skill = install_zip(user_id, out.getvalue())
+            skill = install_zip(user_id, out.getvalue(), max_size=8 * MAX_ZIP)  # bigger skills from a repository
         except SkillError:
             continue  # a broken SKILL.md among many: skip it
         if skill.name not in seen:

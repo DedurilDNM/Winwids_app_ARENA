@@ -233,6 +233,8 @@ export const api = {
   checkKey: (id) => request("POST", `/api/keys/${id}/check`),
   allModels: () => request("GET", "/api/keys/models/all"),
   providerModels: (provider) => request("GET", `/api/keys/models?provider=${encodeURIComponent(provider)}`),
+  getEngine: () => request("GET", "/api/engine"),
+  setEngine: (engine) => request("PUT", "/api/engine", { engine }),
   listRoles: () => request("GET", "/api/agent-roles"),
   saveRole: (role, data) => request("PUT", `/api/agent-roles/${encodeURIComponent(role)}`, data),
   resetRole: (role) => request("DELETE", `/api/agent-roles/${encodeURIComponent(role)}`),

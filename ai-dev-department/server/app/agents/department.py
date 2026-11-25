@@ -305,8 +305,14 @@ async def execute(run_id: int) -> None:
         role, spec = _lead_spec(st.specs, lead, mode, model)
         if spec is None:
             raise LLMError("request", "No working model found: add a key to the pool, or set the role by hand")
-        text = await _run_node(st, role, prompt, "lead", None, 0 if mode == "department" else 99, spec=spec,
-                               history=history)
+        from app.engine import claude_code
+
+        if await claude_code.should_use(await _user_engine(user_id), spec):
+            chat = await _get_chat(chat_id) if chat_id else None
+            text = await claude_code.run_turn(st, role, spec, prompt, mode=mode, chat=chat, history=history)
+        else:
+            text = await _run_node(st, role, prompt, "lead", None, 0 if mode == "department" else 99, spec=spec,
+                                   history=history)
         await _finish(run_id, status="done", result=text, **st.counters)
     except asyncio.CancelledError:
         await _finish(run_id, status="stopped", **st.counters)
@@ -328,6 +334,23 @@ async def execute(run_id: int) -> None:
             await _touch_chat(chat_id)
         _STOP.discard(run_id)
         _RUN_TASKS.pop(run_id, None)
+
+
+async def _user_engine(user_id: int) -> str | None:
+    from app.db import SessionLocal
+    from app.models import User
+
+    async with SessionLocal() as db:
+        user = await db.get(User, user_id)
+        return user.engine if user else None
+
+
+async def _get_chat(chat_id: int):
+    from app.db import SessionLocal
+    from app.models import Chat
+
+    async with SessionLocal() as db:
+        return await db.get(Chat, chat_id)
 
 
 async def _prepare_repo(chat_id: int, user_id: int, ws: Path, st: RunState) -> None:
