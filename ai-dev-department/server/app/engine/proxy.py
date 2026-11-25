@@ -110,7 +110,13 @@ def _usage_from_sse(chunk: bytes, tokens: list[int], tail: bytearray) -> None:
             if len(tokens) > 2:  # how much of the input came from the provider's cache
                 tokens[2] += int(usage.get("cache_read_input_tokens") or 0)
         elif data.get("type") == "message_delta":
-            tokens[1] = int((data.get("usage") or {}).get("output_tokens") or 0)  # running total of the message
+            usage = data.get("usage") or {}
+            tokens[1] = int(usage.get("output_tokens") or 0)  # running total of the message
+            if not tokens[0] and usage.get("input_tokens"):  # some aggregators report the input only here
+                tokens[0] = int(usage.get("input_tokens") or 0) + int(usage.get("cache_read_input_tokens") or 0) \
+                    + int(usage.get("cache_creation_input_tokens") or 0)
+                if len(tokens) > 2:
+                    tokens[2] = int(usage.get("cache_read_input_tokens") or 0)
 
 
 @router.get("/{token}/v1/models")
