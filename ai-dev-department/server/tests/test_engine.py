@@ -215,7 +215,7 @@ def test_which_engine_runs(monkeypatch):
     monkeypatch.setattr(get_settings(), "ENGINE", "auto")
     run = lambda *a: asyncio.run(claude_code.should_use(*a))  # noqa: E731
     assert run(None, custom) and not run(None, groq)  # auto: only an Anthropic-format aggregator
-    assert run("claude_code", groq) and not run("native", custom)
+    assert run("claude_code", custom) and not run("claude_code", groq) and not run("native", custom)
 
     async def missing(refresh=False):
         return {"installed": False}

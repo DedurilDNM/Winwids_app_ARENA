@@ -117,7 +117,9 @@ async def should_use(user_engine: str | None, lead: AgentSpec | None) -> bool:
         return False
     if not (await status())["installed"]:
         return False
-    return choice == "claude_code" or anthropic_capable(lead)
+    # «Claude Code» = whenever it can run: a lead model of an aggregator without the Anthropic API
+    # (Groq, Gemini, Mistral …) goes to the built-in agents instead of failing the turn
+    return anthropic_capable(lead)
 
 
 # ------------------------------------------------------------------ one turn
