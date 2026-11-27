@@ -107,8 +107,9 @@ async def status(refresh: bool = False) -> dict:
 
 
 def anthropic_capable(spec: AgentSpec) -> bool:
-    """Can this role's model be reached through the proxy (an Anthropic-format API)?"""
-    return spec.provider in proxy.ANTHROPIC_BASES or spec.provider == "custom"
+    """Can Claude Code run on this role's model? Every provider of the catalogue: the proxy speaks
+    the Anthropic API to those that have it and translates to the OpenAI protocol for the rest."""
+    return spec.provider in PROVIDERS
 
 
 async def should_use(user_engine: str | None, lead: AgentSpec | None) -> bool:

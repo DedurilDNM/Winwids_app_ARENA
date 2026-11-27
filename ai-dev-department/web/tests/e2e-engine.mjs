@@ -15,6 +15,8 @@ const SHOTS = process.env.SHOTS || "";
 const browser = await chromium.launch();
 const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: SHOTS ? 2 : 1 })).newPage();
 const errors = [];
+const logUrl = LLM.replace(/\/v1$/, "") + "/anthropic-log";
+const firstCall = (await (await fetch(logUrl)).json()).requests.length;  // the fake may have served other tests
 page.on("pageerror", (e) => errors.push(e.message));
 await page.goto(`${BASE}/app/`);
 await page.fill("input[name=email]", "admin@local");
@@ -55,7 +57,7 @@ assert.equal(await frame.locator("#go").innerText(), "Вошли");  // the live
 if (SHOTS) await page.screenshot({ path: `${SHOTS}/engine-chat.png` });
 
 // a follow-up resumes the same Claude Code session (it remembers the first turn); thinking: max
-const before = (await (await fetch(LLM.replace(/\/v1$/, "") + "/anthropic-log")).json()).requests.length;
+const before = (await (await fetch(logUrl)).json()).requests.length - firstCall;
 await page.click("[data-testid=model-btn]");
 await page.click("[data-testid=effort-seg] [data-effort=max]");
 assert.match(await page.locator("[data-testid=model-btn]").innerText(), /Авто\s*·\s*max/);
@@ -69,7 +71,8 @@ assert.match(await page.locator("[data-testid=thread]").innerText(), /помню
 // the calls went through the key pool: the key has requests and tokens
 await page.click("[data-testid=settings]");
 await page.waitForSelector("[data-testid=key]");
-const log = await (await fetch(LLM.replace(/\/v1$/, "") + "/anthropic-log")).json();
+const log = await (await fetch(logUrl)).json();
+log.requests = log.requests.slice(firstCall);
 assert.ok(log.requests.length >= 6 && log.requests.every((r) => r.key === "3333"), "every model call used the pool's key");
 assert.ok(log.requests.every((r) => !r.tools.includes("WebSearch")), "no web search tool through an aggregator");
 const second = log.requests.slice(before).filter((r) => r.model === "fake-model" && r.tools.length);

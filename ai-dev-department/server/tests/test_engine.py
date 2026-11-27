@@ -214,8 +214,8 @@ def test_which_engine_runs(monkeypatch):
     groq = AgentSpec(role="Orchestrator", provider="groq", model="m")
     monkeypatch.setattr(get_settings(), "ENGINE", "auto")
     run = lambda *a: asyncio.run(claude_code.should_use(*a))  # noqa: E731
-    assert run(None, custom) and not run(None, groq)  # auto: only an Anthropic-format aggregator
-    assert run("claude_code", custom) and not run("claude_code", groq) and not run("native", custom)
+    assert run(None, custom) and run(None, groq)  # any aggregator: the proxy translates for OpenAI-protocol ones
+    assert run("claude_code", groq) and not run("native", custom) and not run("native", groq)
 
     async def missing(refresh=False):
         return {"installed": False}

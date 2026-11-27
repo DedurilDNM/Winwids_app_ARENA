@@ -248,10 +248,10 @@ export async function rolesView(body) {
       h("button", { class: e.engine === id ? "on" : "", onclick: async () => { try { paintEngine(await api.setEngine(id)); } catch (err) { toast(errorText(err), { error: true }); } } }, label)));
     const now = e.active === "claude_code" ? `Сейчас работает: Claude Code ${e.version || ""}` : "Сейчас работают встроенные агенты";
     const why = !e.installed ? "Claude Code не установлен на сервере (см. инструкцию в документации)."
-      : !e.lead_ok ? "Модель ведущей роли не у Anthropic-совместимого агрегатора: в «Авто» работают встроенные агенты." : "";
+      : "";
     engineBox.replaceChildren(h("div", { class: "card-head" }, h("div", { class: "card-title" }, "Движок"), seg),
       h("p", { class: "small" }, now), why ? h("p", { class: "muted small" }, why) : null,
-      h("p", { class: "muted small" }, "Claude Code — те же инструкции, инструменты, суб-агенты и скиллы, что у Claude. Ключи берутся из котла, модели — из ролей ниже."));
+      h("p", { class: "muted small" }, "Claude Code — те же инструкции, инструменты, суб-агенты и скиллы, что у Claude. Ключи берутся из котла, модели — из ролей ниже; с любым агрегатором (для OpenAI-совместимых прокси переводит формат). Лучше всего — с моделями Claude."));
   }
   try { await paintEngine(await api.getEngine()); } catch { engineBox.hidden = true; }
   body.append(engineBox, h("p", { class: "muted" }, "Автоподбор смотрит все модели агрегаторов, на которые есть ключи, оценивает силу (цена ответа, размер, класс модели), проверяет, что модель отвечает и умеет вызывать инструменты, и ставит самую сильную ведущей, остальные роли — по убыванию. Роли, выбранные вами, автоподбор не трогает; «Сбросить» вернёт роль автоподбору."),

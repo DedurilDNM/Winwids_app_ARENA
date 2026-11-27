@@ -184,7 +184,15 @@ GitHub (ветка, PR), вложения, живые прототипы.
 curl -fsSL https://claude.ai/install.sh | bash
 sudo systemctl restart aidd
 ```
-Агрегатор должен поддерживать Anthropic-формат: `curl https://<агрегатор>/v1/messages -H "x-api-key: …"
+**Любой агрегатор.** С теми, у кого есть Anthropic-формат (Anthropic, DeepSeek, многие «свои»), прокси
+говорит напрямую. С остальными (Groq, Gemini, Mistral, OpenRouter, Together, Cerebras, OpenAI …) —
+переводит на лету (`server/app/engine/translate.py`): запрос Claude Code → chat completions, поток
+ответа (текст, вызовы инструментов) → события Anthropic. «Свой» агрегатор без `/v1/messages` (404)
+замечается сам и дальше идёт через перевод. Теряется то, чего в OpenAI-протоколе нет: размышления
+(thinking/effort), кэш Anthropic, серверный веб-поиск. Слабые модели с большим системным промптом
+Claude Code (десятки тысяч токенов) работают хуже и быстро упираются в лимиты бесплатных тарифов.
+
+Проверка Anthropic-формата у агрегатора: `curl https://<агрегатор>/v1/messages -H "x-api-key: …"
 -H "anthropic-version: 2023-06-01" …` отвечает `"type":"message"`. В приложении ключ добавляется как
 «Свой (OpenAI-совместимый)» с адресом `https://<агрегатор>/v1`.
 

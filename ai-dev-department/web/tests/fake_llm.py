@@ -69,6 +69,7 @@ def reply(role: str, turn: int, messages: list) -> dict:
 
 # ------------------------------------------------------------------ Anthropic format (the Claude Code engine)
 ANTHROPIC_LOG: list[dict] = []
+OPENAI_LOG: list[dict] = []  # Claude Code requests that came translated to the OpenAI protocol
 PAGE = ("<!doctype html><html lang=ru><head><meta charset=utf-8><title>Вход</title><style>body{background:#111;"
         "color:#eee;font:16px sans-serif;display:grid;place-items:center;height:100vh;margin:0}</style></head>"
         "<body><form><h1>Вход</h1><input id=email placeholder=E-mail><button id=go type=button "
@@ -144,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._key() and not self.path.startswith("/anthropic-log"):
             return self._send(401, {"error": {"message": "no key"}})
         if self.path.startswith("/anthropic-log"):
-            return self._send(200, {"requests": ANTHROPIC_LOG})
+            return self._send(200, {"requests": ANTHROPIC_LOG, "openai": OPENAI_LOG})
         if self.path.endswith("/models"):
             return self._send(200, {"data": [{"id": "fake-model"}, {"id": "fake-model-mini"}]})
         self._send(404, {"error": {"message": "not found"}})
@@ -158,6 +159,8 @@ class Handler(BaseHTTPRequestHandler):
         if key.startswith("sk-limited"):
             return self._send(429, {"type": "error", "error": {"type": "rate_limit_error", "message": "limited"}},
                               {"Retry-After": "120"})
+        if key.startswith("sk-oai"):  # an aggregator that speaks only the OpenAI protocol
+            return self._send(404, {"error": {"message": "not found"}})
         if self.path.startswith("/v1/messages/count_tokens"):
             return self._send(200, {"input_tokens": 100})
         content = anthropic_reply(body)
@@ -193,6 +196,36 @@ class Handler(BaseHTTPRequestHandler):
         ev("message_stop", {"type": "message_stop"})
         self.close_connection = True
 
+    def _stream_openai(self, body, msg):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def chunk(delta, finish=None, usage=None):
+            data = {"id": "c1", "model": body.get("model"), "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            if usage:
+                data = {"id": "c1", "model": body.get("model"), "choices": [], "usage": usage}
+            self.wfile.write(f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode())
+            self.wfile.flush()
+
+        chunk({"role": "assistant", "content": ""})
+        text = msg.get("content") or ""
+        for part in (text[: len(text) // 2], text[len(text) // 2:]):  # split like a real stream
+            if part:
+                chunk({"content": part})
+        for i, c in enumerate(msg.get("tool_calls") or []):
+            args = c["function"]["arguments"]
+            chunk({"tool_calls": [{"index": i, "id": c["id"], "type": "function",
+                                   "function": {"name": c["function"]["name"], "arguments": ""}}]})
+            for piece in (args[: len(args) // 2], args[len(args) // 2:]):
+                chunk({"tool_calls": [{"index": i, "function": {"arguments": piece}}]})
+        chunk({}, "tool_calls" if msg.get("tool_calls") else "stop")
+        chunk({}, usage={"prompt_tokens": 300, "completion_tokens": 20})
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+        self.close_connection = True
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         if self.path.startswith("/v1/messages"):
@@ -205,6 +238,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"choices": [{"message": {"content": "p"}, "finish_reason": "length"}]})
         system = next((m["content"] for m in messages if m["role"] == "system"), "")
         tools = [t["function"]["name"] for t in body.get("tools") or []]
+        if {"Write", "Bash", "Read"} <= set(tools) and ("Agent" in tools or "Task" in tools):  # Claude Code, translated by the proxy
+            OPENAI_LOG.append({"model": body.get("model"), "stream": bool(body.get("stream")), "n": len(messages)})
+            done = any(m["role"] == "tool" for m in messages)
+            if not done:
+                msg = {"content": "Пишу файл.", "tool_calls": [call("Write", 0, file_path="openai.txt", content="через OpenAI\n")]}
+            else:
+                msg = {"content": "Готово через OpenAI-протокол."}
+            if body.get("stream"):
+                return self._stream_openai(body, msg)
+            return self._send(200, {"model": body.get("model"), "choices": [{"message": {"role": "assistant", **msg},
+                              "finish_reason": "tool_calls" if msg.get("tool_calls") else "stop"}],
+                              "usage": {"prompt_tokens": 300, "completion_tokens": 20}})
         if not system and "report_ready" in tools:  # the model picker's check: call the tool
             return self._send(200, {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [
                 call("report_ready", 0, ready=True)]}, "finish_reason": "tool_calls"}],

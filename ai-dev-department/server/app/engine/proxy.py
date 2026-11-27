@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from app.agents import llm
 from app.agents.keypool import key_pool
 from app.agents.llm import KEY_PROBLEMS, OK, RATE_LIMITED, TRANSIENT
+from app.engine import translate
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/llm-proxy", tags=["engine"], include_in_schema=False)
@@ -68,6 +69,7 @@ class RunAccess:
 
 
 _RUNS: dict[str, RunAccess] = {}
+_OPENAI_ONLY: set[int] = set()  # keys of «custom» aggregators found to have no /v1/messages
 
 
 def open_access(access: RunAccess) -> str:
@@ -158,16 +160,26 @@ async def _forward(token: str, request: Request, path: str) -> Response:
         except asyncio.CancelledError:
             return _anthropic_error(499, "api_error", "the run was stopped")
         base = anthropic_base(lease.provider.id, lease.base_url)
-        if base is None:
-            await key_pool.release(lease, OK)
-            return _anthropic_error(400, "invalid_request_error",
-                                    f"{lease.provider.name} has no Anthropic-format API: give this role a model of "
-                                    "another aggregator, or use the built-in engine")
-        out_headers = {**headers, "x-api-key": lease.secret, "authorization": f"Bearer {lease.secret}"}
+        openai_mode = base is None or lease.key_id in _OPENAI_ONLY
+        if openai_mode:  # an OpenAI-protocol aggregator: translate the request and, below, the answer
+            if path.endswith("count_tokens"):
+                await key_pool.release(lease, OK)
+                return JSONResponse({"input_tokens": max(1, len(raw) // 4)})
+            from app.agents.providers import base_url_for
+
+            target = base_url_for(lease.provider, lease.base_url) + "/chat/completions"
+            send_body = json.dumps(translate.to_openai(body), ensure_ascii=False).encode()
+            out_headers = {"authorization": f"Bearer {lease.secret}", "content-type": "application/json",
+                           "user-agent": headers.get("user-agent", "aidd")}
+            if lease.provider.id == "openrouter":
+                out_headers["x-title"] = "AIDD"
+        else:
+            target, send_body = base + url_tail, raw
+            out_headers = {**headers, "x-api-key": lease.secret, "authorization": f"Bearer {lease.secret}"}
         client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30, read=600, write=60, pool=30),
                                    transport=HTTP_TRANSPORT)
         try:
-            upstream = await client.send(client.build_request("POST", base + url_tail, content=raw,
+            upstream = await client.send(client.build_request("POST", target, content=send_body,
                                                               headers=out_headers), stream=True)
         except httpx.HTTPError as exc:
             await client.aclose()
@@ -182,6 +194,12 @@ async def _forward(token: str, request: Request, path: str) -> Response:
             await upstream.aclose()
             await client.aclose()
             message = llm._error_message(upstream)
+            if not openai_mode and lease.provider.kind == "openai" and upstream.status_code in (404, 405):
+                # this aggregator has no /v1/messages after all: speak OpenAI to it from now on
+                _OPENAI_ONLY.add(lease.key_id)
+                await key_pool.release(lease, OK)
+                logger.info("Engine proxy: %s key …%s has no Anthropic API; translating to OpenAI", provider, lease.tail)
+                continue
             outcome, retry = llm.classify(upstream.status_code, message, upstream.headers, lease.provider.id)
             await key_pool.release(lease, outcome, status=upstream.status_code, retry_after=retry)
             if outcome in KEY_PROBLEMS:
@@ -192,10 +210,36 @@ async def _forward(token: str, request: Request, path: str) -> Response:
                 await asyncio.sleep(min(10.0, retry or 2.0 * transient))
                 continue
             kind = upstream.headers.get("content-type", "")
-            if "json" in kind:
+            if "json" in kind and not openai_mode:
                 return Response(data, status_code=upstream.status_code, media_type="application/json")
             return _anthropic_error(upstream.status_code, "api_error", message)
         access.requests += 1
+        if openai_mode:
+            if "event-stream" in upstream.headers.get("content-type", ""):
+                return StreamingResponse(_relay_openai(upstream, client, lease, access, model, started),
+                                         media_type="text/event-stream", headers={"cache-control": "no-cache"})
+            data = await upstream.aread()
+            await upstream.aclose()
+            await client.aclose()
+            try:
+                msg = translate.from_openai(json.loads(data), model)
+            except ValueError:
+                await key_pool.release(lease, TRANSIENT)
+                return _anthropic_error(502, "api_error", "the provider did not answer with JSON")
+            usage = msg["usage"]
+            access.tokens[0] += usage["input_tokens"]
+            access.tokens[1] += usage["output_tokens"]
+            await key_pool.release(lease, OK, tokens=(usage["input_tokens"], usage["output_tokens"]))
+            if body.get("stream"):  # asked for a stream, got a whole answer: replay it as events
+                tr = translate.StreamTranslator(model)
+                events = tr.chunk({"choices": [{"delta": {"content": b.get("text")} if b["type"] == "text" else
+                                   {"tool_calls": [{"index": i, "id": b["id"], "function": {
+                                       "name": b["name"], "arguments": json.dumps(b["input"], ensure_ascii=False)}}]}}
+                                   for i, b in enumerate(msg["content"])], "usage": {
+                    "prompt_tokens": usage["input_tokens"], "completion_tokens": usage["output_tokens"]}})
+                tr.stop = msg["stop_reason"]
+                return Response(b"".join(events + tr.finish()), media_type="text/event-stream")
+            return JSONResponse(msg)
         if path.endswith("count_tokens") or "event-stream" not in upstream.headers.get("content-type", ""):
             data = await upstream.aread()
             await upstream.aclose()
@@ -242,6 +286,37 @@ async def _relay(upstream: httpx.Response, client: httpx.AsyncClient, lease, acc
             logger.info("Engine call: run=%s model=%s in=%d cache_read=%d out=%d first_byte=%.1fs answer=%.1fs "
                         "speed=%.0f tok/s %s", access.run_id, model, tokens[0], tokens[2], tokens[1], wait, write,
                         tokens[1] / write if write > 0.5 else 0, "" if outcome == OK else "(broken off)")
+
+
+async def _relay_openai(upstream: httpx.Response, client: httpx.AsyncClient, lease, access: RunAccess,
+                        model: str, started: float):
+    """An OpenAI stream, translated into Anthropic events on the fly."""
+    tr = translate.StreamTranslator(model)
+    outcome = OK
+    first = None
+    try:
+        async for chunk in upstream.aiter_bytes():
+            if first is None:
+                first = time.monotonic()
+            for event in tr.feed(chunk):
+                yield event
+        for event in tr.finish():  # streams that end without [DONE]
+            yield event
+    except (httpx.HTTPError, asyncio.CancelledError):
+        outcome = TRANSIENT
+        raise
+    finally:
+        await upstream.aclose()
+        await client.aclose()
+        inp, out = tr.usage["input_tokens"], tr.usage["output_tokens"]
+        access.tokens[0] += inp
+        access.tokens[1] += out
+        await key_pool.release(lease, outcome, tokens=(inp, out))
+        end = time.monotonic()
+        wait, write = (first or end) - started, end - (first or end)
+        logger.info("Engine call: run=%s model=%s (OpenAI protocol) in=%d out=%d first_byte=%.1fs answer=%.1fs "
+                    "speed=%.0f tok/s %s", access.run_id, model, inp, out, wait, write,
+                    out / write if write > 0.5 else 0, "" if outcome == OK else "(broken off)")
 
 
 # ------------------------------------------------------------------ MCP tool callbacks
