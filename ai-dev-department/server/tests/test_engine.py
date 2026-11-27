@@ -327,3 +327,12 @@ def test_effort_per_message(api, monkeypatch):
             return [r.effort for r in (await db.execute(select(AgentRun).where(AgentRun.chat_id == chat["id"]))).scalars()]
 
     assert asyncio.run(stored()) == ["xhigh"]
+
+
+def test_freellmapi_is_a_provider_claude_code_reaches_directly():
+    from app.agents.providers import PROVIDERS
+
+    p = PROVIDERS["freellmapi"]
+    assert p.base_url == "http://127.0.0.1:3001/v1" and p.default_model == "auto" and not p.needs_base_url
+    assert proxy.anthropic_base("freellmapi", None) == "http://127.0.0.1:3001"  # its /v1/messages, no translation
+    assert claude_code.anthropic_capable(AgentSpec(role="Orchestrator", provider="freellmapi", model="auto"))

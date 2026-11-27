@@ -48,6 +48,10 @@ def anthropic_base(provider: str, base_url: str | None) -> str | None:
     """Where a key's Anthropic-format API lives, or None if the provider has none we know."""
     if provider in ANTHROPIC_BASES:
         return ANTHROPIC_BASES[provider]
+    if provider == "freellmapi":  # it serves /v1/messages at its origin
+        from app.agents.providers import PROVIDERS
+
+        base_url = base_url or PROVIDERS["freellmapi"].base_url
     if base_url:  # «custom» and other OpenAI-compatible aggregators: many serve /v1/messages too
         base = base_url.rstrip("/")
         return base[:-3] if base.endswith("/v1") else base

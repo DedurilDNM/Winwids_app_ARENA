@@ -9,6 +9,7 @@ Two protocols cover them all:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -42,6 +43,12 @@ PROVIDERS: dict[str, Provider] = {p.id: p for p in (
     Provider("cerebras", "Cerebras", "openai", "https://api.cerebras.ai/v1", "/models", "csk-…"),
     Provider("fireworks", "Fireworks", "openai", "https://api.fireworks.ai/inference/v1", "/models", "fw_…"),
     Provider("custom", "Свой (OpenAI-совместимый)", "openai", "", "/models", ""),
+    # FreeLLMAPI (github.com/tashfeenahmed/freellmapi): a local router over the free tiers of many
+    # providers, installed next to this app (deploy/install-freellmapi.sh). The key is its unified key;
+    # model «auto» lets it pick. It speaks the Anthropic API too, so Claude Code runs on it directly.
+    Provider("freellmapi", "FreeLLMAPI (бесплатные тарифы)", "openai",
+             (os.environ.get("FREELLMAPI_URL") or "http://127.0.0.1:3001").rstrip("/") + "/v1",
+             "/models?available=true", "freellmapi-…", "auto"),
 )}
 
 

@@ -316,7 +316,8 @@ class OpenAICompatible:
         from whatever the service tells (OpenRouter: pricing, context, supported parameters;
         Together: type, pricing; Groq: context window; others: ids only)."""
         try:
-            resp = await self.client.get("/models")
+            # FreeLLMAPI lists its whole catalogue at /models: only the models it can serve now
+            resp = await self.client.get("/models?available=true" if self.provider.id == "freellmapi" else "/models")
         except httpx.HTTPError as exc:
             raise LLMError(TRANSIENT, f"connection: {type(exc).__name__}") from exc
         if resp.status_code >= 400:
